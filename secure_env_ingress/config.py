@@ -11,7 +11,7 @@ from types import MappingProxyType
 from .writer import InsecureTargetError, TargetBinding, bind_target
 
 _PROFILE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
-_KEY_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _RESERVED_PROFILES = frozenset({"setup", "status", "cancel"})
 _TARGET_MODES = frozenset({"hermes", "skill", "project", "custom"})
 _PROFILE_KEYS = frozenset({"target_mode", "target_path", "keys"})

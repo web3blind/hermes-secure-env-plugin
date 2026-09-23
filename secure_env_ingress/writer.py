@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Mapping
 from dotenv.parser import parse_stream
 
-_KEY_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _EXISTING_RE = re.compile(rb"^[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*=")
 _MAX_ENV_BYTES = 16 * 1024 * 1024
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)

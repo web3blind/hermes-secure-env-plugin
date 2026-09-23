@@ -58,7 +58,7 @@ def test_strict_mapping_and_immutable_profile_data(tmp_path: Path) -> None:
         _config({"cancel": _profile()}),
         _config({"x": _profile(extra=True)}),
         _config({"x": _profile(keys=[])}),
-        _config({"x": _profile(keys=["bad"])}),
+        _config({"x": _profile(keys=["bad-name"])}),
         _config({"x": _profile(keys=["A", "A"])}),
         {**_config({"x": _profile()}), "ttl_seconds": 119},
         {**_config({"x": _profile()}), "ttl_seconds": 601},

@@ -1,6 +1,6 @@
 # Hermes secure-env ingress
 
-A profile-scoped, on-demand HTTPS form for adding missing `.env` keys. `/senv` accepts a **configured profile name, never a secret**. Secret values travel directly from the browser to the HTTPS listener, not through a Telegram message or an LLM tool call.
+A profile-scoped, on-demand HTTPS form for adding missing `.env` keys. `/senv` accepts a **profile name and optional comma-separated field names, never secret values**. Secret values travel directly from the browser to the HTTPS listener, not through a Telegram message or an LLM tool call.
 
 **English-first, Linux/POSIX plugin.** Each installation requires its own trusted TLS certificate, verified renewal and Internet reachability. Mini App launch is off by default until its real-client compatibility gate is verified. Automated browser/backend tests do not establish Telegram Mini App or TalkBack compatibility. Never enter secrets in chat; enter them only in the HTTPS form.
 
@@ -64,6 +64,17 @@ The installer supports a bounded Debian/Ubuntu + systemd + snap path, checks pre
 Fresh setup starts with a dedicated test target. The agent verifies configuration, TLS and renewal; the owner enters a **made-up value only** in the real HTTPS form to confirm the external path. Adding real target profiles is a separate explicit choice. An already-loaded plugin refreshes its own settings on the next command; loading newly installed code may still require an owner-approved gateway restart.
 
 ## Use
+
+After `/senv setup` is complete, create a form directly in private chat:
+
+```text
+/senv site_auth field1,field2
+```
+
+This saves the field names and opens a one-time HTTPS form. Enter the values only on that page. Names are case-sensitive and preserved exactly: `field1` and `FIELD1` are different variables. Use letters, digits and underscores; the first character must be a letter or underscore. Up to 32 fields, each at most 128 characters, are accepted. Separate names with commas without spaces; never use `name=value` in chat.
+
+A new profile writes to `secrets-ingress/site_auth.env` inside the active Hermes home. An existing profile keeps its configured destination; explicitly supplying fields replaces its saved field list, not any `.env` values. The response identifies the fields and destination. Afterwards, `/senv site_auth` reopens that saved form. Unknown names without fields get syntax guidance. Existing `.env` variables are never overwritten; choose missing keys rather than re-entering existing ones.
+
 
 Send `/senv service` to the bot **in a private, non-Business chat**. Only configured numeric owner IDs are allowed. Open the normal link and enter values into the labeled password fields. When explicitly enabled after client checks, a separate Mini App button uses its own mode-bound capability and requires fresh, correctly signed Telegram `initData` for the requesting user.
 

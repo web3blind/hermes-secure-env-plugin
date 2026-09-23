@@ -58,6 +58,10 @@ class SetupConfigError(RuntimeError):
     """Configuration setup or verification failed closed."""
 
 
+class UnauthorizedOwnerError(SetupConfigError):
+    """The current on-disk configuration does not authorize this owner."""
+
+
 @dataclass(frozen=True, slots=True)
 class VerificationReport:
     """Value-free setup status suitable for CLI JSON output."""
@@ -72,6 +76,15 @@ class VerificationReport:
 
     def as_dict(self) -> dict[str, bool]:
         return dict(sorted(asdict(self).items()))
+
+
+@dataclass(frozen=True, slots=True)
+class ProfileDefinition:
+    """Value-free result of a named profile definition."""
+
+    name: str
+    keys: tuple[str, ...]
+    target: Path
 
 
 def _default_home() -> Path:
@@ -547,6 +560,94 @@ def configure(
     if not report.config_file_secure or not report.config_valid or not report.target_safe:
         raise SetupConfigError("configuration read-back verification failed")
     return report
+
+
+def define_named_profile(
+    *, home: str | os.PathLike[str] | Path | None = None, owner: int,
+    profile: str, keys: Sequence[str],
+) -> ProfileDefinition:
+    """Define fields for an authorized owner without reading or writing secret values."""
+    uid = _uid()
+    selected_home = _absolute(home if home is not None else _default_home(), "Hermes home")
+    _assert_private_dir(selected_home, uid)
+    config_path = selected_home / "config.yaml"
+
+    with _config_lock(selected_home, uid):
+        raw, original_bytes, identity = _read_config_file(config_path, uid)
+        if original_bytes is None:
+            raise SetupConfigError("secure ingress is not configured; use /senv setup")
+        current_settings = _extract_settings(raw)
+        try:
+            current = IngressConfig.from_mapping(current_settings)
+        except ConfigError as exc:
+            raise SetupConfigError("existing secure environment settings are malformed") from exc
+        if owner not in current.allowed_telegram_user_ids:
+            raise UnauthorizedOwnerError("owner is not authorized")
+
+        key_names = list(keys)
+        existing = current.profiles.get(profile)
+        if existing is None:
+            target = selected_home / "secrets-ingress" / f"{profile}.env"
+            profile_mapping: dict[str, object] = {
+                "target_mode": "custom",
+                "target_path": str(target),
+                "keys": key_names,
+            }
+        else:
+            target = selected_home / ".env" if existing.target_mode == "hermes" else existing.target_path
+            if target is None:
+                raise SetupConfigError("existing profile target is malformed")
+            profile_mapping = {
+                "target_mode": existing.target_mode,
+                "keys": key_names,
+            }
+            if existing.target_mode != "hermes":
+                profile_mapping["target_path"] = str(target)
+
+        # Validate names, exact key spelling, and destination before backup/write.
+        from .config import ProfileConfig
+        try:
+            ProfileConfig.from_mapping(profile, profile_mapping)
+            if existing is None:
+                _ensure_absolute_dir(target.parent, uid, private_from=selected_home)
+            binding = bind_target(target, expected_uid=uid, create_parents=False)
+        except (ConfigError, InsecureTargetError, OSError, ValueError) as exc:
+            raise SetupConfigError("requested profile definition is invalid or unsafe") from exc
+        del binding
+
+        merged = copy.deepcopy(raw)
+        settings = _extract_settings(merged)
+        if not isinstance(settings, dict):
+            raise SetupConfigError("existing secure environment settings are malformed")
+        profiles = settings.get("profiles")
+        if not isinstance(profiles, dict):
+            raise SetupConfigError("existing profiles configuration is malformed")
+        profiles[profile] = profile_mapping
+        try:
+            verified = IngressConfig.from_mapping(settings)
+        except ConfigError as exc:
+            raise SetupConfigError("updated secure environment settings are invalid") from exc
+        if owner not in verified.allowed_telegram_user_ids:
+            raise UnauthorizedOwnerError("owner is not authorized")
+
+        if raw != merged:
+            _private_backup(selected_home, original_bytes, uid)
+            if _current_identity(config_path, uid) != identity:
+                raise SetupConfigError("config file changed before mutation")
+            _atomic_write(config_path, merged, uid, identity)
+
+        readback, _bytes, _readback_identity = _read_config_file(config_path, uid)
+        readback_settings = _extract_settings(readback)
+        try:
+            final = IngressConfig.from_mapping(readback_settings)
+            final_profile = final.profiles[profile]
+        except (ConfigError, KeyError) as exc:
+            raise SetupConfigError("configuration read-back verification failed") from exc
+        final_target = selected_home / ".env" if final_profile.target_mode == "hermes" else final_profile.target_path
+        if final_profile.keys != tuple(key_names) or final_target != target:
+            raise SetupConfigError("configuration read-back verification failed")
+
+    return ProfileDefinition(name=profile, keys=tuple(key_names), target=target)
 
 
 def check_configuration(

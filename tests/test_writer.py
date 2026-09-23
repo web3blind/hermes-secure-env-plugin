@@ -55,7 +55,7 @@ def test_quote_dotenv_escapes_control_characters() -> None:
     assert "\\\\" in encoded
 
 
-@pytest.mark.parametrize("key", ["", "lower", "1BAD", "A-B", "A=B"])
+@pytest.mark.parametrize("key", ["", "bad.name", "1BAD", "A-B", "A=B"])
 def test_rejects_invalid_keys_before_creating_file(tmp_path: Path, key: str) -> None:
     target = tmp_path / ".env"
     binding = bind_target(target, expected_uid=os.getuid())

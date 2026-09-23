@@ -1,4 +1,5 @@
 """Public Hermes plugin registration; disabled configuration remains non-forwarding."""
+import copy
 import threading
 from pathlib import Path
 from .setup_handoff import bootstrap_owner_ids, handoff_setup
@@ -18,6 +19,8 @@ class LazyRuntime:
         self._bot_token = bot_token
         self._runtime = None
         self._lock = threading.RLock()
+        self._generation_lock = threading.Lock()
+        self._owner_generations = {}
         self._closed = False
 
     def _get(self):
@@ -40,7 +43,31 @@ class LazyRuntime:
     def create(self, owner, name):
         return self._get().create(owner, name)
 
+    def reserve(self, owner):
+        """Capture cancellation ordering before a form worker is scheduled."""
+        with self._generation_lock:
+            return self._owner_generations.get(owner, 0)
+
+    def _is_current(self, owner, reservation):
+        with self._generation_lock:
+            return self._owner_generations.get(owner, 0) == reservation
+
+    def create_reserved(self, owner, name, reservation, prepare):
+        """Serialize definition, config snapshot, refresh, and capability issue."""
+        with self._lock:
+            if not self._is_current(owner, reservation):
+                raise RuntimeError('form request was cancelled')
+            definition, settings = prepare()
+            if not self._is_current(owner, reservation):
+                raise RuntimeError('form request was cancelled')
+            if settings is None:
+                return definition, None
+            self.refresh(settings)
+            return definition, self.create(owner, name)
+
     def cancel(self, owner):
+        with self._generation_lock:
+            self._owner_generations[owner] = self._owner_generations.get(owner, 0) + 1
         with self._lock:
             if self._runtime is not None:
                 self._runtime.cancel(owner)
@@ -65,12 +92,22 @@ def register(ctx):
     def read_settings():
         token = set_hermes_home_override(home)
         try:
-            settings = {}
-            for key in SETTING_KEYS:
-                value = ctx.get_config(key, None)
-                if value is not None:
-                    settings[key] = value
-            return settings
+            from hermes_cli.plugins import load_config_readonly
+            raw = load_config_readonly() or {}
+            try:
+                entry = raw['plugins']['entries'][ctx.plugin_id]
+            except (KeyError, TypeError):
+                return {}
+            source = entry.get('settings') if isinstance(entry, dict) else None
+            if not isinstance(source, dict) and isinstance(entry, dict):
+                source = entry.get('config')
+            if not isinstance(source, dict):
+                return {}
+            return {
+                key: copy.deepcopy(source[key])
+                for key in SETTING_KEYS
+                if key in source
+            }
         finally:
             reset_hermes_home_override(token)
 
@@ -99,7 +136,6 @@ def register(ctx):
 
         def current_owner_ids():
             current = read_settings()
-            runtime.refresh(current)
             return owner_ids(current)
 
         def setup_authorized(owner):
@@ -107,9 +143,40 @@ def register(ctx):
             return ('allowed_telegram_user_ids' not in current
                     and owner in bootstrap_owner_ids(home))
 
+        def create_form(owner, name, fields, reservation):
+            def prepare():
+                definition = None
+                if fields:
+                    from .setup_config import define_named_profile
+                    definition = define_named_profile(
+                        home=home, owner=owner, profile=name, keys=fields,
+                    )
+                current = read_settings()
+                if owner not in owner_ids(current):
+                    from .setup_config import UnauthorizedOwnerError
+                    raise UnauthorizedOwnerError('owner is not authorized')
+                profiles = current.get('profiles', {})
+                if not fields and (
+                    not isinstance(profiles, dict) or name not in profiles
+                ):
+                    return None, None
+                return definition, current
+
+            return runtime.create_reserved(owner, name, reservation, prepare)
+
+        def read_status(owner):
+            with runtime._lock:
+                current = read_settings()
+                if owner not in owner_ids(current):
+                    from .setup_config import UnauthorizedOwnerError
+                    raise UnauthorizedOwnerError('owner is not authorized')
+                runtime.refresh(current)
+                return runtime.status()
+
         controller = CommandController(runtime, allowed_ids, setup_handler=setup,
                                        setup_authorized=setup_authorized,
-                                       allowed_ids_supplier=current_owner_ids)
+                                       allowed_ids_supplier=current_owner_ids,
+                                       form_creator=create_form, status_reader=read_status)
         handler = CommandHandler('senv', controller.handle)
         application.add_handler(handler)
         runtimes.append((runtime, application, handler))
@@ -128,7 +195,7 @@ def register(ctx):
             application.remove_handler(handler)
         runtimes.clear()
 
-    ctx.register_command('senv', diagnostic_command, description='Secure secret entry over HTTPS', args_hint='<profile|setup|status|cancel>')
+    ctx.register_command('senv', diagnostic_command, description='Secure secret entry over HTTPS', args_hint='<profile> [field1,field2]|setup|status|cancel')
     ctx.register_hook('pre_gateway_dispatch', defensive_hook)
     ctx.register_platform_handler('telegram', factory)
     ctx.on_unload(close)
