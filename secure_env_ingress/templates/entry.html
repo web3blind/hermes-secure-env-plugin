@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Secure secret entry</title>
+  <link rel="stylesheet" href="/static/entry.css">
+  <script src="/static/entry.js" defer></script>
+</head>
+<body>
+  <main id="app">
+    <h1>Secure secret entry</h1>
+    <p id="intro">Loading form…</p>
+    <form id="secret-form" autocomplete="off" hidden>
+      <fieldset id="fields">
+        <legend>Secrets for <span id="profile-label"></span></legend>
+      </fieldset>
+      <button id="submit" type="submit">Save</button>
+    </form>
+    <p id="status" role="status" aria-live="polite" aria-atomic="true"></p>
+    <noscript>JavaScript is required to use this form.</noscript>
+  </main>
+</body>
+</html>

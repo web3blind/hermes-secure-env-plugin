@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68,<83"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-secure-env-ingress"
+version = "0.1.0"
+description = "Profile-scoped HTTPS secret ingress for Hermes Telegram"
+requires-python = ">=3.11"
+dependencies = [
+  "cryptography>=50.0.0,<51",
+  "python-dotenv>=1.2.2,<2",
+  "python-telegram-bot>=22.6,<23",
+]
+
+[project.entry-points."hermes_agent.plugins"]
+secure-env-ingress = "secure_env_ingress.plugin"
+
+[tool.setuptools.packages.find]
+include = ["secure_env_ingress*", "scripts"]
+exclude = ["secure_env_ingress_probe*"]
+
+[tool.setuptools.package-data]
+secure_env_ingress = ["static/*.js", "static/*.css", "templates/*.html"]
