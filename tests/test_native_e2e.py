@@ -20,9 +20,10 @@ async def test_native_command_busy_to_https_write_and_unload(tmp_path, monkeypat
     monkeypatch.setenv('HERMES_HOME', str(home))
     manager = PluginManager()
     ctx = PluginContext(manifest=PluginManifest(name='secure-env-ingress', version='0.1.0'), manager=manager)
-    with patch('hermes_cli.plugins.load_config_readonly', return_value={
-        'plugins': {'entries': {'secure-env-ingress': {'settings': settings}}}
-    }):
+    import yaml
+    config = {'plugins': {'entries': {'secure-env-ingress': {'settings': settings}}}}
+    (home / 'config.yaml').write_text(yaml.safe_dump(config))
+    with patch('hermes_cli.plugins.load_config_readonly', return_value=config):
         register(ctx)
     replies = []
     async def reply(message, text, **kwargs):

@@ -19,16 +19,20 @@ def parse_selector(raw: str) -> str | None:
 
 
 class CommandController:
-    def __init__(self, runtime, allowed_ids: frozenset[int]):
+    def __init__(self, runtime, allowed_ids: frozenset[int], *, setup_handler=None,
+                 setup_authorized=None, allowed_ids_supplier=None):
         self.runtime = runtime
         self.allowed_ids = allowed_ids
+        self.setup_handler = setup_handler
+        self.setup_authorized = setup_authorized
+        self.allowed_ids_supplier = allowed_ids_supplier
 
     async def handle(self, update, context):
         message = getattr(update, "effective_message", None)
         user = getattr(update, "effective_user", None)
         chat = getattr(update, "effective_chat", None)
-        if (message is None or user is None or getattr(user, "id", None) not in self.allowed_ids
-                or getattr(user, "is_bot", True)
+        if (message is None or user is None or type(getattr(user, "id", None)) is not int
+                or getattr(user, "id", 0) <= 0 or getattr(user, "is_bot", True)
                 or getattr(chat, "type", None) != "private"
                 or getattr(message, "business_connection_id", None)):
             return
@@ -39,15 +43,24 @@ class CommandController:
             text = getattr(message, "text", "") or ""
             parts = text.split(maxsplit=1)
             selector = parse_selector(parts[1]) if len(parts) == 2 else None
+            allowed = self.allowed_ids_supplier() if self.allowed_ids_supplier else self.allowed_ids
+            if owner not in allowed:
+                if not (selector == "setup" and self.setup_authorized is not None
+                        and self.setup_authorized(owner)):
+                    return
             if selector is None:
                 await message.reply_text(SAFE_USAGE)
                 return
             if selector == "cancel":
                 await asyncio.to_thread(self.runtime.cancel, owner)
                 await message.reply_text("The link has been cancelled.")
-            elif selector in {"status", "setup"}:
-                operation = self.runtime.status if selector == "status" else self.runtime.preflight
-                reply = await asyncio.to_thread(operation)
+            elif selector == "setup":
+                if self.setup_handler is None:
+                    await message.reply_text("Installation assistance is unavailable in this session. No changes were made.")
+                else:
+                    await self.setup_handler(update)
+            elif selector == "status":
+                reply = await asyncio.to_thread(self.runtime.status)
                 await message.reply_text(reply)
             else:
                 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo

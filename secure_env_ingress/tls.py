@@ -13,10 +13,6 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from cryptography import x509
-from cryptography.hazmat.primitives import hashes, serialization
-
-
 class TLSValidationError(ValueError):
     """Certificate material is unsafe or unsuitable for the ingress."""
 
@@ -130,6 +126,11 @@ def validate_certificate(
     minimum_remaining: dt.timedelta = dt.timedelta(hours=1),
 ) -> CertificateMetadata:
     """Validate ownership, modes, chain, key match, validity, and exact IP SAN."""
+    # Keep module import stdlib-only so bootstrap/preflight can run before the
+    # installer provisions its pinned managed interpreter.
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+
     cert_path = Path(certificate_path)
     key_path = Path(private_key_path)
     uid = os.geteuid() if owner_uid is None else owner_uid

@@ -1,5 +1,7 @@
 """Public Hermes plugin registration; disabled configuration remains non-forwarding."""
 import threading
+from pathlib import Path
+from .setup_handoff import bootstrap_owner_ids, handoff_setup
 from .command import CommandController, defensive_hook, diagnostic_command
 
 SETTING_KEYS = (
@@ -27,6 +29,14 @@ class LazyRuntime:
                 self._runtime = IngressRuntime(self.settings, self.home, self._bot_token)
             return self._runtime
 
+    def refresh(self, settings):
+        with self._lock:
+            if self.settings != settings:
+                if self._runtime is not None:
+                    self._runtime.close()
+                self._runtime = None
+                self.settings = settings
+
     def create(self, owner, name):
         return self._get().create(owner, name)
 
@@ -50,15 +60,28 @@ class LazyRuntime:
 
 
 def register(ctx):
-    from hermes_constants import get_hermes_home
+    from hermes_constants import get_hermes_home, set_hermes_home_override, reset_hermes_home_override
     home = get_hermes_home()
-    settings = {}
-    for key in SETTING_KEYS:
-        value = ctx.get_config(key, None)
-        if value is not None:
-            settings[key] = value
-    raw_ids = settings.get('allowed_telegram_user_ids', [])
-    allowed_ids = frozenset(x for x in raw_ids if type(x) is int and x > 0) if isinstance(raw_ids, list) else frozenset()
+    def read_settings():
+        token = set_hermes_home_override(home)
+        try:
+            settings = {}
+            for key in SETTING_KEYS:
+                value = ctx.get_config(key, None)
+                if value is not None:
+                    settings[key] = value
+            return settings
+        finally:
+            reset_hermes_home_override(token)
+
+    def owner_ids(settings):
+        raw = settings.get('allowed_telegram_user_ids', [])
+        return frozenset(x for x in raw if type(x) is int and x > 0) if isinstance(raw, list) else frozenset()
+
+    settings = read_settings()
+    allowed_ids = owner_ids(settings)
+    ctx.register_skill('setup', Path(__file__).parent / 'setup' / 'SKILL.md',
+                       description='Install and diagnose secure-env-ingress; never handle secret values.')
     runtimes = []
     closed = False
 
@@ -67,7 +90,26 @@ def register(ctx):
             return
         from telegram.ext import CommandHandler
         runtime = LazyRuntime(settings, home, application.bot.token)
-        controller = CommandController(runtime, allowed_ids)
+        async def setup(update):
+            token = set_hermes_home_override(home)
+            try:
+                await handoff_setup(ctx, adapter, update)
+            finally:
+                reset_hermes_home_override(token)
+
+        def current_owner_ids():
+            current = read_settings()
+            runtime.refresh(current)
+            return owner_ids(current)
+
+        def setup_authorized(owner):
+            current = read_settings()
+            return ('allowed_telegram_user_ids' not in current
+                    and owner in bootstrap_owner_ids(home))
+
+        controller = CommandController(runtime, allowed_ids, setup_handler=setup,
+                                       setup_authorized=setup_authorized,
+                                       allowed_ids_supplier=current_owner_ids)
         handler = CommandHandler('senv', controller.handle)
         application.add_handler(handler)
         runtimes.append((runtime, application, handler))
