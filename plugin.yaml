@@ -1,6 +1,6 @@
 name: secure-env-ingress
-version: 0.3.0
-description: Profile-scoped HTTPS secret entry with Telegram private-chat commands.
+version: 0.4.0
+description: Profile-scoped HTTPS secret entry through normalized Hermes gateway commands.
 author: web3blind
 provides_hooks:
   - pre_gateway_dispatch

@@ -41,7 +41,7 @@ class CapabilityClaim:
     mode: Mode
     group_id: str
     platform: str
-    user_id: int
+    user_id: str | int
     hermes_home: Path
     profile_name: str
     allowed_keys: tuple[str, ...]
@@ -99,7 +99,7 @@ class CapabilityStore:
         self,
         *,
         platform: str,
-        user_id: int,
+        user_id: str | int,
         hermes_home: Path | str,
         profile_name: str,
         allowed_keys: tuple[str, ...],
@@ -173,7 +173,7 @@ class CapabilityStore:
         *,
         mode: Mode,
         platform: str,
-        user_id: int,
+        user_id: str | int,
         hermes_home: Path | str,
         profile_name: str | None = None,
         target_id: TargetId | None = None,
@@ -213,7 +213,7 @@ class CapabilityStore:
         self,
         *,
         platform: str,
-        user_id: int,
+        user_id: str | int,
         hermes_home: Path | str,
         profile_name: str | None = None,
         target_id: TargetId | None = None,

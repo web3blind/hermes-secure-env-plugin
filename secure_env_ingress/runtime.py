@@ -52,8 +52,9 @@ class IngressRuntime:
         return f'https://{host}:{self.config.listen_port}'
 
     def create(self, owner, name):
+        owner = ('telegram', str(owner)) if type(owner) is int else owner
         with self._lock:
-            if self._closed or owner not in self.config.allowed_telegram_user_ids:
+            if self._closed or owner not in self.config.owners:
                 raise HTTPError(403, 'denied')
             self._tls()
             resolved = self.config.resolve(name, hermes_home=self.home, expected_uid=os.getuid())
@@ -69,7 +70,7 @@ class IngressRuntime:
                     )
                     self._server.start()
                 browser, mini = self._store.issue_pair(
-                    platform='telegram', user_id=owner, hermes_home=self.home,
+                    platform=owner[0], user_id=owner[1], hermes_home=self.home,
                     profile_name=name, allowed_keys=resolved.profile.keys,
                     target_id=self._target_id(resolved.target),
                     ttl_seconds=self.config.ttl_seconds,
@@ -82,7 +83,7 @@ class IngressRuntime:
                 origin = self._origin()
                 return {
                     'url': f'{origin}/e#{browser.token}',
-                    'web_app_url': f'{origin}/e#{mini.token}' if self.config.mini_app_enabled else None,
+                    'web_app_url': f'{origin}/e#{mini.token}' if self.config.mini_app_enabled and self._bot_token and owner[0] == 'telegram' else None,
                 }
             except Exception:
                 self._stop_listener()
@@ -93,10 +94,10 @@ class IngressRuntime:
         if claim is None or claim.group_id not in self._targets:
             raise HTTPError(410, 'invalid_session')
         if claim.mode == 'mini':
-            if not self.config.mini_app_enabled:
+            if not self.config.mini_app_enabled or claim.platform != 'telegram' or not self._bot_token:
                 raise HTTPError(403, 'invalid_session')
             try:
-                verify_init_data(init_data, self._bot_token, expected_user_id=claim.user_id,
+                verify_init_data(init_data, self._bot_token, expected_user_id=int(claim.user_id),
                                  max_age_seconds=self.config.ttl_seconds)
             except InitDataError:
                 raise HTTPError(403, 'invalid_session') from None
@@ -117,7 +118,7 @@ class IngressRuntime:
                 raise HTTPError(403, 'invalid_session')
             claim = self._claim(token, init_data)
             resolved = self._targets[claim.group_id]
-            consumed = self._store.consume(token, mode=claim.mode, platform='telegram',
+            consumed = self._store.consume(token, mode=claim.mode, platform=claim.platform,
                                            user_id=claim.user_id, hermes_home=self.home,
                                            profile_name=resolved.profile.name,
                                            allowed_keys=resolved.profile.keys,
@@ -142,12 +143,13 @@ class IngressRuntime:
         """Authenticated malformed submission is terminal, without writing."""
         with self._lock:
             claim = self._claim(token, init_data)
-            self._store.cancel(platform='telegram', user_id=claim.user_id, hermes_home=self.home)
+            self._store.cancel(platform=claim.platform, user_id=claim.user_id, hermes_home=self.home)
             self._targets.clear()
 
     def cancel(self, owner):
+        owner = ('telegram', str(owner)) if type(owner) is int else owner
         with self._lock:
-            if self._store.cancel(platform='telegram', user_id=owner, hermes_home=self.home):
+            if self._store.cancel(platform=owner[0], user_id=owner[1], hermes_home=self.home):
                 self._targets.clear()
                 self._stop_listener()
 

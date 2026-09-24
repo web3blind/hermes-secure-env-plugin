@@ -18,7 +18,8 @@ with tempfile.TemporaryDirectory(prefix='senv-wheel-smoke-') as temporary:
     manager.discover_and_load()
     try:
         assert 'senv' in manager._plugin_commands
-        assert manager.get_platform_handler_factories('telegram')
+        assert not manager.get_platform_handler_factories('telegram')
+        assert manager._hooks.get('pre_gateway_dispatch')
     finally:
         manager.unload()
     from test_runtime_e2e import test_real_https_write_mode_binding_replay_shutdown

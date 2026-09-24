@@ -1,8 +1,6 @@
 from pathlib import Path
 import pytest
 import shutil
-from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 from hermes_cli.plugins import PluginManager
 
@@ -25,13 +23,10 @@ def test_real_directory_plugin_discovery_and_unload(tmp_path, monkeypatch, runti
     monkeypatch.setenv('HERMES_HOME', str(home))
     manager = PluginManager()
     manager.discover_and_load()
-    factories = manager.get_platform_handler_factories('telegram')
-    assert len(factories) == 1
-    app = SimpleNamespace(bot=SimpleNamespace(token='111:offline'), add_handler=MagicMock(), remove_handler=MagicMock())
-    factory, _ = factories[0]
-    factory(app, None)
-    app.add_handler.assert_called_once()
+    assert not manager.get_platform_handler_factories('telegram')
+    assert 'senv' in manager._plugin_commands
+    assert manager._hooks['pre_gateway_dispatch']
     assert not (home / 'secrets-ingress').exists()
     manager.unload()
-    app.remove_handler.assert_called_once()
+    assert 'senv' not in manager._plugin_commands
     assert not (home / 'secrets-ingress').exists()

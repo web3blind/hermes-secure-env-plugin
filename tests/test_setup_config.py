@@ -84,7 +84,7 @@ def test_configure_preserves_config_allowlist_profiles_and_makes_private_backup(
     assert report.tls_valid is False
     assert report.ready is False
 
-    backups = list((home / "backups" / "config").glob("config.yaml.secure-env-setup.*"))
+    backups = list((home / "secrets-ingress" / "config-backups").glob("config.yaml.secure-env-setup.*"))
     assert len(backups) == 1
     backup = backups[0]
     assert yaml.safe_load(backup.read_text(encoding="utf-8")) == original
@@ -103,7 +103,7 @@ def test_configure_is_idempotent_and_never_touches_existing_dotenv(tmp_path: Pat
     before = dotenv.stat()
 
     first = configure(home=home, owner=23, public_ip="203.0.113.9")
-    backup_count = len(list((home / "backups" / "config").glob("*"))) if (home / "backups" / "config").exists() else 0
+    backup_count = len(list((home / "secrets-ingress" / "config-backups").glob("*"))) if (home / "secrets-ingress" / "config-backups").exists() else 0
     second = configure(home=home, owner=23, public_ip="203.0.113.9")
 
     after = dotenv.stat()
@@ -117,7 +117,7 @@ def test_configure_is_idempotent_and_never_touches_existing_dotenv(tmp_path: Pat
     assert first.changed is True
     assert second.changed is False
     assert second.backup_created is False
-    assert (len(list((home / "backups" / "config").glob("*"))) if (home / "backups" / "config").exists() else 0) == backup_count
+    assert (len(list((home / "secrets-ingress" / "config-backups").glob("*"))) if (home / "secrets-ingress" / "config-backups").exists() else 0) == backup_count
 
 
 def test_configure_rejects_conflicting_security_setting_without_mutation_or_backup(tmp_path: Path) -> None:

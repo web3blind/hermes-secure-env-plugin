@@ -23,7 +23,7 @@ from typing import Iterator, Mapping, Sequence
 
 import yaml
 
-from .config import ConfigError, IngressConfig
+from .config import ConfigError, IngressConfig, owner_identity
 from .tls import TLSValidationError, validate_certificate
 from .writer import InsecureTargetError, bind_target
 
@@ -289,7 +289,7 @@ def _write_all(fd: int, data: bytes) -> None:
 
 
 def _private_backup(home: Path, source: bytes, uid: int) -> None:
-    backup_dir = home / "backups" / "config"
+    backup_dir = home / "secrets-ingress" / "config-backups"
     _ensure_absolute_dir(backup_dir, uid, private_from=home)
     name = f"config.yaml.secure-env-setup.{time.time_ns()}"
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW | _CLOEXEC
@@ -339,11 +339,15 @@ def _same_value(left: object, right: object) -> bool:
 
 
 def _requested_settings(
-    *, home: Path, owner: int, public_ip: str, profile: str, keys: Sequence[str],
+    *, home: Path, owner: int | tuple[str, str], public_ip: str, profile: str, keys: Sequence[str],
     tls_dir: Path | None, port: int,
 ) -> tuple[dict[str, object], Path, Path]:
-    if type(owner) is not int or owner < 1:
-        raise SetupConfigError("owner must be a positive numeric Telegram user ID")
+    if type(owner) is int and owner > 0:
+        owner_settings = {"allowed_telegram_user_ids": [owner]}
+    elif isinstance(owner, tuple) and len(owner) == 2 and owner_identity(*owner) == owner:
+        owner_settings = {"allowed_owners": {owner[0]: [owner[1]]}}
+    else:
+        raise SetupConfigError("owner must be a valid platform and exact user ID")
     if isinstance(port, bool) or not isinstance(port, int):
         raise SetupConfigError("port must be an integer")
     key_names = list(keys)
@@ -358,7 +362,7 @@ def _requested_settings(
         "key_path": str(certificate_dir / "privkey.pem"),
         "safety_seconds": _SECURITY_DEFAULTS["safety_seconds"],
         "ttl_seconds": _SECURITY_DEFAULTS["ttl_seconds"],
-        "allowed_telegram_user_ids": [owner],
+        **owner_settings,
         "profiles": {
             profile: {
                 "target_mode": "custom",
@@ -404,12 +408,24 @@ def _merge(raw: dict, requested: dict[str, object], profile: str) -> dict:
             raise SetupConfigError(f"conflicting existing security setting: {name}")
         settings[name] = copy.deepcopy(expected)
 
-    current_ids = settings.setdefault("allowed_telegram_user_ids", [])
-    if not isinstance(current_ids, list):
-        raise SetupConfigError("existing Telegram allowlist is malformed")
-    owner = requested["allowed_telegram_user_ids"][0]  # type: ignore[index]
-    if owner not in current_ids:
-        current_ids.append(owner)
+    if "allowed_telegram_user_ids" in requested:
+        current_ids = settings.setdefault("allowed_telegram_user_ids", [])
+        if not isinstance(current_ids, list):
+            raise SetupConfigError("existing Telegram allowlist is malformed")
+        owner = requested["allowed_telegram_user_ids"][0]  # type: ignore[index]
+        if owner not in current_ids:
+            current_ids.append(owner)
+    else:
+        requested_owners = requested["allowed_owners"]
+        platform, ids = next(iter(requested_owners.items()))
+        owners = settings.setdefault("allowed_owners", {})
+        if not isinstance(owners, dict):
+            raise SetupConfigError("existing owner allowlist is malformed")
+        current_ids = owners.setdefault(platform, [])
+        if not isinstance(current_ids, list):
+            raise SetupConfigError("existing owner allowlist is malformed")
+        if ids[0] not in current_ids:
+            current_ids.append(ids[0])
 
     profiles = settings.setdefault("profiles", {})
     if not isinstance(profiles, dict):
@@ -448,12 +464,11 @@ def _config_matches(raw: dict, requested: dict[str, object], profile: str) -> bo
         ):
             if name not in settings or not _same_value(settings[name], requested[name]):
                 return False
-        owner = requested["allowed_telegram_user_ids"][0]  # type: ignore[index]
-        ids = settings["allowed_telegram_user_ids"]
+        from .config import configured_owners
+        owner_allowed = configured_owners(requested).issubset(configured_owners(settings))
         profiles = settings["profiles"]
         return (
-            isinstance(ids, list)
-            and owner in ids
+            owner_allowed
             and isinstance(profiles, Mapping)
             and profiles.get(profile) == requested["profiles"][profile]  # type: ignore[index]
         )
@@ -515,7 +530,7 @@ def _verify(
 
 
 def configure(
-    *, home: str | os.PathLike[str] | Path | None = None, owner: int,
+    *, home: str | os.PathLike[str] | Path | None = None, owner: int | tuple[str, str],
     public_ip: str, profile: str = "test", keys: Sequence[str] = (_DEFAULT_KEY,),
     tls_dir: str | os.PathLike[str] | Path | None = None, port: int = _DEFAULT_PORT,
 ) -> VerificationReport:
@@ -563,7 +578,7 @@ def configure(
 
 
 def define_named_profile(
-    *, home: str | os.PathLike[str] | Path | None = None, owner: int,
+    *, home: str | os.PathLike[str] | Path | None = None, owner: int | tuple[str, str],
     profile: str, keys: Sequence[str],
 ) -> ProfileDefinition:
     """Define fields for an authorized owner without reading or writing secret values."""
@@ -581,7 +596,9 @@ def define_named_profile(
             current = IngressConfig.from_mapping(current_settings)
         except ConfigError as exc:
             raise SetupConfigError("existing secure environment settings are malformed") from exc
-        if owner not in current.allowed_telegram_user_ids:
+        authorized_owner = ('telegram', str(owner)) if type(owner) is int else owner
+        if (not isinstance(authorized_owner, tuple) or len(authorized_owner) != 2
+                or owner_identity(*authorized_owner) != authorized_owner or authorized_owner not in current.owners):
             raise UnauthorizedOwnerError("owner is not authorized")
 
         key_names = list(keys)
@@ -627,7 +644,7 @@ def define_named_profile(
             verified = IngressConfig.from_mapping(settings)
         except ConfigError as exc:
             raise SetupConfigError("updated secure environment settings are invalid") from exc
-        if owner not in verified.allowed_telegram_user_ids:
+        if authorized_owner not in verified.owners:
             raise UnauthorizedOwnerError("owner is not authorized")
 
         if raw != merged:
@@ -651,7 +668,7 @@ def define_named_profile(
 
 
 def check_configuration(
-    *, home: str | os.PathLike[str] | Path | None = None, owner: int,
+    *, home: str | os.PathLike[str] | Path | None = None, owner: int | tuple[str, str],
     public_ip: str, profile: str = "test", keys: Sequence[str] = (_DEFAULT_KEY,),
     tls_dir: str | os.PathLike[str] | Path | None = None, port: int = _DEFAULT_PORT,
 ) -> VerificationReport:
@@ -690,7 +707,8 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Configure or verify Secure Environment Ingress")
     parser.add_argument("mode", choices=("configure", "check"))
     parser.add_argument("--home", type=Path, default=None, help="active Hermes profile home")
-    parser.add_argument("--owner", required=True, type=_positive_owner, help="numeric Telegram owner ID")
+    parser.add_argument("--owner", required=True, help="exact platform user ID (numeric for Telegram)")
+    parser.add_argument("--platform", "--owner-platform", dest="owner_platform", default="telegram", help="gateway platform name")
     parser.add_argument("--public-ip", required=True, help="public IPv4 address")
     parser.add_argument("--profile", default="test", help="ingress profile name")
     parser.add_argument("--keys", nargs="+", default=[_DEFAULT_KEY], help="environment key names only")
@@ -703,16 +721,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     operation = configure if args.mode == "configure" else check_configuration
     try:
+        owner = (_positive_owner(args.owner) if args.owner_platform == 'telegram'
+                 else (args.owner_platform, args.owner))
         report = operation(
             home=args.home,
-            owner=args.owner,
+            owner=owner,
             public_ip=args.public_ip,
             profile=args.profile,
             keys=args.keys,
             tls_dir=args.tls_dir,
             port=args.port,
         )
-    except SetupConfigError as exc:
+    except (SetupConfigError, argparse.ArgumentTypeError) as exc:
         print(f"setup configuration refused: {exc}", file=sys.stderr)
         return 2
     print(json.dumps(report.as_dict(), sort_keys=True))

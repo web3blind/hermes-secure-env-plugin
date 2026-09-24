@@ -17,6 +17,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import hermes_cli.lifecycle as lifecycle
+
+HOOK_NAME = "ainvoke_hook" if hasattr(lifecycle, "ainvoke_hook") else "invoke_hook"
+HOOK_PATH = "hermes_cli.lifecycle." + HOOK_NAME
+HOOK_MOCK = AsyncMock if HOOK_NAME == "ainvoke_hook" else MagicMock
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -325,7 +330,7 @@ async def test_pre_dispatch_guard_drops_assignment_before_runner(monkeypatch):
     manager = _plugin_manager()
     runner = _idle_runner()
     monkeypatch.setattr(
-        "hermes_cli.lifecycle.ainvoke_hook", manager.ainvoke_hook
+        HOOK_PATH, getattr(manager, HOOK_NAME)
     )
 
     admitted = await runner._hm_admit_event(_event(f"/senv {FIXTURE_ASSIGNMENT}"))
@@ -340,7 +345,7 @@ async def test_pre_dispatch_guard_drops_assignment_before_busy_steer(monkeypatch
     manager = _plugin_manager()
     runner, adapter, agent, event, key = _busy_runner("steer")
     event.text = f"/senv {FIXTURE_ASSIGNMENT}"
-    monkeypatch.setattr("hermes_cli.lifecycle.ainvoke_hook", manager.ainvoke_hook)
+    monkeypatch.setattr(HOOK_PATH, getattr(manager, HOOK_NAME))
     monkeypatch.setenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "0")
 
     result = await runner._handle_message(event)
@@ -479,7 +484,7 @@ async def test_expected_failure_register_command_is_fail_closed_if_event_reaches
         "hermes_cli.plugins.get_plugin_command_handler",
         lambda name: _recording_handler if name == "senv" else None,
     )
-    monkeypatch.setattr("hermes_cli.lifecycle.ainvoke_hook", AsyncMock(return_value=[]))
+    monkeypatch.setattr(HOOK_PATH, HOOK_MOCK(return_value=[]))
     monkeypatch.setenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "0")
 
     await runner._handle_message(event)
@@ -502,8 +507,8 @@ async def test_expected_failure_pre_dispatch_hook_error_must_drop_sensitive_comm
     runner, adapter, agent, event, key = _busy_runner("steer")
     event.text = f"/senv {FIXTURE_ASSIGNMENT}"
     monkeypatch.setattr(
-        "hermes_cli.lifecycle.ainvoke_hook",
-        AsyncMock(side_effect=RuntimeError("fixture hook failure")),
+        HOOK_PATH,
+        HOOK_MOCK(side_effect=RuntimeError("fixture hook failure")),
     )
     monkeypatch.setenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "0")
 

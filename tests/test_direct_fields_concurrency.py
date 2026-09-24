@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import copy
 import threading
 from types import SimpleNamespace
@@ -101,36 +102,30 @@ async def test_status_snapshot_refresh_requires_authorization(monkeypatch, tmp_p
     raw_changed = {"plugins": {"entries": {"secure-env-ingress": {"settings": changed}}}}
     snapshots = iter((raw_initial, raw_changed, raw_changed))
 
-    class Context:
-        plugin_id = "secure-env-ingress"
-        def register_skill(self, *_args, **_kwargs): pass
-        def register_command(self, *_args, **_kwargs): pass
-        def register_hook(self, *_args, **_kwargs): pass
-        def register_platform_handler(self, _platform, factory): self.factory = factory
-        def on_unload(self, callback): self.close = callback
-
-    class Application:
-        bot = SimpleNamespace(token="token")
-        def add_handler(self, handler): self.handler = handler
-        def remove_handler(self, _handler): pass
-
-    ctx, application = Context(), Application()
+    from gateway.config import Platform
+    from gateway.platforms.event import MessageEvent
+    from gateway.session import SessionSource
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+    manager = PluginManager()
+    ctx = PluginContext(PluginManifest(name="secure-env-ingress", version="0.2.0"), manager)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     with patch("hermes_cli.plugins.load_config_readonly", side_effect=lambda: next(snapshots)):
         register(ctx)
-        ctx.factory(application, object())
-        controller = application.handler.callback.__self__
-        active = SimpleNamespace(closed=False, close=lambda: setattr(active, "closed", True))
-        controller.runtime._runtime = active
-        update = _update("/senv status", owner=owner)
-        await controller.handle(update, None)
-
-    assert active.closed is (owner == 88)
-    assert controller.runtime.settings == (changed if owner == 88 else initial)
+        handler = manager._plugin_commands['senv']['handler']
+        async def status(uid):
+            event = MessageEvent(text='/senv status', source=SessionSource(
+                platform=Platform.TELEGRAM, user_id=str(uid), chat_id='42', chat_type='dm'))
+            invoke = getattr(manager, 'ainvoke_hook', manager.invoke_hook)
+            result = invoke('pre_gateway_dispatch', event=event, gateway=None)
+            if inspect.isawaitable(result):
+                await result
+            return await handler('status')
+        reply = await status(owner)
     if owner == 88:
-        assert update.effective_message.reply_text.call_args.args == ("ready:B",)
+        assert reply == 'ready:B'
     else:
-        update.effective_message.reply_text.assert_not_awaited()
+        assert 'ready:' not in reply
+    manager.unload()
 
 
 @pytest.mark.asyncio

@@ -1,8 +1,8 @@
 # Hermes secure-env ingress
 
-A profile-scoped, on-demand HTTPS form for adding missing `.env` keys. `/senv` accepts a **profile name and optional comma-separated field names, never secret values**. Secret values travel directly from the browser to the HTTPS listener, not through a Telegram message or an LLM tool call.
+A profile-scoped, on-demand HTTPS form for adding missing `.env` keys. `/senv` accepts a **profile name and optional comma-separated field names, never secret values**. Secret values travel directly from the browser to the HTTPS listener, not through a messenger message or an LLM tool call. The gateway command works on normalized messaging platforms, subject to explicit platform-and-user authorization.
 
-**English-first, Linux/POSIX plugin.** Each installation requires its own trusted TLS certificate, verified renewal and Internet reachability. Mini App launch is off by default until its real-client compatibility gate is verified. Automated browser/backend tests do not establish Telegram Mini App or TalkBack compatibility. Never enter secrets in chat; enter them only in the HTTPS form.
+**English-first, Linux/POSIX plugin.** Each installation requires its own trusted TLS certificate, verified renewal and Internet reachability. This release uses browser links; Telegram Mini App launch is not exposed by the generic command. Automated tests do not establish compatibility with every messenger client or screen reader. Never enter secrets in chat; enter them only in the HTTPS form.
 
 ## Installation, separately from TLS setup
 
@@ -34,6 +34,9 @@ plugins:
         safety_seconds: 86400
         ttl_seconds: 300
         allowed_telegram_user_ids: [123456789]
+        # Alternatively/additionally: exact opaque string IDs per normalized platform.
+        allowed_owners:
+          discord: ["opaque-user-id"]
         mini_app_enabled: false
         profiles:
           service:
@@ -45,17 +48,22 @@ plugins:
             keys: [SERVICE_TOKEN, SERVICE_SECRET]
 ```
 
-- v1 runtime configuration uses IPv4 literals and a stable public address. Never put the bot token, private key or secret values in this configuration; the plugin gets the current Telegram bot token from the native application in memory.
+- Runtime configuration uses IPv4 literals and a stable public address. Never put a bot token, private key or secret values in this configuration. Ordinary browser forms need no Telegram bot token. The historical Telegram Mini App flow is not available through generic command registration; leave `mini_app_enabled: false` for this release.
+- `allowed_owners` maps lowercase normalized platform names to exact string user IDs. Legacy positive numeric `allowed_telegram_user_ids` remain supported as Telegram-only owners. Same IDs on other platforms grant nothing. Gateway chat access, roles and broad allowlists alone do not grant ownership. Configure trusted chat destinations separately in Hermes.
 - `hermes` resolves `.env` inside the active `HERMES_HOME`. `skill`, `project` and `custom` require the exact absolute `.env` target; no filename supplied by the browser is accepted. Parent directories must already exist, be owned by the runtime user, and not be group/world-writable. Symlink traversal is rejected for target files.
 - Existing target must be a regular, single-linked file with mode `0600`, owned by the runtime user. New files are atomically created with `0600`. Existing values are never replaced. A target change observed before commit invalidates the binding. The final check-and-replace is protected against other UIDs by the validated parent permissions and serialized among cooperative writers; an uncooperative same-UID/root writer is outside this guarantee.
 - TLS certificate is mode `0644`, key `0600`, owned by the runtime user inside a private runtime directory. Certificate chain, IP SAN, validity and key match are checked before opening the listener. No untrusted/self-signed production fallback exists.
 - TTL is 120–600 seconds. There is one active browser/Mini-App pair per runtime; a new request replaces the previous pair. Consuming either invalidates both. This deliberately stricter single-pair policy also serializes the target workflow.
 
+Configuration updates create private backups under `secrets-ingress/config-backups/` in the selected Hermes home. Existing backups elsewhere are retained; no live files are moved.
+
 ## Guided setup
 
-After enabling the plugin, send `/senv setup` in the bot's private chat. Hermes handles installation and diagnosis using the bundled `secure-env-ingress:setup` skill and deterministic setup scripts; you do not need to edit YAML or assemble shell commands yourself. The agent requests consent for package installation, certificate issuance and other privileged changes. It can use existing sudo access, but cannot manufacture missing privileges or bypass approval policy.
+After enabling the plugin, send `/senv setup` from an explicitly authorized identity in a trusted conversation. Hermes handles installation and diagnosis using the bundled `secure-env-ingress:setup` skill and deterministic setup scripts. The agent requests consent for package installation, certificate issuance and other privileged changes; it cannot bypass approval policy.
 
-If the plugin already has the operator-granted `plugins.entries.secure-env-ingress.allow_gateway_injection: true` permission and the conversation exists, it queues a fixed **installation-only** task in that conversation. Otherwise it presents a one-tap setup request: tapping it sends a normal user message to the agent. The plugin never grants itself injection permission, invokes a separate model/provider, or forwards the original command/reply/media. A queued request is not proof of completed setup.
+If the plugin already has operator-granted `plugins.entries.secure-env-ingress.allow_gateway_injection: true` and the conversation exists, it queues a fixed **installation-only** task in that conversation. Otherwise it replies with a fixed, copyable ordinary-message installation request. The plugin never grants itself injection permission, invokes a separate model/provider, or forwards the original command/reply/media. A queued request is not proof of completed setup.
+
+For a new non-Telegram installation, the operator can configure an exact identity with `python -m secure_env_ingress.setup_config configure --home /absolute/profile/home --platform discord --owner opaque-user-id --public-ip 203.0.113.10` (substitute verified values). This is an operator setup action, not an ownership claim accepted from chat. The platform name is a configuration value, not a separate implementation.
 
 Before ingress settings exist, only explicit positive numeric IDs in the selected profile's private `TELEGRAM_ALLOWED_USERS` configuration can use this bootstrap. Wildcards, allow-all and another profile's environment are not setup ownership. Once ingress owners are configured, that explicit owner list applies. If no trusted owner is configured, establish it through the normal Hermes operator setup first.
 
@@ -65,7 +73,7 @@ Fresh setup starts with a dedicated test target. The agent verifies configuratio
 
 ## Use
 
-After `/senv setup` is complete, create a form directly in private chat:
+After `/senv setup` is complete, create a form in a trusted authorized conversation:
 
 ```text
 /senv site_auth field1,field2
@@ -73,21 +81,21 @@ After `/senv setup` is complete, create a form directly in private chat:
 
 This saves the field names and opens a one-time HTTPS form. Enter the values only on that page. Names are case-sensitive and preserved exactly: `field1` and `FIELD1` are different variables. Use letters, digits and underscores; the first character must be a letter or underscore. Up to 32 fields, each at most 128 characters, are accepted. Separate names with commas without spaces; never use `name=value` in chat.
 
-A new profile writes to `secrets-ingress/site_auth.env` inside the active Hermes home. An existing profile keeps its configured destination; explicitly supplying fields replaces its saved field list, not any `.env` values. The response identifies the fields and destination. Afterwards, `/senv site_auth` reopens that saved form. Unknown names without fields get syntax guidance. Existing `.env` variables are never overwritten; choose missing keys rather than re-entering existing ones.
+A new profile writes to `secrets-ingress/site_auth.env` inside the active Hermes home. An existing profile keeps its configured destination; explicitly supplying fields replaces its saved field list, not any `.env` values. The response identifies the fields. Afterwards, `/senv site_auth` reopens that saved form. Unknown names without fields get syntax guidance. Existing `.env` variables are never overwritten; choose missing keys rather than re-entering existing ones.
 
 
-Send `/senv service` to the bot **in a private, non-Business chat**. Only configured numeric owner IDs are allowed. Open the normal link and enter values into the labeled password fields. When explicitly enabled after client checks, a separate Mini App button uses its own mode-bound capability and requires fresh, correctly signed Telegram `initData` for the requesting user.
+Send `/senv service` through the gateway as a configured exact platform/user owner. A one-time **bearer link is returned to the originating chat**. Anyone who sees it can use it: only use `/senv` in private or operator-trusted groups/threads, never public, untrusted, or widely readable rooms. Do not forward or log the link. Open it and enter values in the HTTPS password fields, not chat. Mini App launch is unavailable on this generic command path.
 
 - `/senv setup`: installation and diagnosis assistance using the agent and reviewed scripts; never forwards secret input.
 - `/senv status`: safe readiness status, no token, URL or value dump.
 - `/senv cancel`: invalidates the active owner's session and closes an idle listener.
-- CLI/generic gateway command handler is guidance only; web-ingress launch is Telegram-native.
+- The CLI lacks a normalized gateway identity and cannot issue a form link. The messaging gateway command uses the host's normalized hook, authorization and generic plugin-command dispatch; no platform-specific handler is installed.
 
 The listener starts only after authorization, target and TLS validation. A profile-local leader lock prevents a second instance. It closes on cancellation, consumption/expiry (short cleanup interval), or plugin unload. Creating a later session validates the current deployed TLS material again.
 
 ## Security boundaries
 
-Never type `/senv KEY=value` or paste a key into chat. While loaded, the native handler rejects values without echoing them. **An absent/broken plugin cannot protect an accidental secret pasted into chat**: Telegram has already received it and Hermes may treat the message as ordinary model input. This accepted limitation does not justify sending values in command arguments.
+Never type `/senv KEY=value` or paste a key into chat. **An absent/broken plugin cannot protect an accidental secret pasted into chat**: the messenger already received it and Hermes may treat the message as ordinary model input. **Busy-session limitation accepted:** when an agent is active, the host may queue, steer, interrupt or interpret a `/senv` message instead of reaching this command. Wait until the agent finishes or send `/stop` first, then issue a fresh command. Do not assume busy commands avoid model processing or automatically retry.
 
 Capabilities are random 256-bit strings, held in RAM as hashes, mode/user/profile/target-bound, absent from initial HTTP requests because they use fragments. GET/prefetch does not consume them. The page strips launch parameters from history and makes strict JSON POSTs. The backend consumes a capability before validating/writing authenticated submissions; rejected authenticated input and uncertain write failure are terminal, not retryable. The page still shows success or an unconfirmed-result message and clears its fields. If the request never reaches the server, or its envelope is rejected before authentication, immediate server-side invalidation cannot be guaranteed; the TTL/cancel command still applies. Request bodies, tokens and exception detail are not logged. Key names, not values, are returned.
 
@@ -95,7 +103,7 @@ The first-party page has no analytics, external scripts/fonts, SDK, service work
 
 The web flow rejects empty, multiline, NUL, oversized and `${...}`-style values (dotenv consumer interpolation would alter the latter). A new link is needed after any terminal error. The writer supports escaped multiline serialization for potential local reuse, but the web form does not. Existing dotenv files are parsed without evaluating their values; malformed/duplicate assignments fail closed. Atomic replacement uses the exact bound target identity, so simultaneous/stale sessions cannot silently update a changed file.
 
-Limits: browser/password managers can ignore autocomplete hints; Python cannot guarantee RAM zeroization; same-UID/root or a compromised browser/OS is outside confidentiality guarantees. Telegram receives capability links, never form values. Do not log bot responses at another layer or share bearer links.
+Limits: browser/password managers can ignore autocomplete hints; Python cannot guarantee RAM zeroization; same-UID/root or a compromised browser/OS is outside confidentiality guarantees. The originating chat receives capability links, never form values. Do not log responses at another layer or share bearer links.
 
 ## TLS operations (not performed by development tests)
 

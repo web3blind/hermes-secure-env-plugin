@@ -25,11 +25,52 @@ _CONFIG_KEYS = frozenset(
         "safety_seconds",
         "ttl_seconds",
         "allowed_telegram_user_ids",
+        "allowed_owners",
         "profiles",
         "mini_app_enabled",
     }
 )
-_REQUIRED_CONFIG_KEYS = _CONFIG_KEYS - {"mini_app_enabled"}
+_REQUIRED_CONFIG_KEYS = _CONFIG_KEYS - {"mini_app_enabled", "allowed_telegram_user_ids", "allowed_owners"}
+
+def owner_identity(platform: object, user_id: object) -> tuple[str, str] | None:
+    """Only canonical platform names and opaque, bounded, exact user IDs qualify."""
+    if (not isinstance(platform, str) or re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", platform) is None
+            or not isinstance(user_id, str) or not user_id or user_id == "*" or len(user_id) > 256
+            or user_id.strip() != user_id or any(ord(c) < 32 or ord(c) == 127 for c in user_id)):
+        return None
+    return platform, user_id
+
+def allowed_owners(raw: object) -> frozenset[tuple[str, str]]:
+    if not isinstance(raw, Mapping):
+        raise ConfigError("allowed_owners must be a platform mapping")
+    owners = set()
+    for platform, ids in raw.items():
+        if not isinstance(ids, list) or not ids:
+            raise ConfigError("invalid owner list")
+        for user_id in ids:
+            identity = owner_identity(platform, user_id)
+            if identity is None or identity in owners:
+                raise ConfigError("invalid or duplicate owner identity")
+            owners.add(identity)
+    return frozenset(owners)
+
+def configured_owners(raw: object) -> frozenset[tuple[str, str]]:
+    if not isinstance(raw, Mapping):
+        raise ConfigError("configuration must be a mapping")
+    owners = set(allowed_owners(raw.get("allowed_owners", {})))
+    ids = raw.get("allowed_telegram_user_ids", [])
+    if not isinstance(ids, list):
+        raise ConfigError("invalid Telegram owner list")
+    for user_id in ids:
+        if type(user_id) is not int or user_id <= 0:
+            raise ConfigError("invalid Telegram owner ID")
+        identity = ("telegram", str(user_id))
+        if identity in owners:
+            raise ConfigError("duplicate owner identity")
+        owners.add(identity)
+    if not owners:
+        raise ConfigError("no explicit owners configured")
+    return frozenset(owners)
 
 
 class ConfigError(ValueError):
@@ -120,6 +161,7 @@ class IngressConfig:
     safety_seconds: int
     ttl_seconds: int
     allowed_telegram_user_ids: frozenset[int]
+    owners: frozenset[tuple[str, str]]
     profiles: Mapping[str, ProfileConfig]
     mini_app_enabled: bool = False
 
@@ -139,9 +181,8 @@ class IngressConfig:
         safety_seconds = _strict_int(raw["safety_seconds"], "safety_seconds", minimum=0)
         ttl_seconds = _strict_int(raw["ttl_seconds"], "ttl_seconds", minimum=120, maximum=600)
 
-        raw_ids = raw["allowed_telegram_user_ids"]
-        if not isinstance(raw_ids, list) or not raw_ids:
-            raise ConfigError("allowed_telegram_user_ids must be a non-empty list")
+        owners = configured_owners(raw)
+        raw_ids = raw.get("allowed_telegram_user_ids", [])
         ids: set[int] = set()
         for user_id in raw_ids:
             parsed = _strict_int(user_id, "Telegram user id", minimum=1)
@@ -172,6 +213,7 @@ class IngressConfig:
             safety_seconds=safety_seconds,
             ttl_seconds=ttl_seconds,
             allowed_telegram_user_ids=frozenset(ids),
+            owners=owners,
             profiles=MappingProxyType(profiles),
             mini_app_enabled=mini_app_enabled,
         )
