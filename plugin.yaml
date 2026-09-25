@@ -2,5 +2,7 @@ name: secure-env-ingress
 version: 0.5.1
 description: Profile-scoped HTTPS secret entry through normalized Hermes gateway commands.
 author: web3blind
+provides_tools:
+  - browser_vault
 provides_hooks:
   - pre_gateway_dispatch

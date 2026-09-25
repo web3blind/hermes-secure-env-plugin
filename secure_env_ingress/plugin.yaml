@@ -6,5 +6,7 @@ python_dependencies:
   - "cryptography>=50.0.0,<51"
   - "python-dotenv>=1.2.2,<2"
   - "python-telegram-bot>=22.6,<23"
+provides_tools:
+  - browser_vault
 provides_hooks:
   - pre_gateway_dispatch
