@@ -38,6 +38,7 @@ plugins:
         allowed_owners:
           discord: ["opaque-user-id"]
         mini_app_enabled: false
+        delivery: this_chat  # or home; shared by .env and Browser Vault
         profiles:
           service:
             target_mode: hermes
@@ -84,7 +85,7 @@ This saves the field names and opens a one-time HTTPS form. Enter the values onl
 A new profile writes to `secrets-ingress/site_auth.env` inside the active Hermes home. An existing profile keeps its configured destination; explicitly supplying fields replaces its saved field list, not any `.env` values. The response identifies the fields. Afterwards, `/senv site_auth` reopens that saved form. Unknown names without fields get syntax guidance. Existing `.env` variables are never overwritten; choose missing keys rather than re-entering existing ones.
 
 
-Send `/senv service` through the gateway as a configured exact platform/user owner. A one-time **bearer link is returned to the originating chat**. Anyone who sees it can use it: only use `/senv` in private or operator-trusted groups/threads, never public, untrusted, or widely readable rooms. Do not forward or log the link. Open it and enter values in the HTTPS password fields, not chat. Mini App launch is unavailable on this generic command path.
+Send `/senv service` through the gateway as a configured exact platform/user owner. A one-time **bearer link is delivered according to `delivery: this_chat | home`**. The default, `this_chat`, preserves the originating chat and topic. `home` uses the active profile's configured home on the originating platform and fails closed if unavailable; there is no fallback to another destination. The same setting applies to `.env` and Browser Vault. Anyone who sees it can use it: only use `/senv` in private or operator-trusted groups/threads, never public, untrusted, or widely readable rooms. Do not forward or log the link. Open it and enter values in the HTTPS password fields, not chat. Mini App launch is unavailable on this generic command path.
 
 - `/senv setup`: installation and diagnosis assistance using the agent and reviewed scripts; never forwards secret input.
 - `/senv status`: safe readiness status, no token, URL or value dump.
@@ -92,6 +93,25 @@ Send `/senv service` through the gateway as a configured exact platform/user own
 - The CLI lacks a normalized gateway identity and cannot issue a form link. The messaging gateway command uses the host's normalized hook, authorization and generic plugin-command dispatch; no platform-specific handler is installed.
 
 The listener starts only after authorization, target and TLS validation. A profile-local leader lock prevents a second instance. It closes on cancellation, consumption/expiry (short cleanup interval), or plugin unload. Creating a later session validates the current deployed TLS material again.
+
+## Browser Vault login entry (0.5.0)
+
+With an already-open native CDP browser session, the agent can call `browser_vault` using only the current HTTPS origin and a public label:
+
+```json
+{"origin":"https://example.com","label":"Example account"}
+```
+
+This extension currently requires an interactive Telegram owner/session/profile. It does not create a browser or silently switch to another browser backend. Existing generic `.env` commands, direct field names and guided setup remain available.
+
+1. A one-time HTTPS form link is sent using the shared delivery setting, without returning the capability URL to the model.
+2. The form identifies the site and profile. The user enters a username/email and password directly into the form, never chat.
+3. The password is stored with native encrypted `VaultStore` in the bound profile, not in `.env` or a separate password store. The tool waits for a terminal outcome; `saved` requires native metadata readback and returns the handle and origin with `filled: false`.
+4. The agent rechecks the page, reads identifier metadata through `browser_vault_list`, enters the identifier, and invokes native `browser_vault_fill`. Saving, filling and successful sign-in are separate results; this plugin does not submit the site's login form.
+
+Browser Vault requests use at most 240 seconds even when configured TTL is higher, leaving headroom below the native dispatch timeout. Ordinary `.env` retains its configured TTL. Expiry, cancellation, supersession, rejection and uncertain post-write results are distinct; an uncertain write must be checked through native metadata before retrying. New saves append native items rather than overwrite an existing login.
+
+The profile context, browser supervisor, page identity and exact HTTPS origin are bound to the request. Ownership, permissions, symlinks/hardlinks and Vault path identity are checked before write. Native path-based writes are not a defense against a hostile same-UID/root process. Identifiers are agent-visible native metadata; passwords are not. OTP, cards, addresses, third-party password-manager unlocking and restart-resume are outside this feature.
 
 ## Security boundaries
 
@@ -128,8 +148,10 @@ Optional browser smoke uses the existing loopback CDP rail at `127.0.0.1:18800`,
 
 ```bash
 PYTHONPATH=. python tests/browser_check.py
+# Native Vault form, metadata and password-fill smoke:
+PYTHONPATH=.:/path/to/hermes-agent python tests/browser_vault_check.py
 # Optionally supply a local reviewed axe-core bundle:
 PYTHONPATH=. SENV_AXE_PATH=/path/to/axe.min.js python tests/browser_check.py
 ```
 
-This proves browser JS, labels/focus, keyboard flow, 320px reflow, DOM clearing, no Web Storage and actual test-file creation. It does not prove trust of a public IP certificate or operation in Telegram Android/TalkBack, iOS, Desktop or Web; those rows remain unverified until actual device tests.
+These automated checks cover browser JS, labels/focus, keyboard flow, 320px reflow, DOM clearing, no Web Storage and test-file creation. An operator has additionally confirmed the ordinary URL `.env` form works with Telegram Android/TalkBack. Mini App did not open in that check; the URL button worked. This does not establish Mini App, all-device, or Browser Vault-specific TalkBack acceptance. Public TLS trust and renewal remain installation-specific checks.

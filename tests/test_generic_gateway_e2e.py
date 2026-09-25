@@ -14,9 +14,14 @@ from generic_helpers import dispatch, registered
 from test_runtime_e2e import make_runtime, post
 
 
-def token_from(reply):
-    assert 'https://' in reply, reply
+def token_from_message(reply):
+    assert reply.count('https://') == 1
     return urlsplit('https://' + reply.split('https://', 1)[1].split()[0]).fragment
+
+
+def token_from(runner):
+    assert runner.sent
+    return token_from_message(runner.sent[-1][2])
 
 
 @pytest.mark.asyncio
@@ -58,7 +63,8 @@ async def test_two_platforms_write_separate_targets_through_real_https(tmp_path,
                 (Platform.TELEGRAM, '88', 'telegram-service', 'TELEGRAM_FIXTURE', 'telegram-fixture'),
                 (Platform.DISCORD, 'opaque-user:A', 'discord-service', 'DISCORD_FIXTURE', 'discord-fixture')):
             reply = await dispatch(manager, runner, '/senv ' + profile, platform=platform, uid=uid)
-            token = token_from(reply)
+            assert 'One-time form sent' in reply and 'https://' not in reply
+            token = token_from(runner)
             if key == 'TELEGRAM_FIXTURE':
                 assert not (home / '.env').exists()
             status, data = await asyncio.to_thread(post, settings, root, '/submit',
@@ -67,8 +73,10 @@ async def test_two_platforms_write_separate_targets_through_real_https(tmp_path,
             assert dotenv_values(home / '.env', interpolate=False)[key] == value
             # Keep a fresh session/listener alive so replay is rejected by the
             # server rather than racing the intentional post-consumption shutdown.
-            assert 'https://' in await dispatch(manager, runner, '/senv ' + profile,
+            count = len(runner.sent)
+            assert 'One-time form sent' in await dispatch(manager, runner, '/senv ' + profile,
                                                    platform=platform, uid=uid)
+            assert len(runner.sent) == count + 1
             again, _ = await asyncio.to_thread(post, settings, root, '/submit',
                                                 {'token': token, 'initData': '', 'values': ['replay']})
             assert again == 410
@@ -99,9 +107,10 @@ async def test_concurrent_profiles_and_cross_home_route_rejection(tmp_path, monk
             replies = await asyncio.gather(
                 dispatch(first, runner, '/senv service', platform=Platform.TELEGRAM, uid='88'),
                 dispatch(other, second_runner, '/senv service', platform=Platform.DISCORD, uid='opaque-user:A'))
-            for reply, (settings, home, root, key) in zip(replies, fixtures):
+            assert all('One-time form sent' in reply and 'https://' not in reply for reply in replies)
+            for message, (settings, home, root, key) in zip((runner.sent[-1], second_runner.sent[-1]), fixtures):
                 status, data = await asyncio.to_thread(post, settings, root, '/submit',
-                                            {'token': token_from(reply), 'initData': '', 'values': [key.lower()]})
+                                            {'token': token_from_message(message[2]), 'initData': '', 'values': [key.lower()]})
                 assert (status, data) == (200, {'added': [key]})
                 assert dotenv_values(home / '.env', interpolate=False) == {key: key.lower()}
             # A routed source for the other profile must not gain this manager's capability.

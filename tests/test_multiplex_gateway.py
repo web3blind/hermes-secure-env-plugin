@@ -47,6 +47,8 @@ async def test_primary_adapter_routes_two_profile_owners_to_independent_https_ta
         with registered(monkeypatch, fixtures[1][4], settings=fixtures[1][3], trust_roots=fixtures[1][5]) as (beta, _):
             runner.config = GatewayConfig(multiplex_profiles=True, profile_routes=routes)
             runner._primary_profile_name = 'default'
+            runner._profile_adapters = {name: {Platform.TELEGRAM: runner.adapters[Platform.TELEGRAM]}
+                                        for name, *_ in fixtures}
             handler = runner._make_default_profile_message_handler()
 
             def event(uid, chat_id):
@@ -58,7 +60,8 @@ async def test_primary_adapter_routes_two_profile_owners_to_independent_https_ta
             for name, owner, key, settings, home, root in fixtures:
                 message = event(owner, f'room-{name}')
                 reply = await handler(message)
-                assert 'https://' in reply, reply
+                assert 'One-time form sent' in reply and 'https://' not in reply
+                assert runner.sent[-1][:2] == (Platform.TELEGRAM, f'room-{name}')
                 assert message.source.profile == name
                 try:
                     from gateway.session_identity import identity_of
@@ -70,7 +73,8 @@ async def test_primary_adapter_routes_two_profile_owners_to_independent_https_ta
                     assert identity.authorization_home == primary
                     assert identity.runtime_home == home
                 assert not (home / '.env').exists()
-                token = urlsplit('https://' + reply.split('https://', 1)[1].split()[0]).fragment
+                delivered = runner.sent[-1][2]
+                token = urlsplit('https://' + delivered.split('https://', 1)[1].split()[0]).fragment
                 status, result = await asyncio.to_thread(
                     post, settings, root, '/submit',
                     {'token': token, 'initData': '', 'values': [name + '-secret']})

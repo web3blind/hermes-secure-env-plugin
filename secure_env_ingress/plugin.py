@@ -1,6 +1,8 @@
 """Public, platform-independent Hermes gateway registration."""
 import asyncio
 import copy
+import json
+import time
 import threading
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -9,10 +11,12 @@ from pathlib import Path
 from .command import SAFE_USAGE, SAFE_ERROR, DIRECT_USAGE, BOOTSTRAP_GUIDANCE, parse_request
 from .config import ConfigError, configured_owners, owner_identity
 from .setup_handoff import SETUP_REQUEST, bootstrap_owner_ids, setup_paused
+from .vault_ingress import capture_browser_target, assert_profile_home
+from .delivery import Delivery
 
 SETTING_KEYS = ('public_ip', 'listen_host', 'listen_port', 'ttl_seconds',
                 'allowed_telegram_user_ids', 'allowed_owners', 'profiles', 'cert_path',
-                'key_path', 'tls_dir', 'safety_seconds', 'mini_app_enabled')
+                'key_path', 'tls_dir', 'safety_seconds', 'mini_app_enabled', 'delivery')
 _CAPTURE = ContextVar('secure_env_gateway_command', default=None)
 
 @dataclass
@@ -24,6 +28,9 @@ class Captured:
     task: object = field(repr=False)
     used: bool = False
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    source_chat: str = ''
+    source_thread: str = ''
+    gateway: object = field(default=None, repr=False)
 
     def consume(self, args: str, home: Path) -> bool:
         with self.lock:
@@ -62,6 +69,14 @@ class LazyRuntime:
 
     def create(self, owner, name):
         return self._get().create(owner, name)
+
+    def create_vault(self, owner, target):
+        return self._get().create_vault(owner, target)
+
+    def cancel_group(self, group_id):
+        with self._lock:
+            if self._runtime is not None:
+                self._runtime.cancel_group(group_id)
 
     def reserve(self, owner):
         with self._generation_lock:
@@ -106,6 +121,7 @@ def register(ctx):
     closed = False
     runtimes = {}
     runtime_lock = threading.Lock()
+    gateway_ref = None
 
     def runtime_for(selected_home):
         with runtime_lock:
@@ -132,9 +148,18 @@ def register(ctx):
             reset_hermes_home_override(token)
 
     def hook(*, event, gateway, **_kwargs):
+        nonlocal gateway_ref
         _CAPTURE.set(None)
         if closed or getattr(event, 'internal', False):
             return None
+        # Transport reference only; never an authorization grant. The tool
+        # independently verifies its trusted session/owner/profile binding.
+        if gateway is not None:
+            import weakref
+            try:
+                gateway_ref = weakref.ref(gateway)
+            except TypeError:
+                gateway_ref = None
         if event.get_command() != 'senv':
             return None
         args = event.get_command_args().strip()
@@ -169,7 +194,9 @@ def register(ctx):
         # A plugin registered for one profile cannot serve another routed home.
         if selected_home != home or Path(get_hermes_home()) != home:
             return None
-        _CAPTURE.set(Captured(selected_home, args, identity, build_session_key(source, profile=source.profile), asyncio.current_task()))
+        _CAPTURE.set(Captured(selected_home, args, identity, build_session_key(source, profile=source.profile),
+                              asyncio.current_task(), source_chat=str(source.chat_id),
+                              source_thread=str(getattr(source, 'thread_id', '') or ''), gateway=gateway))
         return None
 
     async def command(raw_args):
@@ -253,17 +280,142 @@ def register(ctx):
                 raise
             if links is None:
                 return DIRECT_USAGE
-            # The HTTPS fragment is a bearer credential; only send to the originating,
-            # operator-trusted conversation. Never echo the submitted values.
-            return (f"Fields: {', '.join(definition.keys)}. " if definition else '') + (
+            # The HTTPS fragment is a bearer credential. Send it exactly once through
+            # the selected gateway transport; the command response is an ack only.
+            message = (f"Fields: {', '.join(definition.keys)}. " if definition else '') + (
                 'One-time HTTPS form (bearer link): ' + links['url'] +
                 ' Do not forward; anyone in this conversation can open it. '
                 'Enter values only on the page. Use /senv only in trusted chats.')
+            delivery = Delivery(settings.get('delivery', 'this_chat'), selected_home)
+            try:
+                await asyncio.wait_for(delivery.send_gateway(captured.gateway, owner[0],
+                    captured.source_chat, captured.source_thread, message), timeout=18)
+            except asyncio.CancelledError:
+                await asyncio.shield(asyncio.to_thread(runtime.cancel_group, links['group_id']))
+                raise
+            except Exception:
+                await asyncio.to_thread(runtime.cancel_group, links['group_id'])
+                return SAFE_ERROR
+            destination = ('configured platform home' if delivery.mode == 'home'
+                           else 'originating chat')
+            return f'One-time form sent to the {destination}. Do not forward the link.'
         except asyncio.CancelledError:
             raise
         except Exception:
             return SAFE_ERROR
 
+    async def vault_tool(args, *, task_id=None, session_id=None, **_kwargs):
+        """Only trusted gateway context + dispatcher identity may issue a form."""
+        links = None
+        runtime = None
+        try:
+            from gateway import session_context as sc
+            def bound(var):
+                value = var.get()
+                return None if value is sc._UNSET else value
+            if closed or not isinstance(args, dict) or set(args) != {'origin', 'label'}:
+                raise ValueError('invalid request')
+            if bound(sc._SESSION_PLATFORM) != 'telegram' or bound(sc._CRON_SESSION) != '':
+                raise ValueError('not an interactive Telegram turn')
+            from agent.delegation_context import is_delegated_child_context
+            if is_delegated_child_context():
+                raise ValueError('delegated turn')
+            sid = bound(sc._SESSION_ID)
+            skey = bound(sc._SESSION_KEY)
+            owner_text = bound(sc._SESSION_USER_ID)
+            chat = bound(sc._SESSION_CHAT_ID)
+            chat_type = bound(sc._SESSION_CHAT_TYPE)
+            thread = bound(sc._SESSION_THREAD_ID)
+            profile = bound(sc._SESSION_PROFILE)
+            from hermes_constants import profile_name_for_home
+            expected_profile = profile_name_for_home(home) or 'default'
+            if (not sid or not skey or not task_id or sid != task_id or
+                    (session_id and session_id != sid) or not owner_text or
+                    not owner_text.isdecimal() or ('telegram', owner_text) not in configured_owners(read_settings(home)) or
+                    not chat or not str(chat).lstrip('-').isdecimal() or
+                    chat_type not in ('dm', 'group', 'forum') or
+                    profile not in ((expected_profile, '') if expected_profile == 'default' else (expected_profile,))):
+                raise ValueError('session mismatch')
+            assert_profile_home(home)
+            target = capture_browser_target(args['origin'], args['label'], task_id, sid, skey)
+            gateway = gateway_ref() if gateway_ref is not None else None
+            if gateway is None:
+                raise ValueError('gateway unavailable')
+            runtime = runtime_for(home)
+            current = read_settings(home)
+            runtime.refresh(current)
+            delivery = Delivery(current.get('delivery', 'this_chat'), home)
+            # No model-supplied destination. The actual chat/thread come from bound gateway context.
+            delivery.target('telegram', chat, thread)
+            creation = asyncio.create_task(asyncio.to_thread(runtime.create_vault, ('telegram', owner_text), target))
+            try:
+                links = await asyncio.shield(creation)
+                from .vault_ingress import assert_browser_target
+                assert_profile_home(home)
+                await asyncio.to_thread(assert_browser_target, target)
+                text = ('One-time HTTPS login form: ' + links['url'] + ' for ' + target.origin + '. Anyone who can read this message can use the link. '
+                        'Do not use a public or untrusted chat. Do not forward it. Saving does not fill or sign in.')
+                delivery_task = asyncio.create_task(
+                    delivery.send_gateway(gateway, 'telegram', chat, thread, text))
+                try:
+                    await asyncio.wait_for(asyncio.shield(delivery_task),
+                                           timeout=min(18, max(0, links['expires_at'] - time.monotonic())))
+                except asyncio.CancelledError:
+                    delivery_task.cancel()
+                    raise
+                except Exception as delivery_error:
+                    delivery_task.cancel()
+                    await asyncio.shield(asyncio.to_thread(runtime.cancel_group, links['group_id']))
+                    prior = links['completion'].result() if links['completion'].done() else {'status': 'send_failed'}
+                    if prior['status'] != 'saved':
+                        status = ('unknown' if prior['status'] == 'unknown' else
+                                  'expired' if isinstance(delivery_error, asyncio.TimeoutError)
+                                  and time.monotonic() >= links['expires_at'] else 'send_failed')
+                        return json.dumps({'success': False, 'status': status,
+                            'saved': None if status == 'unknown' else False,
+                            'filled': False, 'error': 'Login form delivery failed, expired or write status is unknown.'})
+                # The tool remains suspended until the real HTTPS submission commits (or
+                # the capability expires). The Future holds metadata only, never form values.
+                completion = links['completion']
+                try:
+                    outcome = await asyncio.wait_for(
+                        asyncio.shield(asyncio.wrap_future(completion)),
+                        timeout=max(0, links['expires_at'] - time.monotonic()))
+                except asyncio.TimeoutError:
+                    # A write holding the runtime lock may finish concurrently. Revoke
+                    # this exact group first, then read its authoritative outcome.
+                    await asyncio.shield(asyncio.to_thread(runtime.cancel_group, links['group_id']))
+                    outcome = completion.result() if completion.done() else {'status': 'expired'}
+                    if outcome['status'] == 'cancelled':
+                        outcome = {'status': 'expired'}
+                if outcome['status'] == 'saved':
+                    return json.dumps({'success': True, 'status': 'saved', 'saved': True,
+                        'filled': False, 'handle': outcome['handle'], 'origin': outcome['origin'],
+                        'next': 'Recheck current browser page and origin, then use native browser_vault_list, type the identifier with browser_type and call native browser_vault_fill. Saving did not fill or sign in.'})
+                return json.dumps({'success': False, 'status': outcome['status'],
+                    'saved': None if outcome['status'] == 'unknown' else False, 'filled': False,
+                    'error': 'Login was not confirmed saved. Recheck native browser_vault_list before retrying if status is unknown.'})
+            except BaseException:
+                # A cancelled to_thread worker can complete AFTER its coroutine is cancelled.
+                # Wait for that exact issuance, then revoke it; never revoke a newer owner request.
+                if links is None:
+                    try:
+                        links = await asyncio.shield(creation)
+                    except Exception:
+                        pass
+                if links and links.get('group_id'):
+                    await asyncio.shield(asyncio.to_thread(runtime.cancel_group, links['group_id']))
+                raise
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
+            return json.dumps({'success': False, 'error': 'Login form unavailable. Check the active Telegram session, browser page, delivery and HTTPS setup.'})
+
+    ctx.register_tool(name='browser_vault', toolset='browser',
+        schema={'name': 'browser_vault', 'description': 'Send a one-time HTTPS form for the current browser login page to the bound Telegram chat; save only, never fill or sign in. Link grants access to any chat reader.',
+                'parameters': {'type': 'object', 'properties': {'origin': {'type': 'string', 'description': 'Exact current HTTPS origin, no path or trailing slash'},
+                    'label': {'type': 'string', 'description': 'Short public login label'}}, 'required': ['origin', 'label'], 'additionalProperties': False}},
+        handler=vault_tool, is_async=True)
     ctx.register_skill('setup', Path(__file__).parent / 'setup' / 'SKILL.md',
                        description='Install and diagnose secure-env-ingress; never handle secret values.')
     ctx.register_hook('pre_gateway_dispatch', hook)

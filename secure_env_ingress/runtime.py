@@ -6,6 +6,9 @@ import datetime as dt
 import os
 from pathlib import Path
 import threading
+import contextvars
+import time
+from concurrent.futures import Future
 
 from .capability_store import CapabilityStore
 from .config import IngressConfig
@@ -14,6 +17,7 @@ from .server import HTTPSFormServer, HTTPError
 from .telegram_webapp import verify_init_data, InitDataError
 from .tls import validate_certificate, create_server_ssl_context
 from .writer import add_missing
+from .vault_ingress import VaultTarget, assert_browser_target, assert_profile_home, bind_vault_home, assert_vault_home
 
 
 class IngressRuntime:
@@ -28,6 +32,9 @@ class IngressRuntime:
         self._leader = LeaderLock(self.home)
         self._store = CapabilityStore()
         self._targets = {}
+        self._completion = None
+        self._vault_context = None
+        self._vault_binding = None
         self._server = None
         self._closed = False
         self._stop = threading.Event()
@@ -76,6 +83,7 @@ class IngressRuntime:
                     ttl_seconds=self.config.ttl_seconds,
                 )
                 self._targets = {browser.group_id: resolved}
+                self._finish_completion('superseded')
                 if self._monitor is None or not self._monitor.is_alive():
                     self._stop.clear()
                     self._monitor = threading.Thread(target=self._watch, daemon=True, name='secure-env-expiry')
@@ -84,7 +92,53 @@ class IngressRuntime:
                 return {
                     'url': f'{origin}/e#{browser.token}',
                     'web_app_url': f'{origin}/e#{mini.token}' if self.config.mini_app_enabled and self._bot_token and owner[0] == 'telegram' else None,
+                    'group_id': browser.group_id,
                 }
+            except Exception:
+                self._stop_listener()
+                raise
+
+    def create_vault(self, owner, target: VaultTarget):
+        with self._lock:
+            if (self._closed or not isinstance(owner, tuple) or len(owner) != 2
+                    or owner[0] != 'telegram' or owner not in self.config.owners):
+                raise HTTPError(403, 'denied')
+            assert_profile_home(self.home)
+            assert_browser_target(target)
+            binding = bind_vault_home(self.home)
+            self._tls()
+            self._leader.acquire()
+            try:
+                if self._server is None:
+                    context = create_server_ssl_context(self.config.cert_path, self.config.key_path,
+                                                        expected_ip=self.config.public_ip, trust_roots=self._trust_roots)
+                    self._server = HTTPSFormServer((self.config.listen_host, self.config.listen_port), context, self)
+                    self._server.start()
+                browser, mini = self._store.issue_pair(
+                    platform=owner[0], user_id=owner[1], hermes_home=self.home,
+                    profile_name='browser_vault', allowed_keys=('Username', 'Password'),
+                    target_id=(target.browser_identity, os.getuid()),
+                    ttl_seconds=min(self.config.ttl_seconds, 240))
+                self._targets = {browser.group_id: target}
+                self._finish_completion('superseded')
+                from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+                scope = set_hermes_home_override(self.home)
+                try:
+                    self._vault_context = (browser.group_id, contextvars.copy_context())
+                finally:
+                    reset_hermes_home_override(scope)
+                completion = Future()
+                self._completion = (browser.group_id, completion)
+                self._vault_binding = (browser.group_id, binding)
+                if self._monitor is None or not self._monitor.is_alive():
+                    self._stop.clear()
+                    self._monitor = threading.Thread(target=self._watch, daemon=True, name='secure-env-expiry')
+                    self._monitor.start()
+                base = self._origin()
+                return {'url': f'{base}/e#{browser.token}',
+                        'web_app_url': f'{base}/e#{mini.token}' if self.config.mini_app_enabled and self._bot_token else None,
+                        'group_id': browser.group_id, 'completion': completion,
+                        'expires_at': browser.expires_at}
             except Exception:
                 self._stop_listener()
                 raise
@@ -110,6 +164,12 @@ class IngressRuntime:
             if self._closed:
                 raise HTTPError(403, 'invalid_session')
             claim = self._claim(token, init_data)
+            target = self._targets[claim.group_id]
+            if isinstance(target, VaultTarget):
+                from hermes_constants import profile_name_for_home
+                profile = profile_name_for_home(self.home) or 'default'
+                return {'label': target.label + ' — ' + target.origin + ' — Profile: ' + profile,
+                        'keys': ['Username', 'Password'], 'kind': 'browser_vault'}
             return {'label': claim.profile_name, 'keys': list(claim.allowed_keys)}
 
     def submit(self, token, init_data, values):
@@ -118,6 +178,12 @@ class IngressRuntime:
                 raise HTTPError(403, 'invalid_session')
             claim = self._claim(token, init_data)
             resolved = self._targets[claim.group_id]
+            if isinstance(resolved, VaultTarget):
+                bound_context = self._vault_context
+                if (bound_context is None or bound_context[0] != claim.group_id or
+                        self._vault_binding is None or self._vault_binding[0] != claim.group_id):
+                    raise HTTPError(410, 'invalid_session')
+                return bound_context[1].copy().run(self._submit_vault, token, claim, resolved, values)
             consumed = self._store.consume(token, mode=claim.mode, platform=claim.platform,
                                            user_id=claim.user_id, hermes_home=self.home,
                                            profile_name=resolved.profile.name,
@@ -139,17 +205,84 @@ class IngressRuntime:
             except Exception:
                 raise HTTPError(409, 'write_failed') from None
 
+    def _submit_vault(self, token, claim, target, values):
+        consumed = self._store.consume(token, mode=claim.mode, platform=claim.platform,
+                                       user_id=claim.user_id, hermes_home=self.home,
+                                       profile_name='browser_vault', allowed_keys=('Username', 'Password'),
+                                       target_id=(target.browser_identity, os.getuid()))
+        if consumed is None:
+            raise HTTPError(410, 'invalid_session')
+        self._targets.pop(claim.group_id, None)
+        self._vault_context = None
+        binding = self._vault_binding[1]
+        self._vault_binding = None
+        if (not isinstance(values, list) or len(values) != 2
+                or any(not isinstance(v, str) or not v or len(v.encode('utf-8')) > 16384
+                       or any(c in v for c in ('\r', '\n', '\x00')) for v in values)):
+            self._finish_completion('rejected', claim.group_id)
+            raise HTTPError(400, 'invalid_values')
+        try:
+            assert_profile_home(self.home)
+            assert_browser_target(target)
+            assert_vault_home(binding)
+            from agent.vault_store import VaultStore
+            store = VaultStore(self.home / 'vault')
+        except Exception:
+            self._finish_completion('failed', claim.group_id)
+            raise HTTPError(409, 'write_failed') from None
+        if time.monotonic() >= claim.expires_at:
+            self._finish_completion('expired', claim.group_id)
+            raise HTTPError(410, 'invalid_session')
+        try:
+            meta = store.add_item('login', target.label,
+                                  {'identifier_type': 'username', 'identifier': values[0],
+                                   'password': values[1]}, origin=target.origin)
+            after = bind_vault_home(self.home)
+            if after.components[:-1] != binding.components[:-1] or (
+                    binding.components[-1][1] is not None and after.components[-1] != binding.components[-1]):
+                raise RuntimeError('vault directory changed')
+            if (meta.origin != target.origin or meta.kind != 'login' or
+                    not any(item.id == meta.id and item.origin == target.origin and
+                            item.kind == 'login' for item in store.list_items())):
+                raise RuntimeError('native Vault contract changed')
+            self._finish_completion('saved', claim.group_id, handle=meta.id, origin=target.origin)
+            return {'saved': True}
+        except Exception:
+            self._finish_completion('unknown', claim.group_id)
+            raise HTTPError(409, 'write_failed') from None
+
+    def _finish_completion(self, status, group_id=None, **metadata):
+        current = self._completion
+        if current is not None and (group_id is None or current[0] == group_id):
+            self._completion = None
+            if not current[1].done():
+                current[1].set_result({'status': status, **metadata})
+            if self._vault_binding is not None and self._vault_binding[0] == current[0]:
+                self._vault_binding = None
+            if self._vault_context is not None and self._vault_context[0] == current[0]:
+                self._vault_context = None
+
     def reject_submission(self, token, init_data):
         """Authenticated malformed submission is terminal, without writing."""
         with self._lock:
             claim = self._claim(token, init_data)
-            self._store.cancel(platform=claim.platform, user_id=claim.user_id, hermes_home=self.home)
-            self._targets.clear()
+            self._store.cancel_group(claim.group_id)
+            self._targets.pop(claim.group_id, None)
+            self._finish_completion('rejected', claim.group_id)
+
+    def cancel_group(self, group_id):
+        with self._lock:
+            self._finish_completion('cancelled', group_id)
+            if self._store.cancel_group(group_id):
+                self._targets.pop(group_id, None)
+                if not self._store.active_count:
+                    self._stop_listener()
 
     def cancel(self, owner):
         owner = ('telegram', str(owner)) if type(owner) is int else owner
         with self._lock:
             if self._store.cancel(platform=owner[0], user_id=owner[1], hermes_home=self.home):
+                self._finish_completion('cancelled')
                 self._targets.clear()
                 self._stop_listener()
 
@@ -168,6 +301,7 @@ class IngressRuntime:
         return self.status() + ' External reachability and screen reader support require separate verification.'
 
     def _stop_listener(self):
+        self._finish_completion('cancelled' if self._closed else 'expired')
         server, self._server = self._server, None
         if server is not None:
             server.stop()

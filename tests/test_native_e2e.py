@@ -19,8 +19,10 @@ async def test_group_link_https_write_replay_and_unload(tmp_path, monkeypatch):
     with registered(monkeypatch, home, settings=settings, trust_roots=root) as (manager, runner):
         reply = await dispatch(manager, runner, '/SENV@Bot service', platform=Platform.TELEGRAM,
                                uid='88', chat='group')
-        assert 'Do not forward' in reply and 'https://' in reply
-        token = urlsplit(reply.split('https://', 1)[1].split()[0].join(['https://', ''])).fragment
+        assert 'Do not forward' in reply and 'https://' not in reply
+        assert len(runner.sent) == 1 and 'Do not forward' in runner.sent[0][2]
+        delivered = runner.sent[0][2]
+        token = urlsplit(delivered.split('https://', 1)[1].split()[0].join(['https://', ''])).fragment
         status, _ = post(settings, root, '/submit', {'token': token, 'initData': '', 'values': ['native-test-fixture']})
         assert status == 200
         assert dotenv_values(home / '.env', interpolate=False)['SERVICE_TOKEN'] == 'native-test-fixture'

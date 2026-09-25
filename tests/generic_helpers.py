@@ -35,6 +35,18 @@ def registered(monkeypatch, home: Path, *, settings=None, config=None, trust_roo
         monkeypatch.setattr(ingress_runtime, 'IngressRuntime', disposable_runtime)
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig()
+    runner.sent = []
+    class RecordingAdapter:
+        def __init__(self, platform):
+            self.platform = platform
+        async def send(self, chat_id, content, metadata=None):
+            from types import SimpleNamespace
+            runner.sent.append((self.platform, chat_id, content, metadata))
+            return SimpleNamespace(success=True)
+    runner.adapters = {platform: RecordingAdapter(platform)
+                       for platform in (Platform.TELEGRAM, Platform.DISCORD)}
+    runner._profile_adapters = {}
+    runner._primary_profile_name = 'default'
     runner.session_store = None
     runner._running_agents = {}
     runner._pending_messages = {}

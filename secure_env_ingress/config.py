@@ -28,9 +28,10 @@ _CONFIG_KEYS = frozenset(
         "allowed_owners",
         "profiles",
         "mini_app_enabled",
+        "delivery",
     }
 )
-_REQUIRED_CONFIG_KEYS = _CONFIG_KEYS - {"mini_app_enabled", "allowed_telegram_user_ids", "allowed_owners"}
+_REQUIRED_CONFIG_KEYS = _CONFIG_KEYS - {"mini_app_enabled", "allowed_telegram_user_ids", "allowed_owners", "delivery"}
 
 def owner_identity(platform: object, user_id: object) -> tuple[str, str] | None:
     """Only canonical platform names and opaque, bounded, exact user IDs qualify."""
@@ -164,6 +165,7 @@ class IngressConfig:
     owners: frozenset[tuple[str, str]]
     profiles: Mapping[str, ProfileConfig]
     mini_app_enabled: bool = False
+    delivery: str = 'this_chat'
 
     @classmethod
     def from_mapping(cls, raw: object) -> "IngressConfig":
@@ -203,6 +205,9 @@ class IngressConfig:
         mini_app_enabled = raw.get("mini_app_enabled", False)
         if type(mini_app_enabled) is not bool:
             raise ConfigError("mini_app_enabled must be a boolean")
+        delivery = raw.get('delivery', 'this_chat')
+        if delivery not in ('this_chat', 'home'):
+            raise ConfigError('invalid delivery')
 
         return cls(
             public_ip=public_ip,
@@ -216,6 +221,7 @@ class IngressConfig:
             owners=owners,
             profiles=MappingProxyType(profiles),
             mini_app_enabled=mini_app_enabled,
+            delivery=delivery,
         )
 
     def resolve(self, name: str, *, hermes_home: Path, expected_uid: int) -> ResolvedProfile:

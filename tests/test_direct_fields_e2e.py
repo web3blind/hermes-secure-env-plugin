@@ -28,11 +28,12 @@ async def test_direct_fields_persist_refresh_https_submit_and_replay(tmp_path, m
     with registered(monkeypatch, home, settings=settings, trust_roots=root) as (manager, runner):
         reply = await dispatch(manager, runner, '/senv site_auth field1,field2')
         target = home / 'secrets-ingress' / 'site_auth.env'
-        assert 'Fields: field1, field2' in reply, reply
+        assert 'One-time form sent' in reply and 'https://' not in reply
+        assert 'Fields: field1, field2' in runner.sent[-1][2], reply
         profile = yaml.safe_load((home / 'config.yaml').read_text())['plugins']['entries']['secure-env-ingress']['settings']['profiles']['site_auth']
         assert profile == {'target_mode': 'custom', 'target_path': str(target), 'keys': ['field1', 'field2']}
         assert not target.exists()
-        token = token_from(reply)
+        token = token_from(runner.sent[-1][2])
         assert post(settings, root, '/session', {'token': token, 'initData': ''}) == (200, {'label': 'site_auth', 'keys': ['field1', 'field2']})
         values = ['fictional-first', 'fictional-second']
         assert post(settings, root, '/submit', {'token': token, 'initData': '', 'values': values}) == (200, {'added': ['field1', 'field2']})
@@ -40,8 +41,9 @@ async def test_direct_fields_persist_refresh_https_submit_and_replay(tmp_path, m
         assert dotenv_values(target, interpolate=False)['field2'] == values[1]
         assert post(settings, root, '/submit', {'token': token, 'initData': '', 'values': values})[0] == 410
         reply = await dispatch(manager, runner, '/senv test lowercase,MixedCase')
-        assert 'Fields: lowercase, MixedCase' in reply
-        token = token_from(reply)
+        assert 'Fields: lowercase, MixedCase' in runner.sent[-1][2]
+        assert 'https://' not in reply
+        token = token_from(runner.sent[-1][2])
         assert post(settings, root, '/session', {'token': token, 'initData': ''})[1]['keys'] == ['lowercase', 'MixedCase']
         assert post(settings, root, '/submit', {'token': token, 'initData': '', 'values': ['lower-value', 'mixed-value']})[0] == 200
         assert dotenv_values(existing, interpolate=False) == {'SENV_TEST_VALUE': 'preserve-me', 'lowercase': 'lower-value', 'MixedCase': 'mixed-value'}

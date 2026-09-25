@@ -10,6 +10,7 @@
   let capability = "";
   let initData = "";
   let terminal = false;
+  let vault = false;
 
   function decode(value) {
     try { return decodeURIComponent(value.replace(/\+/g, " ")); }
@@ -82,6 +83,8 @@
       throw new Error("invalid_response");
     }
     profile.textContent = data.label;
+    vault = data.kind === 'browser_vault';
+    if (vault && (data.keys.length !== 2 || data.keys[0] !== 'Username' || data.keys[1] !== 'Password')) throw new Error('invalid_response');
     data.keys.forEach((key, index) => {
       if (typeof key !== "string" || !key) throw new Error("invalid_response");
       const wrapper = document.createElement("div");
@@ -89,9 +92,9 @@
       const label = document.createElement("label");
       const input = document.createElement("input");
       input.id = `secret-${index}`;
-      input.type = "password";
+      input.type = vault && index === 0 ? "text" : "password";
       input.name = `secret-${index}`;
-      input.autocomplete = "new-password";
+      input.autocomplete = vault ? (index === 0 ? "username" : "new-password") : "new-password";
       input.autocapitalize = "none";
       input.spellcheck = false;
       input.required = true;
@@ -100,7 +103,7 @@
       wrapper.append(label, input);
       fields.append(wrapper);
     });
-    intro.textContent = "Enter your secrets. They are sent directly to the server, not through chat. This page does not store them in browser storage.";
+    intro.textContent = vault ? "Save a login for this exact site. Anyone with this link can submit it. Saving does not fill the browser or sign in. Enter credentials only here, never in chat." : "Enter your secrets. They are sent directly to the server, not through chat. This page does not store them in browser storage.";
     form.hidden = false;
     form.querySelector("input").focus();
   }
@@ -128,9 +131,9 @@
     const values = inputs.map((input) => input.value);
     try {
       await post("/submit", { token: capability, initData, values });
-      disableAndClear("Secrets saved. You can close this page.");
+      disableAndClear(vault ? "Login saved to the encrypted Vault. The browser has not been filled or signed in. You can close this page." : "Secrets saved. You can close this page.");
     } catch (_) {
-      disableAndClear("The save result is unconfirmed: the request was rejected or no response was received. The fields have been cleared. Check whether the keys were saved without displaying their values. Request a new link to try again.");
+      disableAndClear(vault ? "The save result is unconfirmed. Fields were cleared. Check Vault metadata without revealing the password; request a new link only if no item was saved." : "The save result is unconfirmed: the request was rejected or no response was received. The fields have been cleared. Check whether the keys were saved without displaying their values. Request a new link to try again.");
     } finally {
       values.fill("");
       capability = "";

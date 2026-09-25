@@ -50,6 +50,12 @@ FIXTURE_ARGUMENT = "fixture-profile"
 FIXTURE_ASSIGNMENT = "PROBE_KEY=fixture-value-never-echo"
 
 
+@pytest.fixture(autouse=True)
+def _isolated_hermes_home(tmp_path, monkeypatch):
+    # Fixed Telegram fixture IDs must not reuse persisted live delivery receipts.
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+
+
 class _NoNetwork(BaseRequest):
     """PTB transport that permits getMe only; message sends are mocked."""
 
@@ -442,6 +448,8 @@ async def test_native_factory_failure_must_reserve_command(monkeypatch):
     monkeypatch.setattr(TelegramAdapter, "_handle_command", core_route)
     async with _connected_telegram(monkeypatch, manager) as (_, app):
         await app.process_update(_telegram_update(app.bot, f"/senv {FIXTURE_ASSIGNMENT}"))
+    if core_route.await_count != 1:
+        pytest.fail('factory-failure probe did not exercise core routing')
     core_route.assert_not_awaited()
 
 

@@ -241,6 +241,15 @@ class CapabilityStore:
         with self._lock:
             self._records.clear()
 
+    def cancel_group(self, group_id: str) -> bool:
+        """Revoke only this issuance, never a replacement created by another request."""
+        with self._lock:
+            digests = [digest for digest, record in self._records.items()
+                       if record.claim.group_id == group_id]
+            for digest in digests:
+                self._records.pop(digest, None)
+            return bool(digests)
+
     @property
     def active_count(self) -> int:
         with self._lock:
