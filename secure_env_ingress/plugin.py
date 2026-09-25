@@ -308,6 +308,8 @@ def register(ctx):
         """Only trusted gateway context + dispatcher identity may issue a form."""
         links = None
         runtime = None
+        # Fixed labels only: never return exception text or contextual identifiers.
+        reason = 'session_binding'
         try:
             from gateway import session_context as sc
             def bound(var):
@@ -337,11 +339,14 @@ def register(ctx):
                     profile not in ((expected_profile, '') if expected_profile == 'default' else (expected_profile,))):
                 raise ValueError('session mismatch')
             assert_profile_home(home)
+            reason = 'browser_binding'
             target = capture_browser_target(args['origin'], args['label'], task_id, sid, skey)
+            reason = 'gateway_delivery'
             gateway = gateway_ref() if gateway_ref is not None else None
             if gateway is None:
                 raise ValueError('gateway unavailable')
             runtime = runtime_for(home)
+            reason = 'runtime_preflight'
             current = read_settings(home)
             runtime.refresh(current)
             delivery = Delivery(current.get('delivery', 'this_chat'), home)
@@ -409,7 +414,8 @@ def register(ctx):
         except asyncio.CancelledError:
             raise
         except BaseException:
-            return json.dumps({'success': False, 'error': 'Login form unavailable. Check the active Telegram session, browser page, delivery and HTTPS setup.'})
+            return json.dumps({'success': False, 'reason': reason,
+                'error': 'Login form unavailable. Check the active Telegram session, browser page, delivery and HTTPS setup.'})
 
     ctx.register_tool(name='browser_vault', toolset='browser',
         schema={'name': 'browser_vault', 'description': 'Send a one-time HTTPS form for the current browser login page to the bound Telegram chat; save only, never fill or sign in. Link grants access to any chat reader.',

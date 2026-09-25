@@ -49,6 +49,7 @@ async def test_primary_adapter_routes_two_profile_owners_to_independent_https_ta
             runner._primary_profile_name = 'default'
             runner._profile_adapters = {name: {Platform.TELEGRAM: runner.adapters[Platform.TELEGRAM]}
                                         for name, *_ in fixtures}
+            runner._gateway_loop = asyncio.get_running_loop()
             handler = runner._make_default_profile_message_handler()
 
             def event(uid, chat_id):

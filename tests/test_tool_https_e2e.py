@@ -1,7 +1,9 @@
 """Registered browser_vault -> Hermes dispatcher -> HTTPS -> native encrypted Vault."""
 import asyncio
 import json
+import threading
 import time
+from contextlib import contextmanager
 from types import SimpleNamespace
 from urllib.parse import urlsplit
 
@@ -9,6 +11,85 @@ import pytest
 
 from generic_helpers import registered
 from test_runtime_e2e import make_runtime, post
+
+
+@contextmanager
+def running_gateway_loop():
+    """The gateway loop stays responsive while sync registry dispatch blocks."""
+    loop = asyncio.new_event_loop()
+    ready = threading.Event()
+
+    def run():
+        asyncio.set_event_loop(loop)
+        loop.call_soon(ready.set)
+        loop.run_forever()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    try:
+        assert ready.wait(3)
+        yield loop
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(3)
+        assert not thread.is_alive()
+        loop.close()
+
+
+def test_vault_tool_reports_bounded_browser_binding_failure(tmp_path, monkeypatch):
+    from gateway import session_context as sc
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli.lifecycle import invoke_hook
+    from gateway.config import Platform
+    from gateway.platforms.event import MessageEvent
+    from gateway.session import SessionSource
+    from tools.registry import registry
+
+    sample, settings, home, _root = make_runtime(tmp_path, mini=False)
+    sample.close()
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    settings['allowed_telegram_user_ids'] = [7]
+    with registered(monkeypatch, home, settings=settings) as (manager, gateway):
+        with _profile_runtime_scope(home, {}):
+            event = MessageEvent(source=SessionSource(
+                platform=Platform.TELEGRAM, user_id='7', chat_id='-600', chat_type='group'),
+                text='ordinary message')
+            invoke_hook('pre_gateway_dispatch', event=event, gateway=gateway)
+            tokens = sc.set_session_vars(platform='telegram', user_id='7', chat_id='-600',
+                chat_type='group', session_id='sid', session_key='key', cron_session='')
+            try:
+                raw = registry.dispatch('browser_vault',
+                    {'origin': 'https://site.test', 'label': 'Fixture'}, task_id='sid', session_id='sid')
+            finally:
+                sc.clear_session_vars(tokens)
+    result = json.loads(raw)
+    assert result['success'] is False
+    assert result['reason'] == 'browser_binding'
+    assert 'https://site.test' not in raw
+
+
+def test_vault_tool_reports_bounded_session_binding_failure(tmp_path, monkeypatch):
+    from gateway import session_context as sc
+    from gateway.run import _profile_runtime_scope
+    from tools.registry import registry
+
+    sample, settings, home, _root = make_runtime(tmp_path, mini=False)
+    sample.close()
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    settings['allowed_telegram_user_ids'] = [7]
+    with registered(monkeypatch, home, settings=settings):
+        with _profile_runtime_scope(home, {}):
+            tokens = sc.set_session_vars(platform='telegram', user_id='7', chat_id='-600',
+                chat_type='group', session_id='sid', session_key='key', cron_session='')
+            try:
+                raw = registry.dispatch('browser_vault',
+                    {'origin': 'https://site.test', 'label': 'Fixture'}, task_id='wrong', session_id='sid')
+            finally:
+                sc.clear_session_vars(tokens)
+    result = json.loads(raw)
+    assert result['success'] is False
+    assert result['reason'] == 'session_binding'
+    assert 'https://site.test' not in raw
 
 
 @pytest.mark.parametrize('mode', ['this_chat', 'home'])
@@ -78,7 +159,8 @@ def test_registered_tool_https_native_vault(mode, running_dispatch_loop, tmp_pat
     gateway._profile_adapters = {}
     gateway._primary_profile_name = 'default'
     gateway.config = gateway_config.GatewayConfig()
-    with registered(monkeypatch, home, settings=settings) as (manager, _):
+    with running_gateway_loop() as gateway_loop, registered(monkeypatch, home, settings=settings) as (manager, _):
+        gateway._gateway_loop = gateway_loop
         monkeypatch.setattr(runtime_module, 'IngressRuntime', disposable_runtime)
         with _profile_runtime_scope(home, {}):
             event = MessageEvent(source=SessionSource(

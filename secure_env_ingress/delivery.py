@@ -28,6 +28,27 @@ class Delivery:
             reset_hermes_home_override(scope)
 
     async def send_gateway(self, gateway, platform, chat_id, thread_id, text):
+        import asyncio
+        loop = getattr(gateway, '_gateway_loop', None)
+        if loop is None:
+            raise ValueError('gateway loop unavailable')
+        if loop is asyncio.get_running_loop():
+            return await self._send_gateway_on_loop(gateway, platform, chat_id, thread_id, text)
+        if not loop.is_running() or loop.is_closed():
+            raise ValueError('gateway loop unavailable')
+        work = self._send_gateway_on_loop(gateway, platform, chat_id, thread_id, text)
+        try:
+            future = asyncio.run_coroutine_threadsafe(work, loop)
+        except BaseException:
+            work.close()
+            raise
+        try:
+            return await asyncio.wrap_future(future)
+        except asyncio.CancelledError:
+            future.cancel()
+            raise
+
+    async def _send_gateway_on_loop(self, gateway, platform, chat_id, thread_id, text):
         from gateway.config import Platform
         from gateway.delivery import resolve_delivery_transport
         destination, thread = self.target(platform, chat_id, thread_id)

@@ -1,4 +1,5 @@
 """Disposable real Hermes profile-scoped gateway ingress harness."""
+import asyncio
 import inspect
 from contextlib import contextmanager
 from pathlib import Path
@@ -47,6 +48,7 @@ def registered(monkeypatch, home: Path, *, settings=None, config=None, trust_roo
                        for platform in (Platform.TELEGRAM, Platform.DISCORD)}
     runner._profile_adapters = {}
     runner._primary_profile_name = 'default'
+    runner._gateway_loop = None  # Bound by async dispatch, as GatewayRunner.run does.
     runner.session_store = None
     runner._running_agents = {}
     runner._pending_messages = {}
@@ -68,6 +70,7 @@ async def dispatch(manager, runner, text, *, platform=Platform.TELEGRAM, uid='88
     if source is None:
         source = SessionSource(platform=platform, user_id=uid, chat_id=chat_id, chat_type=chat)
     event = MessageEvent(source=source, text=text)
+    runner._gateway_loop = asyncio.get_running_loop()
     if home is None:
         home = manager.home_path
     with _profile_runtime_scope(home, {}):

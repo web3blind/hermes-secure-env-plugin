@@ -50,6 +50,7 @@ async def test_home_send_uses_selected_profile_adapter_not_default(tmp_path, mon
             return SimpleNamespace(success=True)
     from gateway.run import GatewayRunner
     gateway = object.__new__(GatewayRunner)
+    gateway._gateway_loop = asyncio.get_running_loop()
     gateway.adapters = {Platform.TELEGRAM: object()}
     gateway._profile_adapters = {'named': {Platform.TELEGRAM: Adapter()}}
     gateway._primary_profile_name = 'default'

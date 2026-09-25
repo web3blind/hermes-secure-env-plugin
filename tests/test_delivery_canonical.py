@@ -1,4 +1,5 @@
 """Gateway canonical adapter selection and cold-cache Relay home addressing."""
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -44,6 +45,7 @@ async def test_canonical_named_primary_and_shared_satellite_and_unserved_fail_cl
     monkeypatch.setattr(config, 'load_gateway_config', lambda: loaded)
     primary = Native()
     runner = object.__new__(GatewayRunner)
+    runner._gateway_loop = asyncio.get_running_loop()
     runner.adapters = {Platform.TELEGRAM: primary}
     runner._profile_adapters = {}
     runner._primary_profile_name = 'named'
@@ -87,6 +89,7 @@ async def test_cold_cache_scoped_relay_home_identity_and_no_identity_bleed(tmp_p
         get_home_channel=lambda _: canonical, platforms={}))
     relay = Relay()
     runner = object.__new__(GatewayRunner)
+    runner._gateway_loop = asyncio.get_running_loop()
     runner.adapters = {Platform.TELEGRAM: Native()}
     runner._profile_adapters = {'relay-profile': {Platform.RELAY: relay}}
     runner._primary_profile_name = 'default'

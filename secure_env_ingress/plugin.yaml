@@ -1,5 +1,5 @@
 name: secure-env-ingress
-version: 0.5.0
+version: 0.5.1
 description: Profile-scoped HTTPS secret entry through normalized Hermes gateway commands.
 author: web3blind
 python_dependencies:
