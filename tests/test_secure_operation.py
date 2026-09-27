@@ -362,6 +362,24 @@ def test_operation_value_bounds_return_suppression_and_mini_denial(tmp_path):
         runtime.close()
 
 
+def test_slow_successful_operation_survives_consumed_link_monitor(tmp_path):
+    runtime, cfg, home, root = make_runtime(tmp_path, mini=False)
+    actions = []
+    def execute(secret):
+        time.sleep(0.8)  # Cross several expiry-monitor ticks, well before the real deadline.
+        actions.append('acted')
+    register_consumer(home, 'slow_success', lambda _: BoundOperation('Fixed slow action', execute))
+    try:
+        links = runtime.create_operation(('telegram', '7'), target(home, 'slow_success'))
+        status, body = post(cfg, root, '/submit', {
+            'token': urlsplit(links['url']).fragment, 'initData': '', 'values': ['synthetic']})
+        assert (status, body) == (200, {'completed': True})
+        assert links['completion'].result(timeout=1) == {'status': 'completed'}
+        assert actions == ['acted']
+    finally:
+        runtime.close()
+
+
 @pytest.mark.parametrize('ending', ['cancel_group', 'cancel_owner', 'deadline', 'close'])
 def test_blocked_operation_resolves_unknown_without_waiting_for_callback(tmp_path, ending):
     case = tmp_path / ending

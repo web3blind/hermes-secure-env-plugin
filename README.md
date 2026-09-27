@@ -119,7 +119,9 @@ When the already-attached browser page asks for an email, SMS or authenticator o
 
 This inherits the Browser Use compatibility limitation above: its task supervisor/page can differ from the newest named `browser_exec` tab, so verify the actual target before issuance. The plugin cannot prove completion of the site's verification flow, nor prevent a page from auto-submitting. No live account flow has been verified by the synthetic HTTPS/CDP tests.
 
-## One-shot secret operations (0.6.2)
+## One-shot secret operations (0.6.3)
+
+Version 0.6.3 fixes premature `unknown` results while a submitted operation is still running. Consuming the one-use link no longer ends the wait for its callback; the original deadline and cancellation behavior remain in effect.
 
 `secure_operation` delivers a one-use secret from the HTTPS form to an administrator-approved external consumer, without saving it to Vault or `.env` or returning it to the agent. Configure the active profile's `plugins.entries.secure-env-ingress.settings.consumers` allowlist with each operation's reviewed Python `path`, `factory`, and `sha256`. The existing programmatic registration API is also supported. There are no enabled consumers by default, no arbitrary command/URL argument, and no project-specific handler bundled with the plugin.
 

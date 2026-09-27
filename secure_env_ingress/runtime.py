@@ -314,7 +314,7 @@ class IngressRuntime:
         if bound is None or bound[0] != claim.group_id:
             self._finish_completion('unknown', claim.group_id)
             raise HTTPError(409, 'operation_unconfirmed')
-        self._operation_inflight = (claim.group_id, (claim.platform, claim.user_id))
+        self._operation_inflight = (claim.group_id, (claim.platform, claim.user_id), claim.expires_at)
         return bound[1].copy()
 
     def _execute_operation(self, group_id, target, secret, context):
@@ -510,6 +510,13 @@ class IngressRuntime:
         while not self._stop.wait(0.25):
             with self._lock:
                 if not self._store.active_count:
+                    # Consuming a one-shot link prevents replay, not completion of
+                    # the callback. Keep waiting until its original deadline.
+                    inflight = self._operation_inflight
+                    if (inflight is not None and self._completion is not None
+                            and self._completion[0] == inflight[0]
+                            and self._store._clock() < inflight[2]):
+                        continue
                     self._stop_listener()
                     self._monitor = None
                     return
