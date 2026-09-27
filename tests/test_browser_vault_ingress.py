@@ -61,6 +61,59 @@ def test_capture_requires_existing_task_owned_browser(monkeypatch):
         assert_browser_target(target)
 
 
+def test_browser_use_issues_and_submits_to_native_vault(tmp_path, monkeypatch):
+    """Exercise the compatibility binding through HTTPS submission, not a stub."""
+    import threading
+    from types import SimpleNamespace
+    from tools import browser_use_cli, browser_tool, browser_supervisor
+    from agent.vault_store import VaultStore
+
+    runtime, cfg, home, root = make_runtime(tmp_path, mini=False)
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    monkeypatch.setattr(browser_use_cli, 'is_browser_use_cli_mode', lambda: True)
+    monkeypatch.setattr(browser_tool, '_last_active_session_key', {})
+    monkeypatch.setattr(browser_tool, '_active_sessions', {})
+    supervisor = SimpleNamespace(task_id='task', _state_lock=threading.RLock(),
+        _active=True, _page_session_id='page',
+        evaluate_runtime=lambda expr: {'ok': True, 'result': 'https://site.test/login'})
+    monkeypatch.setattr(browser_supervisor.SUPERVISOR_REGISTRY, 'get', lambda task: supervisor)
+    try:
+        target = capture_browser_target('https://site.test', 'Site', 'task', 'task', 'chat-key')
+        links = runtime.create_vault(('telegram', '7'), target)
+        token = urlsplit(links['url']).fragment
+        assert post(cfg, root, '/session', {'token': token, 'initData': ''})[0] == 200
+        status, result = post(cfg, root, '/submit', {'token': token, 'initData': '',
+            'values': ['fixture@example.test', 'synthetic-password']})
+        assert status == 200 and result == {'saved': True}
+        from tools.browser_vault_tool import browser_vault_list
+        import json
+        listed = json.loads(browser_vault_list())
+        item = next(i for i in listed['items'] if i['origin'] == target.origin)
+        assert item['identifier'] == 'fixture@example.test'
+        assert VaultStore(home / 'vault').resolve_secret(item['handle']) == {'password': 'synthetic-password'}
+        assert 'synthetic-password' not in json.dumps(listed)
+        # Native fill path on a synthetic login control; no real site or secret
+        # enters the test browser. The native script must pin the saved origin.
+        from tools import browser_vault_tool
+        controls = [{'autocomplete': 'current-password', 'formIndex': 0,
+                     'index': 0, 'label': '', 'name': 'pw', 'type': 'password'}]
+        monkeypatch.setattr(browser_vault_tool, '_focus_bound_origin',
+                            lambda task, origin, kind: origin)
+        monkeypatch.setattr(browser_vault_tool, '_eval_js',
+                            lambda task, expr: {'success': True, 'result': json.dumps(controls)})
+        calls = []
+        def synthetic_fill(task, script):
+            calls.append((task, script))
+            return {'success': True, 'result': json.dumps({'filled': 1})}
+        monkeypatch.setattr(browser_vault_tool, '_eval_js_secret', synthetic_fill)
+        filled = json.loads(browser_vault_tool.browser_vault_fill(item['handle'], task_id='task'))
+        assert filled['success'] is True and filled['filled_fields'] == 1
+        assert filled['origin'] == target.origin and len(calls) == 1
+        assert target.origin in calls[0][1] and 'synthetic-password' not in json.dumps(filled)
+    finally:
+        runtime.close()
+
+
 def test_native_encrypted_vault_https_roundtrip_and_replay(tmp_path, monkeypatch, caplog):
     runtime, cfg, home, root = make_runtime(tmp_path, mini=False)
     monkeypatch.setenv('HERMES_HOME', str(home))

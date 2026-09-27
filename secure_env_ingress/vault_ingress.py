@@ -118,11 +118,9 @@ def assert_browser_target(target: VaultTarget) -> None:
         raise ValueError('browser task missing')
     record = None
     if target.browser_backend == 'browser-use':
-        # browser_exec exposes neither its last BU_NAME nor the CDP endpoint/page
-        # selected by its harness to plugin callers. A per-task supervisor can
-        # attach to a *different* named session on a shared endpoint. Until the
-        # native runtime provides a trusted association, it is not a binding.
-        raise ValueError('browser-use session binding unavailable')
+        from tools.browser_use_cli import is_browser_use_cli_mode
+        if not is_browser_use_cli_mode():
+            raise ValueError('browser backend changed')
     elif target.browser_backend == 'legacy':
         from tools.browser_use_cli import is_browser_use_cli_mode
         if is_browser_use_cli_mode():
@@ -149,6 +147,8 @@ def assert_browser_target(target: VaultTarget) -> None:
             raise ValueError('page changed')
     except (TypeError, ValueError) as exc:
         raise ValueError('page changed') from exc
+    if target.browser_backend == 'browser-use' and not is_browser_use_cli_mode():
+        raise ValueError('browser backend changed')
     if target.browser_backend == 'legacy' and (is_browser_use_cli_mode() or browser._active_sessions.get(key) is not record or browser._last_active_session_key.get(target.browser_task) != key):
         raise ValueError('browser changed')
     current_supervisor, current_session = _attached_supervisor(target.browser_task)
@@ -165,9 +165,15 @@ def capture_browser_target(origin: str, label: str, task_id: str, session_id: st
         raise ValueError('unbound task')
     from tools.browser_use_cli import is_browser_use_cli_mode
     if is_browser_use_cli_mode():
-        # The supervisor registry is per task, not per browser_exec BU_NAME or
-        # resolved CDP endpoint. Never infer page ownership from its first tab.
-        raise ValueError('browser-use session binding unavailable')
+        # Compatibility contract (not exact BU_NAME/endpoint binding): the
+        # existing task supervisor and its page are rechecked at issuance and
+        # submission. Named browser_exec sessions may use a different tab or
+        # endpoint; the host exposes no authoritative association to plugins.
+        supervisor, page_session = _attached_supervisor(task_id)
+        target = VaultTarget(origin, label, task_id, '', id(supervisor), session_id,
+                             session_key, id(supervisor), page_session, 'browser-use')
+        assert_browser_target(target)
+        return target
     key = browser._last_active_session_key.get(task_id)
     record = browser._active_sessions.get(key) if key else None
     if not record or record.get('owner_task_id') != task_id or record.get('session_key') != key:

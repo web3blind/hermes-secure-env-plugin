@@ -94,7 +94,7 @@ Send `/senv service` through the gateway as a configured exact platform/user own
 
 The listener starts only after authorization, target and TLS validation. A profile-local leader lock prevents a second instance. It closes on cancellation, consumption/expiry (short cleanup interval), or plugin unload. Creating a later session validates the current deployed TLS material again.
 
-## Browser Vault login entry (0.6.0)
+## Browser Vault login entry (0.6.1)
 
 With an already-open native CDP browser session, the agent can call `browser_vault` using only the current HTTPS origin and a public label:
 
@@ -102,7 +102,7 @@ With an already-open native CDP browser session, the agent can call `browser_vau
 {"origin":"https://example.com","label":"Example account"}
 ```
 
-This extension currently requires an interactive Telegram owner/session/profile. It does not create a browser or silently switch to another browser backend. Existing generic `.env` commands, direct field names and guided setup remain available. Browser Use (`browser_exec`) is refused: the inspected native interface cannot prove its named session, CDP endpoint and active page association. This is a fail-closed limitation, not full Browser Use support. Legacy CDP targets also reject backend changes.
+This extension currently requires an interactive Telegram owner/session/profile. It does not create a browser or silently switch to another browser backend. Existing generic `.env` commands, direct field names and guided setup remain available. Browser Use (`browser_exec`) uses the pre-0.6 compatibility binding: the existing task supervisor identity, page session, HTTPS origin, browser mode and active profile are checked at issuance and again at submission. It does **not** prove that the supervisor page is the most recent `browser_exec` named session/tab or CDP endpoint: the native plugin interface exposes no authoritative BU_NAME-to-page association. Two named sessions on the same origin can therefore be confused. Recheck the actual page/account before saving or filling; do not use this compatibility mode as an exact-target security boundary. Legacy CDP targets also reject backend changes.
 
 1. A one-time HTTPS form link is sent using the shared delivery setting, without returning the capability URL to the model.
 2. The form identifies the site and profile. The user enters a username/email, password and optional authenticator setup key directly into the form, never chat. Raw TOTP keys and supported `otpauth://totp/` URIs are validated through the native code generator before storage; invalid keys save no item and consume the submitted capability.
