@@ -63,6 +63,7 @@
     }
     submit.disabled = true;
     status.textContent = message;
+    status.focus();
   }
 
   async function post(path, payload) {
@@ -78,15 +79,31 @@
     return data;
   }
 
+  const VAULT_KEYS = ["Username", "Password", "Authenticator key (optional)"];
+  const OPTIONAL_KEY_HINT = "Optional. Paste the 2FA setup key the site showed when you switched on the authenticator app (letters and digits, spaces allowed), or its otpauth:// link. Leave empty when the site uses no authenticator app. The key is stored in the encrypted Vault so future codes are generated there instead of being typed in chat.";
+
+  function looksLikeAuthenticatorKey(value) {
+    const trimmed = value.trim();
+    if (!trimmed) return true;
+    if (/^otpauth:\/\//i.test(trimmed)) return /^otpauth:\/\/totp\//i.test(trimmed);
+    const seed = trimmed.replace(/[\s-]/g, "").toUpperCase().replace(/=+$/, "");
+    return seed.length > 0 && !/[^A-Z2-7]/.test(seed);
+  }
+
   function buildForm(data) {
     if (!data || typeof data.label !== "string" || !Array.isArray(data.keys) || !data.keys.length) {
       throw new Error("invalid_response");
     }
     profile.textContent = data.label;
     vault = data.kind === 'browser_vault';
-    if (vault && (data.keys.length !== 2 || data.keys[0] !== 'Username' || data.keys[1] !== 'Password')) throw new Error('invalid_response');
+    // Accept the legacy two-field answer as well: during a deploy the assets can be newer than the
+    // loaded backend, and the form must keep working until the gateway restarts.
+    const expectedKeys = vault && data.keys.length === 2 ? VAULT_KEYS.slice(0, 2) : VAULT_KEYS;
+    if (vault && (data.keys.length !== expectedKeys.length
+        || expectedKeys.some((key, index) => data.keys[index] !== key))) throw new Error('invalid_response');
     data.keys.forEach((key, index) => {
       if (typeof key !== "string" || !key) throw new Error("invalid_response");
+      const optional = vault && index === VAULT_KEYS.length - 1;
       const wrapper = document.createElement("div");
       wrapper.className = "field";
       const label = document.createElement("label");
@@ -94,13 +111,32 @@
       input.id = `secret-${index}`;
       input.type = vault && index === 0 ? "text" : "password";
       input.name = `secret-${index}`;
-      input.autocomplete = vault ? (index === 0 ? "username" : "new-password") : "new-password";
+      // This is a one-time transfer form, not account registration on this host.
+      // new-password can open Chrome's password generator and intercept navigation.
+      // Browsers may still override off; keep native masked inputs and Tab behavior.
+      input.autocomplete = "off";
       input.autocapitalize = "none";
       input.spellcheck = false;
-      input.required = true;
+      input.required = !optional;
       label.htmlFor = input.id;
       label.textContent = key;
       wrapper.append(label, input);
+      if (optional) {
+        const hint = document.createElement("p");
+        hint.className = "hint";
+        hint.id = `${input.id}-hint`;
+        hint.textContent = OPTIONAL_KEY_HINT;
+        input.setAttribute("aria-describedby", hint.id);
+        input.addEventListener("input", () => {
+          input.removeAttribute("aria-invalid");
+          input.setAttribute("aria-describedby", hint.id);
+          if (status.dataset.validation === "authenticator") {
+            status.textContent = "";
+            delete status.dataset.validation;
+          }
+        });
+        wrapper.append(hint);
+      }
       fields.append(wrapper);
     });
     intro.textContent = vault ? "Save a login for this exact site. Anyone with this link can submit it. Saving does not fill the browser or sign in. Enter credentials only here, never in chat." : "Enter your secrets. They are sent directly to the server, not through chat. This page does not store them in browser storage.";
@@ -125,15 +161,27 @@
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (terminal) return;
-    submit.disabled = true;
-    status.textContent = "Saving…";
     const inputs = [...form.querySelectorAll("input")];
     const values = inputs.map((input) => input.value);
+    if (vault && inputs.length === VAULT_KEYS.length && !looksLikeAuthenticatorKey(values[VAULT_KEYS.length - 1])) {
+      // Keep the one-time link usable: a typo in the optional field must not burn the capability.
+      values.fill("");
+      const invalid = inputs[VAULT_KEYS.length - 1];
+      invalid.setAttribute("aria-invalid", "true");
+      invalid.setAttribute("aria-describedby", `${invalid.id}-hint status`);
+      status.dataset.validation = "authenticator";
+      status.textContent = "The authenticator key looks wrong. Use the setup key (letters and digits 2-7, spaces allowed) or the otpauth:// link, or leave the field empty.";
+      invalid.focus();
+      return;
+    }
+    submit.disabled = true;
+    status.textContent = "Saving…";
     try {
       await post("/submit", { token: capability, initData, values });
       disableAndClear(vault ? "Login saved to the encrypted Vault. The browser has not been filled or signed in. You can close this page." : "Secrets saved. You can close this page.");
-    } catch (_) {
-      disableAndClear(vault ? "The save result is unconfirmed. Fields were cleared. Check Vault metadata without revealing the password; request a new link only if no item was saved." : "The save result is unconfirmed: the request was rejected or no response was received. The fields have been cleared. Check whether the keys were saved without displaying their values. Request a new link to try again.");
+    } catch (error) {
+      const rejectedKey = vault && error && error.message === "invalid_authenticator_key";
+      disableAndClear(rejectedKey ? "The authenticator key was rejected, so nothing was saved. Check the setup key, then request a new link." : vault ? "The save result is unconfirmed. Fields were cleared. Check Vault metadata without revealing the password; request a new link only if no item was saved." : "The save result is unconfirmed: the request was rejected or no response was received. The fields have been cleared. Check whether the keys were saved without displaying their values. Request a new link to try again.");
     } finally {
       values.fill("");
       capability = "";

@@ -17,6 +17,8 @@ def test_strict_origin_rejects_malformed(origin):
 
 
 def test_capture_requires_existing_task_owned_browser(monkeypatch):
+    from tools import browser_use_cli
+    monkeypatch.setattr(browser_use_cli, 'is_browser_use_cli_mode', lambda: False)
     from tools import browser_tool as bt
     from tools.browser_supervisor import SUPERVISOR_REGISTRY
     from secure_env_ingress.vault_ingress import assert_browser_target
@@ -75,7 +77,7 @@ def test_native_encrypted_vault_https_roundtrip_and_replay(tmp_path, monkeypatch
         token = urlsplit(links['url']).fragment
         status, info = post(cfg, root, '/session', {'token': token, 'initData': ''})
         assert status == 200 and info['kind'] == 'browser_vault'
-        assert info['keys'] == ['Username', 'Password']
+        assert info['keys'] == ['Username', 'Password', 'Authenticator key (optional)']
         secret = 'fixture-${VAULT}-password'
         status, result = post(cfg, root, '/submit', {'token': token, 'initData': '',
                                                    'values': ['alice@example.test', secret]})
@@ -146,3 +148,81 @@ def test_two_profiles_remain_isolated(tmp_path):
         store.add_item('login', 'Site', {'identifier_type': 'username', 'identifier': 'fixture', 'password': 'fixture-pass'}, origin='https://site.test')
     assert (first / 'vault' / 'vault.key').read_bytes() != (second / 'vault' / 'vault.key').read_bytes()
     assert len(VaultStore(first / 'vault').list_items()) == len(VaultStore(second / 'vault').list_items()) == 1
+
+
+def _vault_link(runtime, module, monkeypatch):
+    monkeypatch.setattr(module, 'assert_browser_target', lambda target: None)
+    target = VaultTarget('https://site.test', 'Synthetic site', 'task', 'task', 123, 'task', 'key')
+    return target, urlsplit(runtime.create_vault(('telegram', '7'), target)['url']).fragment
+
+
+@pytest.mark.parametrize('key,canonical', [
+    ('jbswy3dpehpk3pxp', 'JBSWY3DPEHPK3PXP'),
+    ('otpauth://totp/Fixture?secret=JBSWY3DPEHPK3PXP&digits=8&period=60&algorithm=SHA256',
+     'JBSWY3DPEHPK3PXP|8|60|SHA256'),
+])
+def test_authenticator_key_roundtrip_mints_codes(tmp_path, monkeypatch, key, canonical):
+    runtime, cfg, home, root = make_runtime(tmp_path, mini=False)
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    from secure_env_ingress import runtime as module
+    from agent.vault_store import VaultStore
+    try:
+        target, token = _vault_link(runtime, module, monkeypatch)
+        status, info = post(cfg, root, '/session', {'token': token, 'initData': ''})
+        assert status == 200 and info['keys'] == ['Username', 'Password', 'Authenticator key (optional)']
+        status, result = post(cfg, root, '/submit', {'token': token, 'initData': '',
+            'values': ['alice@example.test', 'fixture-pass', key]})
+        assert status == 200 and result == {'saved': True}
+        store = VaultStore(home / 'vault')
+        meta = store.list_items()[0]
+        assert meta.has_otp is True and meta.origin == target.origin
+        assert store.resolve_secret(meta.id)['otp_secret'] == canonical
+        from agent.vault_backends import backend_for_handle
+        code = backend_for_handle(meta.id).resolve_otp(meta.id)
+        assert isinstance(code, str) and len(code) == (8 if '|' in canonical else 6) and code.isdigit()
+        # The seed is secret material: it must not sit in the encrypted file in clear.
+        assert b'JBSWY3DPEHPK3PXP' not in (home / 'vault' / 'vault.json.enc').read_bytes()
+    finally:
+        runtime.close()
+
+
+def test_optional_authenticator_key_can_be_empty(tmp_path, monkeypatch):
+    runtime, cfg, home, root = make_runtime(tmp_path, mini=False)
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    from secure_env_ingress import runtime as module
+    from agent.vault_store import VaultStore
+    try:
+        _, token = _vault_link(runtime, module, monkeypatch)
+        status, result = post(cfg, root, '/submit', {'token': token, 'initData': '',
+            'values': ['bob@example.test', 'fixture-pass', '  ']})
+        assert status == 200 and result == {'saved': True}
+        store = VaultStore(home / 'vault')
+        meta = store.list_items()[0]
+        assert meta.has_otp is False
+        assert 'otp_secret' not in store.resolve_secret(meta.id)
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize('bad_key', [
+    'not-a-key-0189', 'A', 'ABC', 'ABCDEF',
+    'otpauth://totp/Site?secret=A',
+    'otpauth://totp/Site?secret=ABC&digits=8&period=60&algorithm=SHA256',
+])
+def test_invalid_authenticator_key_is_rejected_without_writing(tmp_path, monkeypatch, bad_key):
+    runtime, cfg, home, root = make_runtime(tmp_path, mini=False)
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    from secure_env_ingress import runtime as module
+    try:
+        _, token = _vault_link(runtime, module, monkeypatch)
+        status, body = post(cfg, root, '/submit', {'token': token, 'initData': '',
+            'values': ['carl@example.test', 'fixture-pass', bad_key]})
+        assert status == 400 and body.get('error') == 'invalid_authenticator_key'
+        assert runtime._completion is None
+        assert not (home / 'vault' / 'vault.json.enc').exists()
+        from secure_env_ingress.server import HTTPError
+        with pytest.raises(HTTPError) as replay:
+            runtime.submit(token, '', ['carl@example.test', 'fixture-pass', bad_key])
+        assert replay.value.status == 410
+    finally:
+        runtime.close()

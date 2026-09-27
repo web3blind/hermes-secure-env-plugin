@@ -19,6 +19,11 @@ from .tls import validate_certificate, create_server_ssl_context
 from .writer import add_missing
 from .vault_ingress import VaultTarget, assert_browser_target, assert_profile_home, bind_vault_home, assert_vault_home
 
+# Browser Vault form fields. The authenticator setup key is optional (empty when the site has no
+# authenticator app); when present it is stored with the login so the native vault can mint 2FA codes
+# itself — the code then never travels through the chat.
+VAULT_LOGIN_KEYS = ('Username', 'Password', 'Authenticator key (optional)')
+
 
 class IngressRuntime:
     def __init__(self, settings, home, bot_token, *, trust_roots=None):
@@ -116,7 +121,7 @@ class IngressRuntime:
                     self._server.start()
                 browser, mini = self._store.issue_pair(
                     platform=owner[0], user_id=owner[1], hermes_home=self.home,
-                    profile_name='browser_vault', allowed_keys=('Username', 'Password'),
+                    profile_name='browser_vault', allowed_keys=VAULT_LOGIN_KEYS,
                     target_id=(target.browser_identity, os.getuid()),
                     ttl_seconds=min(self.config.ttl_seconds, 240))
                 self._targets = {browser.group_id: target}
@@ -169,7 +174,7 @@ class IngressRuntime:
                 from hermes_constants import profile_name_for_home
                 profile = profile_name_for_home(self.home) or 'default'
                 return {'label': target.label + ' — ' + target.origin + ' — Profile: ' + profile,
-                        'keys': ['Username', 'Password'], 'kind': 'browser_vault'}
+                        'keys': list(VAULT_LOGIN_KEYS), 'kind': 'browser_vault'}
             return {'label': claim.profile_name, 'keys': list(claim.allowed_keys)}
 
     def submit(self, token, init_data, values):
@@ -208,7 +213,7 @@ class IngressRuntime:
     def _submit_vault(self, token, claim, target, values):
         consumed = self._store.consume(token, mode=claim.mode, platform=claim.platform,
                                        user_id=claim.user_id, hermes_home=self.home,
-                                       profile_name='browser_vault', allowed_keys=('Username', 'Password'),
+                                       profile_name='browser_vault', allowed_keys=VAULT_LOGIN_KEYS,
                                        target_id=(target.browser_identity, os.getuid()))
         if consumed is None:
             raise HTTPError(410, 'invalid_session')
@@ -216,11 +221,30 @@ class IngressRuntime:
         self._vault_context = None
         binding = self._vault_binding[1]
         self._vault_binding = None
-        if (not isinstance(values, list) or len(values) != 2
-                or any(not isinstance(v, str) or not v or len(v.encode('utf-8')) > 16384
-                       or any(c in v for c in ('\r', '\n', '\x00')) for v in values)):
+        if (not isinstance(values, list) or len(values) not in (2, 3)
+                or any(not isinstance(v, str) or len(v.encode('utf-8')) > 16384
+                       or any(c in v for c in ('\r', '\n', '\x00')) for v in values)
+                or not values[0] or not values[1]):
             self._finish_completion('rejected', claim.group_id)
             raise HTTPError(400, 'invalid_values')
+        secret = {'identifier_type': 'username', 'identifier': values[0], 'password': values[1]}
+        if len(values) == 3 and values[2].strip():
+            # Optional third field: the authenticator setup key. Validate it here so a typo is reported
+            # as such (and never as an unknown write outcome), and store the canonical form.
+            from agent.vault_store import normalize_otp_secret, totp_now
+            try:
+                otp_secret = normalize_otp_secret(values[2])
+                # Native normalization checks alphabet/parameters but not base32
+                # decoding. Exercise the native code generator before any write.
+                if not otp_secret or not totp_now(otp_secret, at=0):
+                    raise ValueError('unusable key')
+            except Exception:
+                # Never reflect exception text: it may contain the submitted key.
+                self._finish_completion('rejected', claim.group_id)
+                raise HTTPError(400, 'invalid_authenticator_key') from None
+            # The native writer normalizes again; for non-default URI parameters
+            # it accepts the original URI, not the canonical pipe-delimited form.
+            secret['otp_secret'] = values[2] if '|' in otp_secret else otp_secret
         try:
             assert_profile_home(self.home)
             assert_browser_target(target)
@@ -234,9 +258,7 @@ class IngressRuntime:
             self._finish_completion('expired', claim.group_id)
             raise HTTPError(410, 'invalid_session')
         try:
-            meta = store.add_item('login', target.label,
-                                  {'identifier_type': 'username', 'identifier': values[0],
-                                   'password': values[1]}, origin=target.origin)
+            meta = store.add_item('login', target.label, secret, origin=target.origin)
             after = bind_vault_home(self.home)
             if after.components[:-1] != binding.components[:-1] or (
                     binding.components[-1][1] is not None and after.components[-1] != binding.components[-1]):

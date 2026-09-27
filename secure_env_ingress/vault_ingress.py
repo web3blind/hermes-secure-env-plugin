@@ -19,6 +19,7 @@ class VaultTarget:
     session_key: str
     supervisor_identity: int | None = None
     page_session_id: str | None = None
+    browser_backend: str = 'legacy'
 
 
 def strict_origin(value: str) -> str:
@@ -115,13 +116,26 @@ def assert_browser_target(target: VaultTarget) -> None:
     from tools import browser_tool as browser
     if not target.browser_task or target.browser_task == 'default':
         raise ValueError('browser task missing')
-    key = browser._last_active_session_key.get(target.browser_task)
-    if key != target.browser_key or not key:
-        raise ValueError('browser changed')
-    record = browser._active_sessions.get(key)
-    if (record is None or id(record) != target.browser_identity
-            or record.get('owner_task_id') != target.browser_task or record.get('session_key') != key):
-        raise ValueError('browser changed')
+    record = None
+    if target.browser_backend == 'browser-use':
+        # browser_exec exposes neither its last BU_NAME nor the CDP endpoint/page
+        # selected by its harness to plugin callers. A per-task supervisor can
+        # attach to a *different* named session on a shared endpoint. Until the
+        # native runtime provides a trusted association, it is not a binding.
+        raise ValueError('browser-use session binding unavailable')
+    elif target.browser_backend == 'legacy':
+        from tools.browser_use_cli import is_browser_use_cli_mode
+        if is_browser_use_cli_mode():
+            raise ValueError('browser backend changed')
+        key = browser._last_active_session_key.get(target.browser_task)
+        if key != target.browser_key or not key:
+            raise ValueError('browser changed')
+        record = browser._active_sessions.get(key)
+        if (record is None or id(record) != target.browser_identity
+                or record.get('owner_task_id') != target.browser_task or record.get('session_key') != key):
+            raise ValueError('browser changed')
+    else:
+        raise ValueError('unknown browser backend')
     supervisor, session = _attached_supervisor(target.browser_task)
     if target.supervisor_identity != id(supervisor) or target.page_session_id != session:
         raise ValueError('page changed')
@@ -135,7 +149,7 @@ def assert_browser_target(target: VaultTarget) -> None:
             raise ValueError('page changed')
     except (TypeError, ValueError) as exc:
         raise ValueError('page changed') from exc
-    if browser._active_sessions.get(key) is not record or browser._last_active_session_key.get(target.browser_task) != key:
+    if target.browser_backend == 'legacy' and (is_browser_use_cli_mode() or browser._active_sessions.get(key) is not record or browser._last_active_session_key.get(target.browser_task) != key):
         raise ValueError('browser changed')
     current_supervisor, current_session = _attached_supervisor(target.browser_task)
     if current_supervisor is not supervisor or current_session != session:
@@ -149,6 +163,11 @@ def capture_browser_target(origin: str, label: str, task_id: str, session_id: st
     from tools import browser_tool as browser
     if not task_id or task_id == 'default' or task_id != session_id:
         raise ValueError('unbound task')
+    from tools.browser_use_cli import is_browser_use_cli_mode
+    if is_browser_use_cli_mode():
+        # The supervisor registry is per task, not per browser_exec BU_NAME or
+        # resolved CDP endpoint. Never infer page ownership from its first tab.
+        raise ValueError('browser-use session binding unavailable')
     key = browser._last_active_session_key.get(task_id)
     record = browser._active_sessions.get(key) if key else None
     if not record or record.get('owner_task_id') != task_id or record.get('session_key') != key:

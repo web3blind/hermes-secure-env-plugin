@@ -20,6 +20,7 @@ h1 { margin-top: 0; font-size: clamp(1.5rem, 6vw, 2rem); }
 fieldset { border: 0; padding: 0; margin: 1.5rem 0; }
 legend { font-weight: 700; margin-bottom: 1rem; }
 .field { margin-bottom: 1rem; }
+.hint { margin: .4rem 0 0; font-size: .9rem; color: #4a5763; }
 label { display: block; margin-bottom: .35rem; font-weight: 600; }
 input {
   display: block;
@@ -30,7 +31,7 @@ input {
   border-radius: .35rem;
   font: inherit;
 }
-input:focus, button:focus-visible { outline: .2rem solid #0b63ce; outline-offset: .15rem; }
+input:focus, button:focus-visible, #status:focus { outline: .2rem solid #0b63ce; outline-offset: .15rem; }
 button {
   min-height: 2.75rem;
   padding: .65rem 1rem;
@@ -48,7 +49,8 @@ button:disabled, input:disabled { opacity: .6; cursor: not-allowed; }
   :root { background: #111820; color: #f1f5f8; }
   main { background: #19232d; border-color: #64717d; box-shadow: none; }
   input { background: #111820; color: #fff; border-color: #9ca8b4; }
+  .hint { color: #b9c5d1; }
   button { background: #70b1ff; color: #081522; }
-  input:focus, button:focus-visible { outline-color: #8fc2ff; }
+  input:focus, button:focus-visible, #status:focus { outline-color: #8fc2ff; }
 }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }

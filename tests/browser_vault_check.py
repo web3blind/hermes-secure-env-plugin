@@ -11,6 +11,9 @@ import urllib.request
 
 from playwright.sync_api import sync_playwright
 from test_runtime_e2e import make_runtime
+import secure_env_ingress
+
+assert Path(secure_env_ingress.__file__).resolve().parents[1] == Path(__file__).resolve().parents[1], 'Run with PYTHONPATH=.:tests to test checkout assets'
 
 
 def main():
@@ -24,6 +27,9 @@ def main():
         cdp_ws = json.load(response)['webSocketDebuggerUrl']
     with tempfile.TemporaryDirectory(prefix='senv-vault-browser-') as directory:
         runtime, _, home, _ = make_runtime(Path(directory), mini=False)
+        # This smoke explicitly exercises the supported legacy CDP backend.
+        # Do not inherit host auto-selection of Browser Use in the disposable home.
+        (home / 'config.yaml').write_text('browser:\n  backend: "off"\n')
         old_home = os.environ.get('HERMES_HOME')
         os.environ['HERMES_HOME'] = str(home)
         task = 'vault-ingress-disposable-test'
@@ -65,6 +71,25 @@ def main():
                     binding = capture_browser_target(origin, 'Synthetic login', task, task, 'test-session')
                     assert_browser_target(binding)
                     links = runtime.create_vault(('telegram', '7'), binding)
+                    legacy = context.new_page()
+                    try:
+                        legacy.route('**/session', lambda route: route.fulfill(status=200, content_type='application/json',
+                            body=json.dumps({'kind': 'browser_vault', 'label': 'Synthetic login', 'keys': ['Username', 'Password']})))
+                        legacy.goto(links['url'])
+                        old_user = legacy.get_by_label('Username', exact=True)
+                        old_pass = legacy.get_by_label('Password', exact=True)
+                        old_user.wait_for(state='visible')
+                        assert legacy.locator('#fields input').count() == 2
+                        assert legacy.evaluate('document.activeElement.id') == old_user.get_attribute('id')
+                        legacy.keyboard.press('Tab')
+                        assert old_pass.evaluate('(e) => e === document.activeElement')
+                        legacy.keyboard.press('Tab')
+                        assert legacy.get_by_role('button', name='Save').evaluate('(e) => e === document.activeElement')
+                        legacy.keyboard.press('Shift+Tab')
+                        assert old_pass.evaluate('(e) => e === document.activeElement')
+                        print('LEGACY_TWO_FIELD_FOCUS=PASS')
+                    finally:
+                        legacy.close()
                     form = context.new_page()
                     errors = []
                     form.on('pageerror', lambda error: errors.append(type(error).__name__))
@@ -73,20 +98,57 @@ def main():
                         assert response.status == 200
                         username = form.get_by_label('Username', exact=True)
                         password = form.get_by_label('Password', exact=True)
+                        authenticator = form.get_by_label('Authenticator key (optional)', exact=True)
                         username.wait_for(state='visible')
+                        authenticator.wait_for(state='visible')
                         assert form.evaluate('location.hash') == ''
                         assert form.evaluate('document.activeElement.id') == username.get_attribute('id')
                         assert password.get_attribute('type') == 'password'
+                        assert authenticator.get_attribute('type') == 'password'
+                        assert not authenticator.get_attribute('required')
+                        assert authenticator.get_attribute('aria-describedby') == 'secret-2-hint'
                         form.set_viewport_size({'width': 320, 'height': 720})
                         assert form.evaluate('document.documentElement.scrollWidth <= innerWidth')
+                        controls = [username, password, authenticator, form.get_by_role('button', name='Save')]
+                        assert all(control.get_attribute('tabindex') in (None, '0') for control in controls)
+                        for control in controls[1:]:
+                            form.keyboard.press('Tab')
+                            assert control.evaluate('(e) => e === document.activeElement')
                         form.keyboard.press('Tab')
-                        assert password.evaluate('(e) => e === document.activeElement')
+                        assert not controls[-1].evaluate('(e) => e === document.activeElement')
+                        controls[-1].focus()
+                        for control in reversed(controls[:-1]):
+                            form.keyboard.press('Shift+Tab')
+                            assert control.evaluate('(e) => e === document.activeElement')
+                        form.keyboard.press('Shift+Tab')
+                        assert not controls[0].evaluate('(e) => e === document.activeElement')
+                        ax = context.new_cdp_session(form)
+                        nodes = ax.send('Accessibility.getFullAXTree')['nodes']
+                        ax.detach()
+                        names = {node.get('name', {}).get('value') for node in nodes if node.get('role', {}).get('value') == 'textbox'}
+                        assert {'Username', 'Password', 'Authenticator key (optional)'} <= names, names
+                        optional_ax = next(node for node in nodes if node.get('name', {}).get('value') == 'Authenticator key (optional)' and node.get('role', {}).get('value') == 'textbox')
+                        assert 'Optional. Paste the 2FA setup key' in optional_ax.get('description', {}).get('value', ''), optional_ax.get('description')
                         username.fill('fixture@example.test')
                         password.fill('disposable-fixture-password')
-                        form.get_by_role('button', name='Save').click()
+                        authenticator.fill('invalid!')
+                        controls[-1].focus()
+                        form.keyboard.press('Enter')
+                        form.get_by_role('status').filter(has_text='authenticator key looks wrong').wait_for()
+                        assert authenticator.get_attribute('aria-invalid') == 'true'
+                        assert authenticator.get_attribute('aria-describedby') == 'secret-2-hint status'
+                        assert authenticator.evaluate('(e) => e === document.activeElement')
+                        assert not controls[-1].is_disabled()
+                        authenticator.fill('')
+                        assert authenticator.get_attribute('aria-invalid') is None
+                        assert authenticator.get_attribute('aria-describedby') == 'secret-2-hint'
+                        assert form.get_by_role('status').inner_text() == ''
+                        controls[-1].focus()
+                        form.keyboard.press('Enter')
                         form.get_by_role('status').filter(has_text='Login saved to the encrypted Vault').wait_for(timeout=10000)
-                        assert username.input_value() == '' and password.input_value() == ''
-                        assert username.is_disabled() and password.is_disabled()
+                        assert all(control.input_value() == '' and control.is_disabled() for control in controls[:-1])
+                        assert form.evaluate('document.activeElement.id') == 'status'
+                        assert form.evaluate('localStorage.length + sessionStorage.length') == 0
                         assert errors == []
                     finally:
                         form.close()

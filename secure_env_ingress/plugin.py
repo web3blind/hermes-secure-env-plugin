@@ -418,7 +418,7 @@ def register(ctx):
                 'error': 'Login form unavailable. Check the active Telegram session, browser page, delivery and HTTPS setup.'})
 
     ctx.register_tool(name='browser_vault', toolset='browser',
-        schema={'name': 'browser_vault', 'description': 'Send a one-time HTTPS form for the current browser login page to the bound Telegram chat; save only, never fill or sign in. Link grants access to any chat reader.',
+        schema={'name': 'browser_vault', 'description': 'Send a one-time HTTPS form for the current browser login page to the bound Telegram chat; save only, never fill or sign in. The form asks for the username, the password and an optional authenticator setup key (the site 2FA setup key or otpauth:// link; stored in the encrypted Vault so later 2FA codes are generated without ever being typed in chat) — leave it empty when the site uses no authenticator app. Link grants access to any chat reader.',
                 'parameters': {'type': 'object', 'properties': {'origin': {'type': 'string', 'description': 'Exact current HTTPS origin, no path or trailing slash'},
                     'label': {'type': 'string', 'description': 'Short public login label'}}, 'required': ['origin', 'label'], 'additionalProperties': False}},
         handler=vault_tool, is_async=True)
