@@ -119,6 +119,14 @@ When the already-attached browser page asks for an email, SMS or authenticator o
 
 This inherits the Browser Use compatibility limitation above: its task supervisor/page can differ from the newest named `browser_exec` tab, so verify the actual target before issuance. The plugin cannot prove completion of the site's verification flow, nor prevent a page from auto-submitting. No live account flow has been verified by the synthetic HTTPS/CDP tests.
 
+## One-shot secret operations (0.6.2)
+
+`secure_operation` delivers a one-use secret from the HTTPS form to an administrator-approved external consumer, without saving it to Vault or `.env` or returning it to the agent. Configure the active profile's `plugins.entries.secure-env-ingress.settings.consumers` allowlist with each operation's reviewed Python `path`, `factory`, and `sha256`. The existing programmatic registration API is also supported. There are no enabled consumers by default, no arbitrary command/URL argument, and no project-specific handler bundled with the plugin.
+
+See [operation configuration and integration contract](secure_env_ingress/OPERATIONS.md) for a complete example, registration lifecycle, ownership/integrity checks, and trust limits. Consumers are trusted code running with gateway privileges, not sandboxed. The bearer link authorizes submission but does not prove the submitter's identity. Cancellation of an already-running action reports `unknown` and does not forcibly stop it; do not retry blindly.
+
+This release also recognizes localized verification inputs such as `name="code"` with the label “Введите код”, retaining ambiguous-field and origin-change refusal.
+
 ## Security boundaries
 
 Never type `/senv KEY=value` or paste a key into chat. **An absent/broken plugin cannot protect an accidental secret pasted into chat**: the messenger already received it and Hermes may treat the message as ordinary model input. **Busy-session limitation accepted:** when an agent is active, the host may queue, steer, interrupt or interpret a `/senv` message instead of reaching this command. Wait until the agent finishes or send `/stop` first, then issue a fresh command. Do not assume busy commands avoid model processing or automatically retry.

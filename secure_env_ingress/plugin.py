@@ -1,6 +1,7 @@
 """Public, platform-independent Hermes gateway registration."""
 import asyncio
 import copy
+import hashlib
 import json
 import time
 import threading
@@ -75,6 +76,9 @@ class LazyRuntime:
             return self._get().create_vault(owner, target)
         return self._get().create_vault(owner, target, mode=mode)
 
+    def create_operation(self, owner, target):
+        return self._get().create_operation(owner, target)
+
     def cancel_group(self, group_id):
         with self._lock:
             if self._runtime is not None:
@@ -131,7 +135,7 @@ def register(ctx):
                 runtimes[selected_home] = LazyRuntime({}, selected_home)
             return runtimes[selected_home]
 
-    def read_settings(selected_home):
+    def read_settings(selected_home, *, consumer_config=False):
         token = set_hermes_home_override(selected_home)
         try:
             from hermes_cli.plugins import load_config_readonly
@@ -144,7 +148,11 @@ def register(ctx):
             if not isinstance(source, dict) and isinstance(entry, dict):
                 source = entry.get('config')
             if not isinstance(source, dict):
+                if consumer_config and isinstance(entry, dict) and ('settings' in entry or 'config' in entry):
+                    raise ValueError('invalid plugin settings')
                 return {}
+            if consumer_config:
+                return copy.deepcopy(source.get('consumers', {}))
             return {key: copy.deepcopy(source[key]) for key in SETTING_KEYS if key in source}
         finally:
             reset_hermes_home_override(token)
@@ -431,6 +439,104 @@ def register(ctx):
             return json.dumps({'success': False, 'reason': reason,
                 'error': 'Form unavailable. Check the active Telegram session, browser page, delivery and HTTPS setup.'})
 
+    async def operation_tool(args, *, task_id=None, session_id=None, **_kwargs):
+        """No browser dependency; allowlist binding precedes capability issuance."""
+        reason = 'session_binding'
+        links = None
+        runtime = None
+        creation = None
+        try:
+            from gateway import session_context as sc
+            from agent.delegation_context import is_delegated_child_context
+            from hermes_constants import profile_name_for_home
+            from .operations import bind
+            from .runtime import OperationTarget
+            def bound(var):
+                value = var.get()
+                return None if value is sc._UNSET else value
+            if (closed or not isinstance(args, dict) or set(args) != {'operation', 'parameters'}
+                    or bound(sc._SESSION_PLATFORM) != 'telegram' or bound(sc._CRON_SESSION) != ''
+                    or is_delegated_child_context()):
+                raise ValueError('invalid context')
+            sid, skey = bound(sc._SESSION_ID), bound(sc._SESSION_KEY)
+            owner_text = bound(sc._SESSION_USER_ID)
+            chat, thread = bound(sc._SESSION_CHAT_ID), bound(sc._SESSION_THREAD_ID)
+            profile = bound(sc._SESSION_PROFILE)
+            expected = profile_name_for_home(home) or 'default'
+            if (not sid or sid != task_id or (session_id and session_id != sid)
+                    or not skey or not owner_text or not str(owner_text).isascii()
+                    or not str(owner_text).isdecimal() or not chat
+                    or not str(chat).lstrip('-').isdecimal()
+                    or bound(sc._SESSION_CHAT_TYPE) not in ('dm', 'group', 'forum')
+                    or profile not in ((expected, '') if expected == 'default' else (expected,))
+                    or Path(get_hermes_home()) != home):
+                raise ValueError('session mismatch')
+            current = read_settings(home)
+            owner = ('telegram', str(owner_text))
+            if owner not in configured_owners(current):
+                raise ValueError('owner not allowed')
+            reason = 'consumer_binding'
+            operation = args['operation']
+            selected, frozen = bind(home, operation, args['parameters'])
+            # Identity seals the operation, canonical parameters and originating
+            # context. Only the installed consumer decides what target they mean.
+            identity = hashlib.sha256(json.dumps([operation, frozen.decode('utf-8'),
+                str(home), owner_text, sid, skey, str(chat), str(thread or '')],
+                separators=(',', ':')).encode('utf-8')).digest()
+            target = OperationTarget(operation, selected.summary, selected.execute,
+                (int.from_bytes(identity, 'big'), 0), skey, str(chat), str(thread or ''))
+            reason = 'gateway_delivery'
+            gateway = gateway_ref() if gateway_ref is not None else None
+            if gateway is None:
+                raise ValueError('gateway unavailable')
+            delivery = Delivery(current.get('delivery', 'this_chat'), home)
+            delivery.target('telegram', str(chat), str(thread or ''))
+            runtime = runtime_for(home)
+            runtime.refresh(current)
+            creation = asyncio.create_task(asyncio.to_thread(runtime.create_operation, owner, target))
+            links = await asyncio.shield(creation)
+            text = ('One-time HTTPS secret operation (bearer link): ' + links['url'] +
+                    ' Operation: ' + operation + '. Review the frozen summary on the form before entering a secret. '
+                    'Possession of this link permits execution; it does not verify who opened it. Do not forward.')
+            delivery_task = asyncio.create_task(delivery.send_gateway(gateway, 'telegram', str(chat), str(thread or ''), text))
+            try:
+                await asyncio.wait_for(asyncio.shield(delivery_task),
+                    timeout=min(18, max(0, links['expires_at'] - time.monotonic())))
+            except BaseException:
+                delivery_task.cancel()
+                raise
+            try:
+                outcome = await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(links['completion'])),
+                    timeout=max(0, links['expires_at'] - time.monotonic()))
+            except asyncio.TimeoutError:
+                await asyncio.shield(asyncio.to_thread(runtime.cancel_group, links['group_id']))
+                outcome = links['completion'].result() if links['completion'].done() else {'status': 'unknown'}
+            status = outcome.get('status')
+            if status not in ('completed', 'unknown', 'rejected', 'cancelled', 'superseded', 'expired'):
+                status = 'unknown'
+            return json.dumps({'success': status == 'completed', 'status': status})
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
+            return json.dumps({'success': False, 'status': 'unknown' if links else reason})
+        finally:
+            if creation is not None and links is None:
+                try:
+                    links = await asyncio.shield(creation)
+                except Exception:
+                    pass
+            if links and runtime and not links['completion'].done():
+                await asyncio.shield(asyncio.to_thread(runtime.cancel_group, links['group_id']))
+
+    from .operations import load_configured_consumers
+    load_configured_consumers(home, read_settings(home, consumer_config=True))
+    ctx.register_tool(name='secure_operation', toolset='secure_env',
+        schema={'name': 'secure_operation', 'description': 'Request a pre-registered trusted one-shot operation. Only public operation name and nonsensitive JSON parameters; NEVER send the secret in arguments or chat. HTTPS form displays a frozen summary before secret entry. The link is bearer authorization, not identity verification. Result is fixed status only.',
+                'parameters': {'type': 'object', 'properties': {
+                    'operation': {'type': 'string', 'description': 'Administrator-registered operation identifier'},
+                    'parameters': {'type': 'object', 'description': 'Nonsensitive operation parameters, never a password'}},
+                    'required': ['operation', 'parameters'], 'additionalProperties': False}},
+        handler=operation_tool, is_async=True)
     ctx.register_tool(name='browser_vault', toolset='browser',
         schema={'name': 'browser_vault', 'description': 'Send a one-time HTTPS form to the bound Telegram chat. Default login mode saves username/password and optional authenticator setup key to encrypted Vault, without filling or signing in. mode=code instead asks only for a one-time email/SMS/authenticator verification code and fills the captured browser page over supervisor CDP, without storing it or submitting the site form. Never put code or credentials in tool arguments or chat. Link grants access to any chat reader.',
                 'parameters': {'type': 'object', 'properties': {'origin': {'type': 'string', 'description': 'Exact current HTTPS origin, no path or trailing slash'},
@@ -447,4 +553,6 @@ def register(ctx):
         closed = True
         for runtime in runtimes.values():
             runtime.close()
+        from .operations import clear_consumers
+        clear_consumers(home)
     ctx.on_unload(close)

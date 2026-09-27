@@ -62,6 +62,35 @@ def test_https_code_fill_no_vault_replay_and_no_echo(harness, caplog):
     assert code not in caplog.text and code not in json.dumps(result)
 
 
+@pytest.mark.parametrize('maximum,expected', [(-1, 200), (None, 200), (6, 200), (5, 409), (0, 409)])
+def test_google_style_code_field_length(harness, maximum, expected):
+    _, cfg, _, root, _, state, _, _ = harness
+    state['controls'][0].update(type='tel', name='code', autocomplete='',
+                                label='Введите код', maxLength=maximum)
+    links, token = issue(harness)
+    status, result = post(cfg, root, '/submit', {
+        'token': token, 'initData': '', 'values': ['A1B2C3']})
+    assert status == expected
+    if expected == 200:
+        assert result == {'filled': True}
+        assert links['completion'].result(timeout=1)['status'] == 'filled'
+
+
+@pytest.mark.parametrize('name,label,duplicate', [
+    ('postal_code', 'Postal code', False), ('promo_code', 'Promo code', False),
+    ('code', 'Unrelated value', False), ('code', 'Введите код', True),
+])
+def test_localized_code_fallback_does_not_guess(harness, name, label, duplicate):
+    _, cfg, _, root, _, state, scripts, _ = harness
+    state['controls'][0].update(type='tel', name=name, label=label, autocomplete='')
+    if duplicate:
+        state['controls'].append(dict(state['controls'][0], index=1))
+    _, token = issue(harness)
+    assert post(cfg, root, '/submit', {
+        'token': token, 'initData': '', 'values': ['A1B2C3']})[0] == 409
+    assert not any('const expectedOrigin' in script for script in scripts)
+
+
 @pytest.mark.parametrize('case,expected', [
     ('invalid', 400), ('no_field', 409), ('ambiguous', 409),
     ('origin', 409), ('page', 409), ('partial', 409),

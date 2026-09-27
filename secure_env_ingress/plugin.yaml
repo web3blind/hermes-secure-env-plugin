@@ -1,5 +1,5 @@
 name: secure-env-ingress
-version: 0.6.1
+version: 0.6.2
 description: Profile-scoped HTTPS secret entry through normalized Hermes gateway commands.
 author: web3blind
 python_dependencies:
@@ -8,5 +8,6 @@ python_dependencies:
   - "python-telegram-bot>=22.6,<23"
 provides_tools:
   - browser_vault
+  - secure_operation
 provides_hooks:
   - pre_gateway_dispatch

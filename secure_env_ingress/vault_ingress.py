@@ -208,13 +208,27 @@ def fill_verification_code(target: VaultTarget, code: str, *, expires_at: float)
         raw = json.loads(raw)
     if not isinstance(raw, list):
         raise ValueError('inspection failed')
-    controls = classify_otp_controls([LoginControl.from_dict(item) for item in raw if isinstance(item, dict)])
+    descriptors = [LoginControl.from_dict(item) for item in raw if isinstance(item, dict)]
+    # Some localized verification forms omit autocomplete and use only name=code.
+    # Keep exact-name matching narrow: never select postal/promo/security-code fields
+    # merely because their name contains the word 'code'. Include every candidate
+    # so the ambiguity check still refuses multiple unrelated code fields.
+    from agent.vault_login_classifier import ClassifiedLoginControl
+    controls = classify_otp_controls(descriptors)
+    classified_indices = {item.control.index for item in controls}
+    for control in descriptors:
+        if (control.index not in classified_indices and control.name.split()[:1] == ['code']
+                and control.type in ('text', 'tel', 'number', '')
+                and re.search(r'\b(?:code|код)\b', control.label, re.IGNORECASE)):
+            controls.append(ClassifiedLoginControl(control, 70, 'one-time-code'))
+    controls.sort(key=lambda item: item.control.index)
     if not controls:
         raise ValueError('no code field')
     fills = build_otp_fills(controls, code)
     if len(controls) != len(fills):
         raise ValueError('ambiguous code field')
-    if len(fills) == 1 and controls[0].control.max_length is not None and controls[0].control.max_length < len(code):
+    if (len(fills) == 1 and controls[0].control.max_length is not None
+            and 0 <= controls[0].control.max_length < len(code)):
         raise ValueError('code field too short')
     assert_browser_target(target)
     if _attached_supervisor(target.browser_task) != (supervisor, session):

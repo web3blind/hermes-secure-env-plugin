@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
+from dataclasses import dataclass, field
 import datetime as dt
 import os
 from pathlib import Path
@@ -24,6 +26,17 @@ from .vault_ingress import VaultTarget, assert_browser_target, assert_profile_ho
 # itself — the code then never travels through the chat.
 VAULT_LOGIN_KEYS = ('Username', 'Password', 'Authenticator key (optional)')
 CODE_KEYS = ('Verification code',)
+OPERATION_KEYS = ('Secret',)
+
+@dataclass(frozen=True)
+class OperationTarget:
+    name: str
+    summary: str
+    execute: object = field(repr=False)
+    identity: tuple[int, int]
+    session_key: str
+    chat: str
+    thread: str
 
 
 class IngressRuntime:
@@ -42,6 +55,9 @@ class IngressRuntime:
         self._vault_context = None
         self._vault_binding = None
         self._code_groups = set()
+        self._operation_groups = set()
+        self._operation_context = None
+        self._operation_inflight = None  # (group, owner); persists until callback returns
         self._server = None
         self._closed = False
         self._stop = threading.Event()
@@ -155,10 +171,54 @@ class IngressRuntime:
                 self._stop_listener()
                 raise
 
+    def create_operation(self, owner, target: OperationTarget):
+        with self._lock:
+            if (self._closed or owner not in self.config.owners or not isinstance(target, OperationTarget)):
+                raise HTTPError(403, 'denied')
+            if self._operation_inflight is not None:
+                raise HTTPError(409, 'operation_busy')
+            from hermes_constants import profile_name_for_home
+            profile = profile_name_for_home(self.home) or 'default'
+            self._tls()
+            self._leader.acquire()
+            try:
+                if self._server is None:
+                    context = create_server_ssl_context(self.config.cert_path, self.config.key_path,
+                                                        expected_ip=self.config.public_ip, trust_roots=self._trust_roots)
+                    self._server = HTTPSFormServer((self.config.listen_host, self.config.listen_port), context, self)
+                    self._server.start()
+                browser, _mini = self._store.issue_pair(
+                    platform=owner[0], user_id=owner[1], hermes_home=self.home,
+                    profile_name=profile, allowed_keys=OPERATION_KEYS,
+                    target_id=target.identity, ttl_seconds=min(self.config.ttl_seconds, 240))
+                self._targets = {browser.group_id: target}
+                self._finish_completion('superseded')
+                self._operation_groups.clear()
+                self._operation_groups.add(browser.group_id)
+                from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+                scope = set_hermes_home_override(self.home)
+                try:
+                    self._operation_context = (browser.group_id, contextvars.copy_context())
+                finally:
+                    reset_hermes_home_override(scope)
+                completion = Future()
+                self._completion = (browser.group_id, completion)
+                if self._monitor is None or not self._monitor.is_alive():
+                    self._stop.clear()
+                    self._monitor = threading.Thread(target=self._watch, daemon=True, name='secure-env-expiry')
+                    self._monitor.start()
+                return {'url': f'{self._origin()}/e#{browser.token}', 'group_id': browser.group_id,
+                        'completion': completion, 'expires_at': browser.expires_at}
+            except Exception:
+                self._stop_listener()
+                raise
+
     def _claim(self, token, init_data):
         claim = self._store.peek(token)
         if claim is None or claim.group_id not in self._targets:
             raise HTTPError(410, 'invalid_session')
+        if claim.group_id in self._operation_groups and claim.mode != 'browser':
+            raise HTTPError(403, 'invalid_session')
         if claim.mode == 'mini':
             if not self.config.mini_app_enabled or claim.platform != 'telegram' or not self._bot_token:
                 raise HTTPError(403, 'invalid_session')
@@ -177,6 +237,9 @@ class IngressRuntime:
                 raise HTTPError(403, 'invalid_session')
             claim = self._claim(token, init_data)
             target = self._targets[claim.group_id]
+            if isinstance(target, OperationTarget):
+                return {'label': target.name, 'keys': list(OPERATION_KEYS),
+                        'kind': 'secure_operation', 'summary': target.summary}
             if isinstance(target, VaultTarget):
                 from hermes_constants import profile_name_for_home
                 profile = profile_name_for_home(self.home) or 'default'
@@ -192,6 +255,10 @@ class IngressRuntime:
                 raise HTTPError(403, 'invalid_session')
             claim = self._claim(token, init_data)
             resolved = self._targets[claim.group_id]
+            if isinstance(resolved, OperationTarget):
+                context = self._submit_operation(token, claim, resolved, values)
+            else:
+                context = None
             if isinstance(resolved, VaultTarget):
                 bound_context = self._vault_context
                 if (bound_context is None or bound_context[0] != claim.group_id or
@@ -201,26 +268,81 @@ class IngressRuntime:
                 if claim.group_id in self._code_groups:
                     return bound_context[1].copy().run(self._submit_code, token, claim, resolved, values)
                 return bound_context[1].copy().run(self._submit_vault, token, claim, resolved, values)
-            consumed = self._store.consume(token, mode=claim.mode, platform=claim.platform,
+            if not isinstance(resolved, OperationTarget):
+                consumed = self._store.consume(token, mode=claim.mode, platform=claim.platform,
                                            user_id=claim.user_id, hermes_home=self.home,
                                            profile_name=resolved.profile.name,
                                            allowed_keys=resolved.profile.keys,
                                            target_id=self._target_id(resolved.target))
-            if consumed is None:
-                raise HTTPError(410, 'invalid_session')
-            self._targets.clear()
-            if (not isinstance(values, list) or len(values) != len(claim.allowed_keys)
+                if consumed is None:
+                    raise HTTPError(410, 'invalid_session')
+                self._targets.clear()
+                if (not isinstance(values, list) or len(values) != len(claim.allowed_keys)
                     or any(not isinstance(v, str) or not v or len(v.encode('utf-8')) > 16384
                            or any(c in v for c in ('\r', '\n', '\x00')) or '${' in v for v in values)):
-                raise HTTPError(400, 'invalid_values')
-            try:
-                result = add_missing(resolved.target.path, dict(zip(claim.allowed_keys, values)),
+                    raise HTTPError(400, 'invalid_values')
+                try:
+                    result = add_missing(resolved.target.path, dict(zip(claim.allowed_keys, values)),
                                      binding=resolved.target, require_all_missing=True)
-                return {'added': list(result.added)}
-            except HTTPError:
-                raise
-            except Exception:
-                raise HTTPError(409, 'write_failed') from None
+                    return {'added': list(result.added)}
+                except HTTPError:
+                    raise
+                except Exception:
+                    raise HTTPError(409, 'write_failed') from None
+        # A trusted callback can block indefinitely; never hold the lifecycle lock here.
+        return self._execute_operation(claim.group_id, resolved, values[0], context)
+
+    def _submit_operation(self, token, claim, target, values):
+        from hermes_constants import profile_name_for_home
+        if claim.profile_name != (profile_name_for_home(self.home) or 'default'):
+            raise HTTPError(403, 'invalid_session')
+        consumed = self._store.consume(token, mode='browser', platform=claim.platform,
+            user_id=claim.user_id, hermes_home=self.home, profile_name=claim.profile_name,
+            allowed_keys=OPERATION_KEYS, target_id=target.identity)
+        if consumed is None:
+            raise HTTPError(410, 'invalid_session')
+        self._targets.pop(claim.group_id, None)
+        self._operation_groups.discard(claim.group_id)
+        if (not isinstance(values, list) or len(values) != 1 or not isinstance(values[0], str)
+                or not values[0] or len(values[0].encode('utf-8')) > 4096):
+            self._finish_completion('rejected', claim.group_id)
+            raise HTTPError(400, 'invalid_values')
+        if time.monotonic() >= claim.expires_at:
+            self._finish_completion('expired', claim.group_id)
+            raise HTTPError(410, 'invalid_session')
+        bound = self._operation_context
+        if bound is None or bound[0] != claim.group_id:
+            self._finish_completion('unknown', claim.group_id)
+            raise HTTPError(409, 'operation_unconfirmed')
+        self._operation_inflight = (claim.group_id, (claim.platform, claim.user_id))
+        return bound[1].copy()
+
+    def _execute_operation(self, group_id, target, secret, context):
+        try:
+            # Trusted in-process callable. Its result is intentionally discarded.
+            result = context.run(target.execute, secret)
+            if inspect.isawaitable(result):
+                # Never report an unawaited/asynchronous action as complete.
+                close = getattr(result, 'close', None)
+                if callable(close):
+                    close()
+                raise RuntimeError('asynchronous consumer result')
+        except BaseException:
+            # It may have acted before raising. No retry or exception text.
+            with self._lock:
+                self._finish_completion('unknown', group_id)
+            raise HTTPError(409, 'operation_unconfirmed') from None
+        else:
+            with self._lock:
+                pending = self._completion is not None and self._completion[0] == group_id
+                self._finish_completion('completed', group_id)
+            if pending:
+                return {'completed': True}
+            raise HTTPError(409, 'operation_unconfirmed')
+        finally:
+            with self._lock:
+                if self._operation_inflight is not None and self._operation_inflight[0] == group_id:
+                    self._operation_inflight = None
 
     def _submit_code(self, token, claim, target, values):
         consumed = self._store.consume(token, mode=claim.mode, platform=claim.platform,
@@ -320,6 +442,9 @@ class IngressRuntime:
     def _finish_completion(self, status, group_id=None, **metadata):
         current = self._completion
         if current is not None and (group_id is None or current[0] == group_id):
+            if (self._operation_inflight is not None and self._operation_inflight[0] == current[0]
+                    and status != 'completed'):
+                status = 'unknown'  # Revocation does not stop an already running callback.
             self._completion = None
             if not current[1].done():
                 current[1].set_result({'status': status, **metadata})
@@ -328,6 +453,9 @@ class IngressRuntime:
             if self._vault_context is not None and self._vault_context[0] == current[0]:
                 self._vault_context = None
             self._code_groups.discard(current[0])
+            self._operation_groups.discard(current[0])
+            if self._operation_context is not None and self._operation_context[0] == current[0]:
+                self._operation_context = None
 
     def reject_submission(self, token, init_data):
         """Authenticated malformed submission is terminal, without writing."""
@@ -348,6 +476,8 @@ class IngressRuntime:
     def cancel(self, owner):
         owner = ('telegram', str(owner)) if type(owner) is int else owner
         with self._lock:
+            if self._operation_inflight is not None and self._operation_inflight[1] == owner:
+                self._finish_completion('unknown', self._operation_inflight[0])
             if self._store.cancel(platform=owner[0], user_id=owner[1], hermes_home=self.home):
                 self._finish_completion('cancelled')
                 self._targets.clear()

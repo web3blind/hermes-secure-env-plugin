@@ -27,7 +27,7 @@ def fixture_page(kind):
         fields = ('<label for="first">Verification code</label><input id="first" name="verification_code" autocomplete="one-time-code">'
                   '<label for="second">Verification code</label><input id="second" name="verification_code" autocomplete="one-time-code">')
     else:
-        fields = '<label for="otp">Verification code</label><input id="otp" name="verification_code" autocomplete="one-time-code">'
+        fields = '<input id="otp" name="code" type="tel" aria-label="Введите код">'
     return ('<!doctype html><title>Disposable challenge</title><form id="challenge">' + fields +
             '<button type="submit">Sign in</button></form><script>'
             'window.siteSubmissions=0;document.getElementById("challenge").addEventListener("submit",'

@@ -100,7 +100,9 @@ async def test_status_snapshot_refresh_requires_authorization(monkeypatch, tmp_p
     changed = {"allowed_telegram_user_ids": [88], "profiles": {"one": {"keys": ["B"]}}}
     raw_initial = {"plugins": {"entries": {"secure-env-ingress": {"settings": initial}}}}
     raw_changed = {"plugins": {"entries": {"secure-env-ingress": {"settings": changed}}}}
-    snapshots = iter((raw_initial, raw_changed, raw_changed))
+    # Startup reads consumer config; host hook timeout resolution also reads config.
+    # Keep both on the initial snapshot so the command sees the changed schema.
+    snapshots = iter((raw_initial, raw_initial, raw_changed, raw_changed))
 
     from gateway.config import Platform
     from gateway.platforms.event import MessageEvent
