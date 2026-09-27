@@ -70,8 +70,10 @@ class LazyRuntime:
     def create(self, owner, name):
         return self._get().create(owner, name)
 
-    def create_vault(self, owner, target):
-        return self._get().create_vault(owner, target)
+    def create_vault(self, owner, target, *, mode='login'):
+        if mode == 'login':
+            return self._get().create_vault(owner, target)
+        return self._get().create_vault(owner, target, mode=mode)
 
     def cancel_group(self, group_id):
         with self._lock:
@@ -315,8 +317,11 @@ def register(ctx):
             def bound(var):
                 value = var.get()
                 return None if value is sc._UNSET else value
-            if closed or not isinstance(args, dict) or set(args) != {'origin', 'label'}:
+            if (closed or not isinstance(args, dict) or
+                    (set(args) != {'origin', 'label'} and set(args) != {'origin', 'label', 'mode'}) or
+                    args.get('mode', 'login') not in ('login', 'code')):
                 raise ValueError('invalid request')
+            code_mode = args.get('mode', 'login') == 'code'
             if bound(sc._SESSION_PLATFORM) != 'telegram' or bound(sc._CRON_SESSION) != '':
                 raise ValueError('not an interactive Telegram turn')
             from agent.delegation_context import is_delegated_child_context
@@ -352,14 +357,16 @@ def register(ctx):
             delivery = Delivery(current.get('delivery', 'this_chat'), home)
             # No model-supplied destination. The actual chat/thread come from bound gateway context.
             delivery.target('telegram', chat, thread)
-            creation = asyncio.create_task(asyncio.to_thread(runtime.create_vault, ('telegram', owner_text), target))
+            creation = asyncio.create_task(asyncio.to_thread(runtime.create_vault, ('telegram', owner_text), target,
+                                                              **({'mode': 'code'} if code_mode else {})))
             try:
                 links = await asyncio.shield(creation)
                 from .vault_ingress import assert_browser_target
                 assert_profile_home(home)
                 await asyncio.to_thread(assert_browser_target, target)
-                text = ('One-time HTTPS login form: ' + links['url'] + ' for ' + target.origin + '. Anyone who can read this message can use the link. '
-                        'Do not use a public or untrusted chat. Do not forward it. Saving does not fill or sign in.')
+                text = ('One-time HTTPS ' + ('verification code' if code_mode else 'login') + ' form: ' + links['url'] + ' for ' + target.origin + '. Anyone who can read this message can use the link. '
+                        'Do not use a public or untrusted chat. Do not forward it. ' +
+                        ('Submitting fills the current browser code field, not the site form.' if code_mode else 'Saving does not fill or sign in.'))
                 delivery_task = asyncio.create_task(
                     delivery.send_gateway(gateway, 'telegram', chat, thread, text))
                 try:
@@ -373,12 +380,13 @@ def register(ctx):
                     await asyncio.shield(asyncio.to_thread(runtime.cancel_group, links['group_id']))
                     prior = links['completion'].result() if links['completion'].done() else {'status': 'send_failed'}
                     if prior['status'] != 'saved':
-                        status = ('unknown' if prior['status'] == 'unknown' else
+                        status = ('unknown' if prior['status'] in ('unknown', 'filled') else
                                   'expired' if isinstance(delivery_error, asyncio.TimeoutError)
                                   and time.monotonic() >= links['expires_at'] else 'send_failed')
                         return json.dumps({'success': False, 'status': status,
                             'saved': None if status == 'unknown' else False,
-                            'filled': False, 'error': 'Login form delivery failed, expired or write status is unknown.'})
+                            'filled': None if status == 'unknown' else False,
+                            'error': 'Form delivery failed, expired or outcome is unknown.'})
                 # The tool remains suspended until the real HTTPS submission commits (or
                 # the capability expires). The Future holds metadata only, never form values.
                 completion = links['completion']
@@ -397,9 +405,15 @@ def register(ctx):
                     return json.dumps({'success': True, 'status': 'saved', 'saved': True,
                         'filled': False, 'handle': outcome['handle'], 'origin': outcome['origin'],
                         'next': 'Recheck current browser page and origin, then use native browser_vault_list, type the identifier with browser_type and call native browser_vault_fill. Saving did not fill or sign in.'})
+                if code_mode and outcome['status'] == 'filled':
+                    return json.dumps({'success': True, 'status': 'filled', 'saved': False,
+                        'filled': True, 'origin': outcome['origin'],
+                        'next': 'Check the site. Submit its form if needed; some sites auto-submit when filled.'})
                 return json.dumps({'success': False, 'status': outcome['status'],
-                    'saved': None if outcome['status'] == 'unknown' else False, 'filled': False,
-                    'error': 'Login was not confirmed saved. Recheck native browser_vault_list before retrying if status is unknown.'})
+                    'saved': None if outcome['status'] == 'unknown' else False,
+                    'filled': None if code_mode and outcome['status'] == 'unknown' else False,
+                    'error': ('Code fill was not confirmed; check the browser before retrying.' if code_mode else
+                              'Login was not confirmed saved. Recheck native browser_vault_list before retrying if status is unknown.')})
             except BaseException:
                 # A cancelled to_thread worker can complete AFTER its coroutine is cancelled.
                 # Wait for that exact issuance, then revoke it; never revoke a newer owner request.
@@ -415,12 +429,13 @@ def register(ctx):
             raise
         except BaseException:
             return json.dumps({'success': False, 'reason': reason,
-                'error': 'Login form unavailable. Check the active Telegram session, browser page, delivery and HTTPS setup.'})
+                'error': 'Form unavailable. Check the active Telegram session, browser page, delivery and HTTPS setup.'})
 
     ctx.register_tool(name='browser_vault', toolset='browser',
-        schema={'name': 'browser_vault', 'description': 'Send a one-time HTTPS form for the current browser login page to the bound Telegram chat; save only, never fill or sign in. The form asks for the username, the password and an optional authenticator setup key (the site 2FA setup key or otpauth:// link; stored in the encrypted Vault so later 2FA codes are generated without ever being typed in chat) — leave it empty when the site uses no authenticator app. Link grants access to any chat reader.',
+        schema={'name': 'browser_vault', 'description': 'Send a one-time HTTPS form to the bound Telegram chat. Default login mode saves username/password and optional authenticator setup key to encrypted Vault, without filling or signing in. mode=code instead asks only for a one-time email/SMS/authenticator verification code and fills the captured browser page over supervisor CDP, without storing it or submitting the site form. Never put code or credentials in tool arguments or chat. Link grants access to any chat reader.',
                 'parameters': {'type': 'object', 'properties': {'origin': {'type': 'string', 'description': 'Exact current HTTPS origin, no path or trailing slash'},
-                    'label': {'type': 'string', 'description': 'Short public login label'}}, 'required': ['origin', 'label'], 'additionalProperties': False}},
+                    'label': {'type': 'string', 'description': 'Short public site label'},
+                    'mode': {'type': 'string', 'enum': ['login', 'code'], 'description': 'Omit for login; code for standalone one-time verification field'}}, 'required': ['origin', 'label'], 'additionalProperties': False}},
         handler=vault_tool, is_async=True)
     ctx.register_skill('setup', Path(__file__).parent / 'setup' / 'SKILL.md',
                        description='Install and diagnose secure-env-ingress; never handle secret values.')

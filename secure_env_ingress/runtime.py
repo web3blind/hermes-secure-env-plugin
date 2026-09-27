@@ -23,6 +23,7 @@ from .vault_ingress import VaultTarget, assert_browser_target, assert_profile_ho
 # authenticator app); when present it is stored with the login so the native vault can mint 2FA codes
 # itself — the code then never travels through the chat.
 VAULT_LOGIN_KEYS = ('Username', 'Password', 'Authenticator key (optional)')
+CODE_KEYS = ('Verification code',)
 
 
 class IngressRuntime:
@@ -40,6 +41,7 @@ class IngressRuntime:
         self._completion = None
         self._vault_context = None
         self._vault_binding = None
+        self._code_groups = set()
         self._server = None
         self._closed = False
         self._stop = threading.Event()
@@ -103,14 +105,15 @@ class IngressRuntime:
                 self._stop_listener()
                 raise
 
-    def create_vault(self, owner, target: VaultTarget):
+    def create_vault(self, owner, target: VaultTarget, *, mode='login'):
         with self._lock:
             if (self._closed or not isinstance(owner, tuple) or len(owner) != 2
-                    or owner[0] != 'telegram' or owner not in self.config.owners):
+                    or owner[0] != 'telegram' or owner not in self.config.owners
+                    or mode not in ('login', 'code')):
                 raise HTTPError(403, 'denied')
             assert_profile_home(self.home)
             assert_browser_target(target)
-            binding = bind_vault_home(self.home)
+            binding = bind_vault_home(self.home) if mode == 'login' else None
             self._tls()
             self._leader.acquire()
             try:
@@ -121,11 +124,15 @@ class IngressRuntime:
                     self._server.start()
                 browser, mini = self._store.issue_pair(
                     platform=owner[0], user_id=owner[1], hermes_home=self.home,
-                    profile_name='browser_vault', allowed_keys=VAULT_LOGIN_KEYS,
+                    profile_name='browser_vault_code' if mode == 'code' else 'browser_vault',
+                    allowed_keys=CODE_KEYS if mode == 'code' else VAULT_LOGIN_KEYS,
                     target_id=(target.browser_identity, os.getuid()),
                     ttl_seconds=min(self.config.ttl_seconds, 240))
                 self._targets = {browser.group_id: target}
                 self._finish_completion('superseded')
+                self._code_groups.clear()
+                if mode == 'code':
+                    self._code_groups.add(browser.group_id)
                 from hermes_constants import set_hermes_home_override, reset_hermes_home_override
                 scope = set_hermes_home_override(self.home)
                 try:
@@ -134,7 +141,7 @@ class IngressRuntime:
                     reset_hermes_home_override(scope)
                 completion = Future()
                 self._completion = (browser.group_id, completion)
-                self._vault_binding = (browser.group_id, binding)
+                self._vault_binding = (browser.group_id, binding) if binding is not None else None
                 if self._monitor is None or not self._monitor.is_alive():
                     self._stop.clear()
                     self._monitor = threading.Thread(target=self._watch, daemon=True, name='secure-env-expiry')
@@ -173,8 +180,10 @@ class IngressRuntime:
             if isinstance(target, VaultTarget):
                 from hermes_constants import profile_name_for_home
                 profile = profile_name_for_home(self.home) or 'default'
+                code_mode = claim.group_id in self._code_groups
                 return {'label': target.label + ' — ' + target.origin + ' — Profile: ' + profile,
-                        'keys': list(VAULT_LOGIN_KEYS), 'kind': 'browser_vault'}
+                        'keys': list(CODE_KEYS if code_mode else VAULT_LOGIN_KEYS),
+                        'kind': 'browser_code' if code_mode else 'browser_vault'}
             return {'label': claim.profile_name, 'keys': list(claim.allowed_keys)}
 
     def submit(self, token, init_data, values):
@@ -186,8 +195,11 @@ class IngressRuntime:
             if isinstance(resolved, VaultTarget):
                 bound_context = self._vault_context
                 if (bound_context is None or bound_context[0] != claim.group_id or
-                        self._vault_binding is None or self._vault_binding[0] != claim.group_id):
+                        (claim.group_id not in self._code_groups and
+                         (self._vault_binding is None or self._vault_binding[0] != claim.group_id))):
                     raise HTTPError(410, 'invalid_session')
+                if claim.group_id in self._code_groups:
+                    return bound_context[1].copy().run(self._submit_code, token, claim, resolved, values)
                 return bound_context[1].copy().run(self._submit_vault, token, claim, resolved, values)
             consumed = self._store.consume(token, mode=claim.mode, platform=claim.platform,
                                            user_id=claim.user_id, hermes_home=self.home,
@@ -209,6 +221,38 @@ class IngressRuntime:
                 raise
             except Exception:
                 raise HTTPError(409, 'write_failed') from None
+
+    def _submit_code(self, token, claim, target, values):
+        consumed = self._store.consume(token, mode=claim.mode, platform=claim.platform,
+            user_id=claim.user_id, hermes_home=self.home, profile_name='browser_vault_code',
+            allowed_keys=CODE_KEYS, target_id=(target.browser_identity, os.getuid()))
+        if consumed is None:
+            raise HTTPError(410, 'invalid_session')
+        self._targets.pop(claim.group_id, None)
+        self._code_groups.discard(claim.group_id)
+        if (not isinstance(values, list) or len(values) != 1 or
+                not isinstance(values[0], str) or len(values[0]) > 16 or
+                not values[0].isascii() or not values[0].isalnum() or len(values[0]) < 4):
+            self._finish_completion('rejected', claim.group_id)
+            raise HTTPError(400, 'invalid_values')
+        try:
+            assert_profile_home(self.home)
+            if time.monotonic() >= claim.expires_at:
+                self._finish_completion('expired', claim.group_id)
+                raise HTTPError(410, 'invalid_session')
+            from .vault_ingress import fill_verification_code
+            filled = fill_verification_code(target, values[0], expires_at=claim.expires_at)
+        except HTTPError:
+            raise
+        except Exception:
+            # A CDP timeout can occur after the page has already received the code.
+            self._finish_completion('unknown', claim.group_id)
+            raise HTTPError(409, 'fill_unconfirmed') from None
+        if not filled:
+            self._finish_completion('unknown', claim.group_id)
+            raise HTTPError(409, 'fill_unconfirmed')
+        self._finish_completion('filled', claim.group_id, origin=target.origin)
+        return {'filled': True}
 
     def _submit_vault(self, token, claim, target, values):
         consumed = self._store.consume(token, mode=claim.mode, platform=claim.platform,
@@ -283,6 +327,7 @@ class IngressRuntime:
                 self._vault_binding = None
             if self._vault_context is not None and self._vault_context[0] == current[0]:
                 self._vault_context = None
+            self._code_groups.discard(current[0])
 
     def reject_submission(self, token, init_data):
         """Authenticated malformed submission is terminal, without writing."""

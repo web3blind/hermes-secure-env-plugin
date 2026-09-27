@@ -340,6 +340,11 @@ class _Handler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _validate_session_result(value: Any) -> dict[str, Any]:
+        if isinstance(value, dict) and value.get('kind') == 'browser_code':
+            if (set(value) != {'label', 'keys', 'kind'} or value['keys'] != ['Verification code']
+                    or not isinstance(value['label'], str) or len(value['label'].encode('utf-8')) > 768):
+                raise RuntimeError('unsafe session response')
+            return {'label': value['label'], 'keys': ['Verification code'], 'kind': 'browser_code'}
         if isinstance(value, dict) and value.get('kind') == 'browser_vault':
             if (set(value) != {'label', 'keys', 'kind'}
                     or value['keys'] != ['Username', 'Password', 'Authenticator key (optional)']
@@ -356,6 +361,8 @@ class _Handler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _validate_submit_result(value: Any) -> dict[str, Any]:
+        if isinstance(value, dict) and value == {'filled': True}:
+            return {'filled': True}
         if isinstance(value, dict) and value == {'saved': True}:
             return {'saved': True}
         if not isinstance(value, dict) or set(value) != {"added"}:

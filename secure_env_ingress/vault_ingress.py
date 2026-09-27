@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+import re
+import secrets
+import time
 import stat
 import os
 from pathlib import Path
@@ -183,3 +187,45 @@ def capture_browser_target(origin: str, label: str, task_id: str, session_id: st
                          id(supervisor), page_session)
     assert_browser_target(target)
     return target
+
+
+def fill_verification_code(target: VaultTarget, code: str, *, expires_at: float) -> bool:
+    """Fill the captured page through its supervisor CDP socket, never CLI eval/argv."""
+    from agent.vault_login_classifier import (LoginControl, build_fill_js,
+        build_inspection_js, build_otp_fills, classify_otp_controls)
+    if not isinstance(code, str) or not re.fullmatch(r'[A-Za-z0-9]{4,16}', code):
+        raise ValueError('invalid code')
+    assert_browser_target(target)
+    supervisor, session = _attached_supervisor(target.browser_task)
+    if id(supervisor) != target.supervisor_identity or session != target.page_session_id:
+        raise ValueError('page changed')
+    nonce = secrets.token_hex(8)
+    inspected = supervisor.evaluate_runtime(build_inspection_js(nonce))
+    if not inspected.get('ok'):
+        raise ValueError('inspection failed')
+    raw = inspected.get('result')
+    if isinstance(raw, str):
+        raw = json.loads(raw)
+    if not isinstance(raw, list):
+        raise ValueError('inspection failed')
+    controls = classify_otp_controls([LoginControl.from_dict(item) for item in raw if isinstance(item, dict)])
+    if not controls:
+        raise ValueError('no code field')
+    fills = build_otp_fills(controls, code)
+    if len(controls) != len(fills):
+        raise ValueError('ambiguous code field')
+    if len(fills) == 1 and controls[0].control.max_length is not None and controls[0].control.max_length < len(code):
+        raise ValueError('code field too short')
+    assert_browser_target(target)
+    if _attached_supervisor(target.browser_task) != (supervisor, session):
+        raise ValueError('page changed')
+    if time.monotonic() >= expires_at:
+        raise ValueError('expired')
+    # The captured supervisor's private CDP WebSocket never places code in argv.
+    result = supervisor.evaluate_runtime(build_fill_js(fills, expected_origin=target.origin, nonce=nonce))
+    if not result.get('ok'):
+        raise ValueError('fill failed')
+    output = result.get('result')
+    if isinstance(output, str):
+        output = json.loads(output)
+    return isinstance(output, dict) and output.get('filled') == len(fills) and bool(fills)

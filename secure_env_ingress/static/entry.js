@@ -11,6 +11,7 @@
   let initData = "";
   let terminal = false;
   let vault = false;
+  let codeMode = false;
 
   function decode(value) {
     try { return decodeURIComponent(value.replace(/\+/g, " ")); }
@@ -96,6 +97,8 @@
     }
     profile.textContent = data.label;
     vault = data.kind === 'browser_vault';
+    codeMode = data.kind === 'browser_code';
+    if (codeMode && (data.keys.length !== 1 || data.keys[0] !== 'Verification code')) throw new Error('invalid_response');
     // Accept the legacy two-field answer as well: during a deploy the assets can be newer than the
     // loaded backend, and the form must keep working until the gateway restarts.
     const expectedKeys = vault && data.keys.length === 2 ? VAULT_KEYS.slice(0, 2) : VAULT_KEYS;
@@ -118,6 +121,7 @@
       input.autocapitalize = "none";
       input.spellcheck = false;
       input.required = !optional;
+      if (codeMode) { input.minLength = 4; input.maxLength = 16; input.pattern = '[A-Za-z0-9]{4,16}'; }
       label.htmlFor = input.id;
       label.textContent = key;
       wrapper.append(label, input);
@@ -139,7 +143,7 @@
       }
       fields.append(wrapper);
     });
-    intro.textContent = vault ? "Save a login for this exact site. Anyone with this link can submit it. Saving does not fill the browser or sign in. Enter credentials only here, never in chat." : "Enter your secrets. They are sent directly to the server, not through chat. This page does not store them in browser storage.";
+    intro.textContent = codeMode ? "Enter only the one-time code from email, SMS, or your authenticator app. The code fills the captured browser page; this does not submit the site's form. Never type it in chat. Anyone with this link can use it." : vault ? "Save a login for this exact site. Anyone with this link can submit it. Saving does not fill the browser or sign in. Enter credentials only here, never in chat." : "Enter your secrets. They are sent directly to the server, not through chat. This page does not store them in browser storage.";
     form.hidden = false;
     form.querySelector("input").focus();
   }
@@ -175,13 +179,14 @@
       return;
     }
     submit.disabled = true;
-    status.textContent = "Saving…";
+    status.textContent = codeMode ? "Filling…" : "Saving…";
     try {
-      await post("/submit", { token: capability, initData, values });
-      disableAndClear(vault ? "Login saved to the encrypted Vault. The browser has not been filled or signed in. You can close this page." : "Secrets saved. You can close this page.");
+      const response = await post("/submit", { token: capability, initData, values });
+      if (codeMode && response.filled !== true) throw new Error('fill_unconfirmed');
+      disableAndClear(codeMode ? "Code filled in the browser. Check the site and submit its form if needed. You can close this page." : vault ? "Login saved to the encrypted Vault. The browser has not been filled or signed in. You can close this page." : "Secrets saved. You can close this page.");
     } catch (error) {
       const rejectedKey = vault && error && error.message === "invalid_authenticator_key";
-      disableAndClear(rejectedKey ? "The authenticator key was rejected, so nothing was saved. Check the setup key, then request a new link." : vault ? "The save result is unconfirmed. Fields were cleared. Check Vault metadata without revealing the password; request a new link only if no item was saved." : "The save result is unconfirmed: the request was rejected or no response was received. The fields have been cleared. Check whether the keys were saved without displaying their values. Request a new link to try again.");
+      disableAndClear(codeMode ? "Code fill was not confirmed. Fields were cleared. Check the browser before requesting a new link." : rejectedKey ? "The authenticator key was rejected, so nothing was saved. Check the setup key, then request a new link." : vault ? "The save result is unconfirmed. Fields were cleared. Check Vault metadata without revealing the password; request a new link only if no item was saved." : "The save result is unconfirmed: the request was rejected or no response was received. The fields have been cleared. Check whether the keys were saved without displaying their values. Request a new link to try again.");
     } finally {
       values.fill("");
       capability = "";

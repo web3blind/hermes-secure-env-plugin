@@ -204,3 +204,71 @@ def test_registered_tool_https_native_vault(mode, running_dispatch_loop, tmp_pat
         assert 'synthetic-only-password' not in json.dumps(native)
         assert issued[0] not in raw and 'synthetic-only-password' not in raw
         assert not (home / '.env').exists()
+
+
+def test_registered_code_tool_https_delivery_and_completion(tmp_path, monkeypatch):
+    from gateway import session_context as sc
+    from gateway.run import _profile_runtime_scope
+    from gateway.config import Platform
+    from gateway.platforms.event import MessageEvent
+    from gateway.session import SessionSource
+    from hermes_cli.lifecycle import invoke_hook
+    from secure_env_ingress import plugin, runtime as runtime_module, vault_ingress
+    from secure_env_ingress.vault_ingress import VaultTarget
+    from tools.registry import registry
+
+    sample, settings, home, root = make_runtime(tmp_path, mini=False)
+    sample.close()
+    settings['ttl_seconds'] = 600
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    original_runtime = runtime_module.IngressRuntime
+    monkeypatch.setattr(runtime_module, 'IngressRuntime',
+        lambda cfg, active_home, token: original_runtime(cfg, active_home, token, trust_roots=root))
+    target = VaultTarget('https://site.test', 'Fixture', 'sid', 'sid', 123, 'sid', 'key')
+    monkeypatch.setattr(plugin, 'capture_browser_target', lambda *args: target)
+    monkeypatch.setattr(runtime_module, 'assert_browser_target', lambda _: None)
+    monkeypatch.setattr(vault_ingress, 'assert_browser_target', lambda _: None)
+    observed = []
+    monkeypatch.setattr(vault_ingress, 'fill_verification_code',
+                        lambda bound, code, **kwargs: observed.append((bound, code)) or True)
+
+    class Adapter:
+        async def send(self, chat_id, content, metadata=None):
+            assert chat_id == '-600' and metadata == {'thread_id': '99'}
+            assert 'verification code form' in content
+            token = urlsplit(content.split('form: ', 1)[1].split(' for ', 1)[0]).fragment
+            status, form = await asyncio.to_thread(post, settings, root, '/session',
+                {'token': token, 'initData': ''})
+            assert status == 200 and form['keys'] == ['Verification code']
+            status, body = await asyncio.to_thread(post, settings, root, '/submit',
+                {'token': token, 'initData': '', 'values': ['A1B2C3']})
+            assert (status, body) == (200, {'filled': True})
+            return SimpleNamespace(success=True)
+
+    from gateway.run import GatewayRunner
+    gateway = object.__new__(GatewayRunner)
+    gateway.adapters = {Platform.TELEGRAM: Adapter()}
+    gateway._profile_adapters = {}
+    gateway._primary_profile_name = 'default'
+    gateway.config = SimpleNamespace()
+    with running_gateway_loop() as loop, registered(monkeypatch, home, settings=settings):
+        gateway._gateway_loop = loop
+        with _profile_runtime_scope(home, {}):
+            invoke_hook('pre_gateway_dispatch', event=MessageEvent(source=SessionSource(
+                platform=Platform.TELEGRAM, user_id='7', chat_id='-600', chat_type='group'),
+                text='ordinary message'), gateway=gateway)
+            tokens = sc.set_session_vars(platform='telegram', user_id='7', chat_id='-600',
+                chat_type='forum', thread_id='99', session_id='sid', session_key='key',
+                profile='', cron_session='')
+            try:
+                raw = registry.dispatch('browser_vault',
+                    {'origin': target.origin, 'label': target.label, 'mode': 'code'},
+                    task_id='sid', session_id='sid')
+            finally:
+                sc.clear_session_vars(tokens)
+    result = json.loads(raw)
+    assert result['success'] is True and result['status'] == 'filled'
+    assert result['filled'] is True and result['saved'] is False
+    assert result['origin'] == target.origin and 'A1B2C3' not in raw
+    assert observed == [(target, 'A1B2C3')]
+    assert not (home / 'vault').exists() and not (home / '.env').exists()
