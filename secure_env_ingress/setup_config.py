@@ -373,7 +373,7 @@ def _requested_settings(
         "mini_app_enabled": _SECURITY_DEFAULTS["mini_app_enabled"],
     }
     try:
-        IngressConfig.from_mapping(requested)
+        _parse_ingress_settings(requested)
     except ConfigError as exc:
         raise SetupConfigError("requested ingress configuration is invalid") from exc
     return requested, target, certificate_dir
@@ -436,10 +436,18 @@ def _merge(raw: dict, requested: dict[str, object], profile: str) -> dict:
     profiles.setdefault(profile, copy.deepcopy(requested_profile))
 
     try:
-        IngressConfig.from_mapping(settings)
+        _parse_ingress_settings(settings)
     except ConfigError as exc:
         raise SetupConfigError("existing secure environment settings are malformed") from exc
     return merged
+
+
+def _parse_ingress_settings(settings: object) -> IngressConfig:
+    # Consumer activation is validated by the operation loader, not ENV setup.
+    # Preserve the section on disk; do not import or execute consumers here.
+    if isinstance(settings, Mapping):
+        settings = {key: value for key, value in settings.items() if key != "consumers"}
+    return IngressConfig.from_mapping(settings)
 
 
 def _extract_settings(raw: Mapping[str, object]) -> object:
@@ -454,7 +462,7 @@ def _config_matches(raw: dict, requested: dict[str, object], profile: str) -> bo
     if not isinstance(settings, Mapping):
         return False
     try:
-        IngressConfig.from_mapping(settings)
+        _parse_ingress_settings(settings)
         enabled = raw["plugins"]["enabled"]  # type: ignore[index]
         if not isinstance(enabled, list) or PLUGIN_ID not in enabled:
             return False
@@ -593,7 +601,7 @@ def define_named_profile(
             raise SetupConfigError("secure ingress is not configured; use /senv setup")
         current_settings = _extract_settings(raw)
         try:
-            current = IngressConfig.from_mapping(current_settings)
+            current = _parse_ingress_settings(current_settings)
         except ConfigError as exc:
             raise SetupConfigError("existing secure environment settings are malformed") from exc
         authorized_owner = ('telegram', str(owner)) if type(owner) is int else owner
@@ -641,7 +649,7 @@ def define_named_profile(
             raise SetupConfigError("existing profiles configuration is malformed")
         profiles[profile] = profile_mapping
         try:
-            verified = IngressConfig.from_mapping(settings)
+            verified = _parse_ingress_settings(settings)
         except ConfigError as exc:
             raise SetupConfigError("updated secure environment settings are invalid") from exc
         if authorized_owner not in verified.owners:
@@ -656,7 +664,7 @@ def define_named_profile(
         readback, _bytes, _readback_identity = _read_config_file(config_path, uid)
         readback_settings = _extract_settings(readback)
         try:
-            final = IngressConfig.from_mapping(readback_settings)
+            final = _parse_ingress_settings(readback_settings)
             final_profile = final.profiles[profile]
         except (ConfigError, KeyError) as exc:
             raise SetupConfigError("configuration read-back verification failed") from exc

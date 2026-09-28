@@ -119,6 +119,10 @@ When the already-attached browser page asks for an email, SMS or authenticator o
 
 This inherits the Browser Use compatibility limitation above: its task supervisor/page can differ from the newest named `browser_exec` tab, so verify the actual target before issuance. The plugin cannot prove completion of the site's verification flow, nor prevent a page from auto-submitting. No live account flow has been verified by the synthetic HTTPS/CDP tests.
 
+## ENV profile compatibility fix (0.6.4)
+
+Version 0.6.4 restores `/senv <profile> <FIELD,...>` when trusted operation consumers are configured. ENV setup validates its own settings without rejecting or modifying the separate `consumers` section. Unknown ENV settings remain rejected; consumer validation and activation remain the responsibility of the operation loader.
+
 ## One-shot secret operations (0.6.3)
 
 Version 0.6.3 fixes premature `unknown` results while a submitted operation is still running. Consuming the one-use link no longer ends the wait for its callback; the original deadline and cancellation behavior remain in effect.

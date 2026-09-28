@@ -79,6 +79,25 @@ def _settings(home: Path) -> dict:
     return raw["plugins"]["entries"][PLUGIN_ID]["settings"]
 
 
+def test_direct_fields_preserve_configured_consumers(tmp_path):
+    home, _ = _home(tmp_path)
+    path = home / 'config.yaml'
+    raw = yaml.safe_load(path.read_text())
+    consumers = {'fixture_action': {'path': '/trusted/consumer.py', 'factory': 'factory', 'sha256': 'a' * 64}}
+    raw['plugins']['entries'][PLUGIN_ID]['settings']['consumers'] = consumers
+    path.write_text(yaml.safe_dump(raw))
+    definition = define_named_profile(home=home, owner=88, profile='scripts-codeweb', keys=['CODEWEB_PASSWORD'])
+    result = _settings(home)
+    assert result['consumers'] == consumers
+    assert result['profiles']['scripts-codeweb']['keys'] == ['CODEWEB_PASSWORD']
+    assert not definition.target.exists()
+    raw = yaml.safe_load(path.read_text())
+    raw['plugins']['entries'][PLUGIN_ID]['settings']['unexpected_setting'] = True
+    path.write_text(yaml.safe_dump(raw))
+    with pytest.raises(SetupConfigError):
+        define_named_profile(home=home, owner=88, profile='other', keys=['OTHER'])
+
+
 def test_parser_preserves_posix_field_spelling_and_rejects_secret_shaped_input():
     request = parse_request("site_auth field1,Field_2,_third")
     assert request is not None
