@@ -92,8 +92,6 @@ async def test_tool_waits_for_saved_metadata_and_never_returns_bearer(tmp_path, 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(plugin, 'assert_profile_home', lambda h: None)
     monkeypatch.setattr('secure_env_ingress.vault_ingress.assert_browser_target', lambda target: None)
-    monkeypatch.setattr(plugin, 'capture_browser_target',
-        lambda origin, label, task, sid, key: SimpleNamespace(origin=origin, label=label))
     monkeypatch.setattr(plugin, 'configured_owners', lambda settings: frozenset({('telegram', '7')}))
     monkeypatch.setattr(plugin, 'Delivery', lambda mode, home: SimpleNamespace(
         target=lambda *a: ('-800', '99'), send_gateway=send))

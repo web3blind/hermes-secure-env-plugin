@@ -102,7 +102,7 @@ def test_registered_tool_https_native_vault(mode, running_dispatch_loop, tmp_pat
     from gateway.run import _profile_runtime_scope
     from gateway.session import SessionSource
     from hermes_cli.lifecycle import invoke_hook
-    from secure_env_ingress import plugin, runtime as runtime_module
+    from secure_env_ingress import runtime as runtime_module
     from secure_env_ingress.vault_ingress import VaultTarget
     from tools.registry import registry
 
@@ -138,7 +138,7 @@ def test_registered_tool_https_native_vault(mode, running_dispatch_loop, tmp_pat
     target = VaultTarget('https://site.test', 'Fixture', 'sid', 'sid', 123, 'sid', 'key')
     def no_browser(*args):
         raise AssertionError('Login storage must not access a browser')
-    monkeypatch.setattr(plugin, 'capture_browser_target', no_browser)
+    monkeypatch.setattr('secure_env_ingress.code_targets.discover', no_browser)
     monkeypatch.setattr(runtime_module, 'assert_browser_target', no_browser)
     monkeypatch.setattr('secure_env_ingress.vault_ingress.assert_browser_target', no_browser)
     observed = []
@@ -227,7 +227,7 @@ def test_registered_code_tool_https_delivery_and_completion(tmp_path, monkeypatc
     monkeypatch.setattr(runtime_module, 'IngressRuntime',
         lambda cfg, active_home, token: original_runtime(cfg, active_home, token, trust_roots=root))
     target = VaultTarget('https://site.test', 'Fixture', 'sid', 'sid', 123, 'sid', 'key')
-    monkeypatch.setattr(plugin, 'capture_browser_target', lambda *args: target)
+    monkeypatch.setattr(plugin.CodeSelection, 'choose', lambda *args: (target, None))
     monkeypatch.setattr(runtime_module, 'assert_browser_target', lambda _: None)
     monkeypatch.setattr(vault_ingress, 'assert_browser_target', lambda _: None)
     observed = []

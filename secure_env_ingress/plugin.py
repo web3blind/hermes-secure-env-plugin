@@ -12,7 +12,8 @@ from pathlib import Path
 from .command import SAFE_USAGE, SAFE_ERROR, DIRECT_USAGE, BOOTSTRAP_GUIDANCE, parse_request
 from .config import ConfigError, configured_owners, owner_identity
 from .setup_handoff import SETUP_REQUEST, bootstrap_owner_ids, setup_paused
-from .vault_ingress import capture_browser_target, capture_login_target, assert_profile_home
+from .vault_ingress import capture_login_target, assert_profile_home
+from .code_targets import CodeSelection
 from .delivery import Delivery
 
 SETTING_KEYS = ('public_ip', 'listen_host', 'listen_port', 'ttl_seconds',
@@ -122,6 +123,7 @@ class LazyRuntime:
             self._bot_token = ''
 
 def register(ctx):
+    code_selection = CodeSelection()
     from hermes_constants import get_hermes_home, set_hermes_home_override, reset_hermes_home_override
     home = Path(get_hermes_home())
     closed = False
@@ -326,10 +328,12 @@ def register(ctx):
                 value = var.get()
                 return None if value is sc._UNSET else value
             if (closed or not isinstance(args, dict) or
-                    (set(args) != {'origin', 'label'} and set(args) != {'origin', 'label', 'mode'}) or
+                    (not {'origin', 'label'}.issubset(args) or set(args) - {'origin', 'label', 'mode', 'selection'}) or
                     args.get('mode', 'login') not in ('login', 'code')):
                 raise ValueError('invalid request')
             code_mode = args.get('mode', 'login') == 'code'
+            if 'selection' in args and (not code_mode or not isinstance(args['selection'], str) or len(args['selection']) > 100):
+                raise ValueError('invalid selection')
             if bound(sc._SESSION_PLATFORM) != 'telegram' or bound(sc._CRON_SESSION) != '':
                 raise ValueError('not an interactive Telegram turn')
             from agent.delegation_context import is_delegated_child_context
@@ -353,8 +357,13 @@ def register(ctx):
                 raise ValueError('session mismatch')
             assert_profile_home(home)
             reason = 'browser_binding' if code_mode else 'storage_binding'
-            target = (capture_browser_target(args['origin'], args['label'], task_id, sid, skey)
-                      if code_mode else capture_login_target(args['origin'], args['label'], sid, skey))
+            if code_mode:
+                scope = (str(home), sid, skey, owner_text, str(chat), str(thread))
+                target, response = await asyncio.to_thread(code_selection.choose, scope, args['origin'], args['label'], task_id, args.get('selection'))
+                if response is not None:
+                    return json.dumps(response)
+            else:
+                target = capture_login_target(args['origin'], args['label'], sid, skey)
             reason = 'gateway_delivery'
             gateway = gateway_ref() if gateway_ref is not None else None
             if gateway is None:
@@ -543,6 +552,7 @@ def register(ctx):
         schema={'name': 'browser_vault', 'description': 'Send a one-time HTTPS form to the bound Telegram chat. Default login mode saves username/password and optional authenticator setup key for the specified HTTPS origin to the profile encrypted Vault. No open browser or tab is required. Saving does not fill or sign in; later native filling must verify the target page origin. mode=code instead asks only for a one-time email/SMS/authenticator verification code and fills the captured browser page over supervisor CDP, without storing it or submitting the site form. Never put code or credentials in tool arguments or chat. Link grants access to any chat reader.',
                 'parameters': {'type': 'object', 'properties': {'origin': {'type': 'string', 'description': 'Exact HTTPS origin to store credentials for; for code mode, the current page origin. No path or trailing slash.'},
                     'label': {'type': 'string', 'description': 'Short public site label'},
+                    'selection': {'type': 'string', 'description': 'Code mode only: opaque candidate returned by selection_required. Hermes chooses using its login context; never ask the user to identify a tab.'},
                     'mode': {'type': 'string', 'enum': ['login', 'code'], 'description': 'Omit for login; code for standalone one-time verification field'}}, 'required': ['origin', 'label'], 'additionalProperties': False}},
         handler=vault_tool, is_async=True)
     ctx.register_skill('setup', Path(__file__).parent / 'setup' / 'SKILL.md',

@@ -19,6 +19,7 @@ from .server import HTTPSFormServer, HTTPError
 from .telegram_webapp import verify_init_data, InitDataError
 from .tls import validate_certificate, create_server_ssl_context
 from .writer import add_missing
+from .code_targets import CodeTarget
 from .vault_ingress import VaultLoginTarget, capture_login_target, VaultTarget, assert_browser_target, assert_profile_home, bind_vault_home, assert_vault_home
 
 # Browser Vault form fields. The authenticator setup key is optional (empty when the site has no
@@ -243,7 +244,7 @@ class IngressRuntime:
             if isinstance(target, OperationTarget):
                 return {'label': target.name, 'keys': list(OPERATION_KEYS),
                         'kind': 'secure_operation', 'summary': target.summary}
-            if isinstance(target, (VaultTarget, VaultLoginTarget)):
+            if isinstance(target, (VaultTarget, VaultLoginTarget, CodeTarget)):
                 from hermes_constants import profile_name_for_home
                 profile = profile_name_for_home(self.home) or 'default'
                 code_mode = claim.group_id in self._code_groups
@@ -262,7 +263,7 @@ class IngressRuntime:
                 context = self._submit_operation(token, claim, resolved, values)
             else:
                 context = None
-            if isinstance(resolved, (VaultTarget, VaultLoginTarget)):
+            if isinstance(resolved, (VaultTarget, VaultLoginTarget, CodeTarget)):
                 bound_context = self._vault_context
                 if (bound_context is None or bound_context[0] != claim.group_id or
                         (claim.group_id not in self._code_groups and

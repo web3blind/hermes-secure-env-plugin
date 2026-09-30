@@ -135,6 +135,9 @@ def _attached_supervisor(task_id: str):
 
 def assert_browser_target(target: VaultTarget) -> None:
     """Check the captured supervisor/page session before and after live origin evaluation."""
+    from .code_targets import CodeTarget, assert_target
+    if isinstance(target, CodeTarget):
+        return assert_target(target)
     from tools import browser_tool as browser
     if not target.browser_task or target.browser_task == 'default':
         raise ValueError('browser task missing')
@@ -209,6 +212,9 @@ def capture_browser_target(origin: str, label: str, task_id: str, session_id: st
 
 def fill_verification_code(target: VaultTarget, code: str, *, expires_at: float) -> bool:
     """Fill the captured page through its supervisor CDP socket, never CLI eval/argv."""
+    from .code_targets import CodeTarget, fill
+    if isinstance(target, CodeTarget):
+        return fill(target, code, expires_at)
     from agent.vault_login_classifier import (LoginControl, build_fill_js,
         build_inspection_js, build_otp_fills, classify_otp_controls)
     if not isinstance(code, str) or not re.fullmatch(r'[A-Za-z0-9]{4,16}', code):
