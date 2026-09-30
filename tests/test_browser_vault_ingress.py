@@ -184,8 +184,8 @@ def test_invalid_input_terminal_and_wrong_page_or_profile(tmp_path, monkeypatch)
         assert post(cfg, root, '/session', {'token': token, 'initData': ''})[0] == 410
         monkeypatch.setattr(module, 'assert_browser_target', lambda target: (_ for _ in ()).throw(ValueError('page changed')))
         assert not (home / 'vault' / 'vault.json.enc').exists()
-        with pytest.raises(ValueError):
-            runtime.create_vault(('telegram', '7'), target)
+        # Closed/changed browser does not prevent storage; profile remains bound.
+        runtime.create_vault(('telegram', '7'), target)
         monkeypatch.setenv('HERMES_HOME', str(tmp_path / 'other-profile'))
         with pytest.raises(ValueError):
             runtime.create_vault(('telegram', '7'), target)

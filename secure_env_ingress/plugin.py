@@ -12,7 +12,7 @@ from pathlib import Path
 from .command import SAFE_USAGE, SAFE_ERROR, DIRECT_USAGE, BOOTSTRAP_GUIDANCE, parse_request
 from .config import ConfigError, configured_owners, owner_identity
 from .setup_handoff import SETUP_REQUEST, bootstrap_owner_ids, setup_paused
-from .vault_ingress import capture_browser_target, assert_profile_home
+from .vault_ingress import capture_browser_target, capture_login_target, assert_profile_home
 from .delivery import Delivery
 
 SETTING_KEYS = ('public_ip', 'listen_host', 'listen_port', 'ttl_seconds',
@@ -352,8 +352,9 @@ def register(ctx):
                     profile not in ((expected_profile, '') if expected_profile == 'default' else (expected_profile,))):
                 raise ValueError('session mismatch')
             assert_profile_home(home)
-            reason = 'browser_binding'
-            target = capture_browser_target(args['origin'], args['label'], task_id, sid, skey)
+            reason = 'browser_binding' if code_mode else 'storage_binding'
+            target = (capture_browser_target(args['origin'], args['label'], task_id, sid, skey)
+                      if code_mode else capture_login_target(args['origin'], args['label'], sid, skey))
             reason = 'gateway_delivery'
             gateway = gateway_ref() if gateway_ref is not None else None
             if gateway is None:
@@ -371,7 +372,8 @@ def register(ctx):
                 links = await asyncio.shield(creation)
                 from .vault_ingress import assert_browser_target
                 assert_profile_home(home)
-                await asyncio.to_thread(assert_browser_target, target)
+                if code_mode:
+                    await asyncio.to_thread(assert_browser_target, target)
                 text = ('One-time HTTPS ' + ('verification code' if code_mode else 'login') + ' form: ' + links['url'] + ' for ' + target.origin + '. Anyone who can read this message can use the link. '
                         'Do not use a public or untrusted chat. Do not forward it. ' +
                         ('Submitting fills the current browser code field, not the site form.' if code_mode else 'Saving does not fill or sign in.'))
@@ -538,8 +540,8 @@ def register(ctx):
                     'required': ['operation', 'parameters'], 'additionalProperties': False}},
         handler=operation_tool, is_async=True)
     ctx.register_tool(name='browser_vault', toolset='browser',
-        schema={'name': 'browser_vault', 'description': 'Send a one-time HTTPS form to the bound Telegram chat. Default login mode saves username/password and optional authenticator setup key to encrypted Vault, without filling or signing in. mode=code instead asks only for a one-time email/SMS/authenticator verification code and fills the captured browser page over supervisor CDP, without storing it or submitting the site form. Never put code or credentials in tool arguments or chat. Link grants access to any chat reader.',
-                'parameters': {'type': 'object', 'properties': {'origin': {'type': 'string', 'description': 'Exact current HTTPS origin, no path or trailing slash'},
+        schema={'name': 'browser_vault', 'description': 'Send a one-time HTTPS form to the bound Telegram chat. Default login mode saves username/password and optional authenticator setup key for the specified HTTPS origin to the profile encrypted Vault. No open browser or tab is required. Saving does not fill or sign in; later native filling must verify the target page origin. mode=code instead asks only for a one-time email/SMS/authenticator verification code and fills the captured browser page over supervisor CDP, without storing it or submitting the site form. Never put code or credentials in tool arguments or chat. Link grants access to any chat reader.',
+                'parameters': {'type': 'object', 'properties': {'origin': {'type': 'string', 'description': 'Exact HTTPS origin to store credentials for; for code mode, the current page origin. No path or trailing slash.'},
                     'label': {'type': 'string', 'description': 'Short public site label'},
                     'mode': {'type': 'string', 'enum': ['login', 'code'], 'description': 'Omit for login; code for standalone one-time verification field'}}, 'required': ['origin', 'label'], 'additionalProperties': False}},
         handler=vault_tool, is_async=True)

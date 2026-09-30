@@ -59,7 +59,7 @@ def test_vault_tool_reports_bounded_browser_binding_failure(tmp_path, monkeypatc
                 chat_type='group', session_id='sid', session_key='key', cron_session='')
             try:
                 raw = registry.dispatch('browser_vault',
-                    {'origin': 'https://site.test', 'label': 'Fixture'}, task_id='sid', session_id='sid')
+                    {'origin': 'https://site.test', 'label': 'Fixture', 'mode': 'code'}, task_id='sid', session_id='sid')
             finally:
                 sc.clear_session_vars(tokens)
     result = json.loads(raw)
@@ -136,9 +136,11 @@ def test_registered_tool_https_native_vault(mode, running_dispatch_loop, tmp_pat
     # CDP page binding is exercised separately; preserve real authorization,
     # registry bridge, gateway delivery, TLS, capability, and native Vault here.
     target = VaultTarget('https://site.test', 'Fixture', 'sid', 'sid', 123, 'sid', 'key')
-    monkeypatch.setattr(plugin, 'capture_browser_target', lambda *args: target)
-    monkeypatch.setattr(runtime_module, 'assert_browser_target', lambda _: None)
-    monkeypatch.setattr('secure_env_ingress.vault_ingress.assert_browser_target', lambda _: None)
+    def no_browser(*args):
+        raise AssertionError('Login storage must not access a browser')
+    monkeypatch.setattr(plugin, 'capture_browser_target', no_browser)
+    monkeypatch.setattr(runtime_module, 'assert_browser_target', no_browser)
+    monkeypatch.setattr('secure_env_ingress.vault_ingress.assert_browser_target', no_browser)
     observed = []
 
     class Adapter:

@@ -94,15 +94,15 @@ Send `/senv service` through the gateway as a configured exact platform/user own
 
 The listener starts only after authorization, target and TLS validation. A profile-local leader lock prevents a second instance. It closes on cancellation, consumption/expiry (short cleanup interval), or plugin unload. Creating a later session validates the current deployed TLS material again.
 
-## Browser Vault login entry (0.6.1)
+## Browser Vault login entry (0.6.5)
 
-With an already-open native CDP browser session, the agent can call `browser_vault` using only the current HTTPS origin and a public label:
+The agent can call `browser_vault` with the exact HTTPS site origin and a public label. Login storage requires no browser, open tab or CDP attachment:
 
 ```json
 {"origin":"https://example.com","label":"Example account"}
 ```
 
-This extension currently requires an interactive Telegram owner/session/profile. It does not create a browser or silently switch to another browser backend. Existing generic `.env` commands, direct field names and guided setup remain available. Browser Use (`browser_exec`) uses the pre-0.6 compatibility binding: the existing task supervisor identity, page session, HTTPS origin, browser mode and active profile are checked at issuance and again at submission. It does **not** prove that the supervisor page is the most recent `browser_exec` named session/tab or CDP endpoint: the native plugin interface exposes no authoritative BU_NAME-to-page association. Two named sessions on the same origin can therefore be confused. Recheck the actual page/account before saving or filling; do not use this compatibility mode as an exact-target security boundary. Legacy CDP targets also reject backend changes.
+Login storage requires an interactive Telegram owner/session/profile, but is independent of browser state. The form displays the requested site; verify it before entering credentials. The immutable origin and native Vault profile are bound at issuance. Opening, closing or switching tabs does not prevent saving. Stored entries can later be used in another tab or browser session within the same Hermes profile, subject to native fill origin checks. Existing generic `.env` commands, direct field names and guided setup remain available.
 
 1. A one-time HTTPS form link is sent using the shared delivery setting, without returning the capability URL to the model.
 2. The form identifies the site and profile. The user enters a username/email, password and optional authenticator setup key directly into the form, never chat. Raw TOTP keys and supported `otpauth://totp/` URIs are validated through the native code generator before storage; invalid keys save no item and consume the submitted capability.
@@ -111,13 +111,13 @@ This extension currently requires an interactive Telegram owner/session/profile.
 
 Browser Vault requests use at most 240 seconds even when configured TTL is higher, leaving headroom below the native dispatch timeout. Ordinary `.env` retains its configured TTL. Expiry, cancellation, supersession, rejection and uncertain post-write results are distinct; an uncertain write must be checked through native metadata before retrying. New saves append native items rather than overwrite an existing login.
 
-The profile context, browser supervisor, page identity and exact HTTPS origin are bound to the request. Ownership, permissions, symlinks/hardlinks and Vault path identity are checked before write. Native path-based writes are not a defense against a hostile same-UID/root process. Identifiers are agent-visible native metadata; passwords are not. Authenticator setup keys are stored by the native encrypted Vault for subsequent native code generation; cards, addresses, third-party password-manager unlocking and restart-resume are outside this feature.
+The owner/session, profile context and exact HTTPS origin are bound to the storage request; browser identity is not. Ownership, permissions, symlinks/hardlinks and Vault path identity are checked before write. Native path-based writes are not a defense against a hostile same-UID/root process. Identifiers are agent-visible native metadata; passwords are not. Authenticator setup keys are stored by the native encrypted Vault for subsequent native code generation; cards, addresses, third-party password-manager unlocking and restart-resume are outside this feature.
 
 ### Standalone verification code (0.6.1)
 
 When the already-attached browser page asks for an email, SMS or authenticator one-time code without a new username/password, use the same plugin tool with `{"origin":"https://example.com","label":"Example verification","mode":"code"}`. The owner receives a single-use HTTPS form with one masked **Verification code** field. Enter the code there (4–16 ASCII letters/digits), never in chat or tool arguments. No saved login or authenticator seed is required. The code is not stored in Vault, `.env`, or on disk; the form submits it to the live HTTPS runtime, which inspects the existing page and fills its unambiguous code control over the captured supervisor's CDP WebSocket. The site form is **not** explicitly submitted; some sites auto-submit on input. The tool reports `filled` only after the supervisor returns an exact fill count; uncertain outcomes require checking the page before retrying. The link expires within 240 seconds and cancellation, supersession, replay, changed page/origin/profile, or missing/ambiguous controls fail closed. Numeric and alphanumeric codes are supported, including standard adjacent one-character boxes.
 
-This inherits the Browser Use compatibility limitation above: its task supervisor/page can differ from the newest named `browser_exec` tab, so verify the actual target before issuance. The plugin cannot prove completion of the site's verification flow, nor prevent a page from auto-submitting. No live account flow has been verified by the synthetic HTTPS/CDP tests.
+Code mode still depends on the native Browser Use task-supervisor binding: its task supervisor/page can differ from the newest named `browser_exec` tab, so verify the actual target before issuance. The plugin cannot prove completion of the site's verification flow, nor prevent a page from auto-submitting. No live account flow has been verified by the synthetic HTTPS/CDP tests.
 
 ## ENV profile compatibility fix (0.6.4)
 

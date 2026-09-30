@@ -26,6 +26,24 @@ class VaultTarget:
     browser_backend: str = 'legacy'
 
 
+@dataclass(frozen=True)
+class VaultLoginTarget:
+    """Storage destination, deliberately independent of any browser instance."""
+    origin: str
+    label: str
+    session_id: str
+    session_key: str
+
+
+def capture_login_target(origin: str, label: str, session_id: str, session_key: str) -> VaultLoginTarget:
+    strict_origin(origin)
+    if not isinstance(label, str) or not 1 <= len(label) <= 80 or any(ord(c) < 32 for c in label):
+        raise ValueError('invalid label')
+    if not session_id or not session_key:
+        raise ValueError('unbound session')
+    return VaultLoginTarget(origin, label, session_id, session_key)
+
+
 def strict_origin(value: str) -> str:
     if not isinstance(value, str) or len(value) > 170 or not value.isascii() or any(c.isspace() or ord(c) < 33 for c in value):
         raise ValueError('invalid origin')

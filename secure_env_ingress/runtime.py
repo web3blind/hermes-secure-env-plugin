@@ -19,7 +19,7 @@ from .server import HTTPSFormServer, HTTPError
 from .telegram_webapp import verify_init_data, InitDataError
 from .tls import validate_certificate, create_server_ssl_context
 from .writer import add_missing
-from .vault_ingress import VaultTarget, assert_browser_target, assert_profile_home, bind_vault_home, assert_vault_home
+from .vault_ingress import VaultLoginTarget, capture_login_target, VaultTarget, assert_browser_target, assert_profile_home, bind_vault_home, assert_vault_home
 
 # Browser Vault form fields. The authenticator setup key is optional (empty when the site has no
 # authenticator app); when present it is stored with the login so the native vault can mint 2FA codes
@@ -121,14 +121,17 @@ class IngressRuntime:
                 self._stop_listener()
                 raise
 
-    def create_vault(self, owner, target: VaultTarget, *, mode='login'):
+    def create_vault(self, owner, target: VaultTarget | VaultLoginTarget, *, mode='login'):
         with self._lock:
             if (self._closed or not isinstance(owner, tuple) or len(owner) != 2
                     or owner[0] != 'telegram' or owner not in self.config.owners
                     or mode not in ('login', 'code')):
                 raise HTTPError(403, 'denied')
             assert_profile_home(self.home)
-            assert_browser_target(target)
+            if mode == 'code':
+                assert_browser_target(target)
+            else:
+                target = capture_login_target(target.origin, target.label, target.session_id, target.session_key)
             binding = bind_vault_home(self.home) if mode == 'login' else None
             self._tls()
             self._leader.acquire()
@@ -142,7 +145,7 @@ class IngressRuntime:
                     platform=owner[0], user_id=owner[1], hermes_home=self.home,
                     profile_name='browser_vault_code' if mode == 'code' else 'browser_vault',
                     allowed_keys=CODE_KEYS if mode == 'code' else VAULT_LOGIN_KEYS,
-                    target_id=(target.browser_identity, os.getuid()),
+                    target_id=(id(target), os.getuid()),
                     ttl_seconds=min(self.config.ttl_seconds, 240))
                 self._targets = {browser.group_id: target}
                 self._finish_completion('superseded')
@@ -240,7 +243,7 @@ class IngressRuntime:
             if isinstance(target, OperationTarget):
                 return {'label': target.name, 'keys': list(OPERATION_KEYS),
                         'kind': 'secure_operation', 'summary': target.summary}
-            if isinstance(target, VaultTarget):
+            if isinstance(target, (VaultTarget, VaultLoginTarget)):
                 from hermes_constants import profile_name_for_home
                 profile = profile_name_for_home(self.home) or 'default'
                 code_mode = claim.group_id in self._code_groups
@@ -259,7 +262,7 @@ class IngressRuntime:
                 context = self._submit_operation(token, claim, resolved, values)
             else:
                 context = None
-            if isinstance(resolved, VaultTarget):
+            if isinstance(resolved, (VaultTarget, VaultLoginTarget)):
                 bound_context = self._vault_context
                 if (bound_context is None or bound_context[0] != claim.group_id or
                         (claim.group_id not in self._code_groups and
@@ -347,7 +350,7 @@ class IngressRuntime:
     def _submit_code(self, token, claim, target, values):
         consumed = self._store.consume(token, mode=claim.mode, platform=claim.platform,
             user_id=claim.user_id, hermes_home=self.home, profile_name='browser_vault_code',
-            allowed_keys=CODE_KEYS, target_id=(target.browser_identity, os.getuid()))
+            allowed_keys=CODE_KEYS, target_id=(id(target), os.getuid()))
         if consumed is None:
             raise HTTPError(410, 'invalid_session')
         self._targets.pop(claim.group_id, None)
@@ -380,7 +383,7 @@ class IngressRuntime:
         consumed = self._store.consume(token, mode=claim.mode, platform=claim.platform,
                                        user_id=claim.user_id, hermes_home=self.home,
                                        profile_name='browser_vault', allowed_keys=VAULT_LOGIN_KEYS,
-                                       target_id=(target.browser_identity, os.getuid()))
+                                       target_id=(id(target), os.getuid()))
         if consumed is None:
             raise HTTPError(410, 'invalid_session')
         self._targets.pop(claim.group_id, None)
@@ -413,7 +416,8 @@ class IngressRuntime:
             secret['otp_secret'] = values[2] if '|' in otp_secret else otp_secret
         try:
             assert_profile_home(self.home)
-            assert_browser_target(target)
+            if not isinstance(target, VaultLoginTarget):
+                raise ValueError("invalid storage target")
             assert_vault_home(binding)
             from agent.vault_store import VaultStore
             store = VaultStore(self.home / 'vault')

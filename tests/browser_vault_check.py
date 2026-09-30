@@ -20,10 +20,11 @@ def main():
     from tools import browser_tool as bt
     from tools.browser_supervisor import CDPSupervisor, SUPERVISOR_REGISTRY
     from tools.browser_vault_tool import browser_vault_fill, browser_vault_list
-    from secure_env_ingress.vault_ingress import capture_browser_target, assert_browser_target
+    from secure_env_ingress.vault_ingress import capture_login_target, capture_browser_target, assert_browser_target
     from agent.vault_store import VaultStore
 
-    with urllib.request.urlopen('http://127.0.0.1:18800/json/version', timeout=3) as response:
+    endpoint = os.environ.get('SENV_TEST_CDP', 'http://127.0.0.1:18800')
+    with urllib.request.urlopen(endpoint + '/json/version', timeout=3) as response:
         cdp_ws = json.load(response)['webSocketDebuggerUrl']
     with tempfile.TemporaryDirectory(prefix='senv-vault-browser-') as directory:
         runtime, _, home, _ = make_runtime(Path(directory), mini=False)
@@ -41,8 +42,11 @@ def main():
             # Start the existing HTTPS listener; no real account, browser profile, or auth session.
             runtime.create(7, 'service')
             origin = runtime._origin()
+            # Issue login ingress before any browser or supervisor exists.
+            links = runtime.create_vault(('telegram', '7'),
+                capture_login_target(origin, 'Synthetic login', task, 'test-session'))
             with sync_playwright() as p:
-                browser = p.chromium.connect_over_cdp('http://127.0.0.1:18800')
+                browser = p.chromium.connect_over_cdp(endpoint)
                 context = browser.new_context(ignore_https_errors=True)
                 login = context.new_page()
                 try:
@@ -70,7 +74,10 @@ def main():
                     bt._last_active_session_key[task] = task
                     binding = capture_browser_target(origin, 'Synthetic login', task, task, 'test-session')
                     assert_browser_target(binding)
-                    links = runtime.create_vault(('telegram', '7'), binding)
+                    supervisor.stop()
+                    with SUPERVISOR_REGISTRY._lock:
+                        del SUPERVISOR_REGISTRY._by_task[task]
+                    # Browser attachment is absent throughout HTTPS submission.
                     legacy = context.new_page()
                     try:
                         legacy.route('**/session', lambda route: route.fulfill(status=200, content_type='application/json',
@@ -159,6 +166,20 @@ def main():
                     listed = json.loads(browser_vault_list())
                     assert any(item['handle'] == meta.id for item in listed['items'])
                     assert 'disposable-fixture-password' not in json.dumps(listed)
+                    # Reconnect on a NEW tab after storage; reuse the same native entry.
+                    login.close()
+                    login = context.new_page()
+                    login.route('**/fixture-login', lambda route: route.fulfill(status=200, content_type='text/html',
+                        body='<label>Username<input autocomplete="username"></label>'
+                             '<label>Password<input type="password" autocomplete="current-password"></label>'))
+                    login.goto(origin + '/fixture-login')
+                    cdp_page = context.new_cdp_session(login)
+                    target_id = cdp_page.send('Target.getTargetInfo')['targetInfo']['targetId']
+                    cdp_page.detach()
+                    supervisor = TargetedSupervisor(task, cdp_ws)
+                    supervisor.start()
+                    with SUPERVISOR_REGISTRY._lock:
+                        SUPERVISOR_REGISTRY._by_task[task] = supervisor
                     login.get_by_label('Username').fill('fixture@example.test')
                     result = json.loads(browser_vault_fill(meta.id, task_id=task))
                     assert result.get('success'), {k: v for k, v in result.items() if k != 'result'}

@@ -73,12 +73,12 @@ def test_http_authenticated_malformed_rejected_and_no_write(tmp_path, monkeypatc
         runtime.close()
 
 
-def test_prewrite_page_change_is_failed_not_unknown(tmp_path, monkeypatch):
+def test_prewrite_profile_change_is_failed_not_unknown(tmp_path, monkeypatch):
     runtime, config, home, root = setup(tmp_path, monkeypatch)
     try:
         links = runtime.create_vault(('telegram', '7'), target())
-        monkeypatch.setattr('secure_env_ingress.runtime.assert_browser_target',
-                            lambda target: (_ for _ in ()).throw(ValueError('page changed')))
+        monkeypatch.setattr('secure_env_ingress.runtime.assert_profile_home',
+                            lambda home: (_ for _ in ()).throw(ValueError('profile changed')))
         assert post(config, root, '/submit', {'token': token(links), 'initData': '',
                                               'values': ['name', 'password']})[0] == 409
         assert links['completion'].result() == {'status': 'failed'}
