@@ -46,16 +46,17 @@ def issue(harness):
     return links, urlsplit(links['url']).fragment
 
 
-def test_https_code_fill_no_vault_replay_and_no_echo(harness, caplog):
+@pytest.mark.parametrize('code', ['A1B2C3', 'Q!7&z=R9', '\"Q7\\\\z\'R9'])
+def test_https_code_fill_no_vault_replay_and_no_echo(harness, caplog, code):
     runtime, cfg, home, root, target, state, scripts, _ = harness
+    state['controls'][0]['maxLength'] = 16
     links, token = issue(harness)
     status, form = post(cfg, root, '/session', {'token': token, 'initData': ''})
     assert status == 200 and form['kind'] == 'browser_code' and form['keys'] == ['Verification code']
-    code = 'A1B2C3'
     status, result = post(cfg, root, '/submit', {'token': token, 'initData': '', 'values': [code]})
     assert (status, result) == (200, {'filled': True})
     assert links['completion'].result(timeout=1) == {'status': 'filled', 'origin': target.origin}
-    assert len(scripts) == 2 and code not in scripts[0] and code in scripts[1]
+    assert len(scripts) == 2 and code not in scripts[0] and json.dumps(code) in scripts[1]
     assert target.origin in scripts[1]
     assert post(cfg, root, '/submit', {'token': token, 'initData': '', 'values': [code]})[0] == 410
     assert not (home / 'vault').exists() and not (home / '.env').exists()
@@ -118,6 +119,15 @@ def test_fail_closed_code_submission(harness, case, expected):
     assert not (home / 'vault').exists()
     if case != 'partial':
         assert not any('const expectedOrigin' in script for script in scripts)
+
+
+@pytest.mark.parametrize('code', ['abc', 'a' * 17, 'ab cd', 'abcd\n', 'ab\x00cd', 'абвг'])
+def test_invalid_code_characters_rejected(harness, code):
+    _, cfg, _, root, _, _, scripts, _ = harness
+    _, token = issue(harness)
+    status, _ = post(cfg, root, '/submit', {'token': token, 'initData': '', 'values': [code]})
+    assert status == 400
+    assert not scripts
 
 
 def test_cancel_before_submission(harness):

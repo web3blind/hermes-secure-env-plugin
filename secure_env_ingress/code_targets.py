@@ -159,7 +159,7 @@ def assert_target(target):
 
 def fill(target, code, expires_at):
     from agent.vault_login_classifier import build_otp_fills
-    if not isinstance(code, str) or not re.fullmatch(r'[A-Za-z0-9]{4,16}', code):
+    if not isinstance(code, str) or not re.fullmatch(r'[!-~]{4,16}', code):
         raise ValueError('invalid code')
     if _supervisor(target.task) is not target.supervisor:
         raise ValueError('browser changed')

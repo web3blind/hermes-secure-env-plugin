@@ -1,5 +1,4 @@
 """Real isolated Chromium + registered tool/HTTPS, unmodified supervisor API."""
-import asyncio
 import importlib.util
 import json
 import os
@@ -9,12 +8,11 @@ import sys
 import tempfile
 import time
 from types import SimpleNamespace
-from urllib.parse import urlsplit
 import urllib.request
 
 import pytest
 from playwright.sync_api import sync_playwright
-from test_runtime_e2e import make_runtime, post
+from test_runtime_e2e import make_runtime
 from generic_helpers import registered
 
 
@@ -89,11 +87,20 @@ def _run(module):
                         async def send(self, chat_id, content, metadata=None):
                             sent.append(content)
                             url = content.split(' form: ', 1)[1].split(' for ', 1)[0]
-                            status, body = await asyncio.to_thread(post, settings, root, '/submit', {
-                                'token': urlsplit(url).fragment, 'initData': '', 'values': ['123456']})
-                            if status != 200:
-                                print('FIXTURE_SUBMIT', status, body)
-                            assert (status, body) == (200, {'filled': True})
+                            from playwright.async_api import async_playwright
+                            async with async_playwright() as ap:
+                                connection = await ap.chromium.connect_over_cdp(endpoint)
+                                ui = await connection.new_context(ignore_https_errors=True)
+                                try:
+                                    entry = await ui.new_page()
+                                    await entry.goto(url)
+                                    field = entry.get_by_label('Verification code', exact=True)
+                                    await field.fill('Q!7&z=R9')
+                                    assert await field.evaluate('(e) => e.checkValidity()')
+                                    await entry.get_by_role('button', name='Save').click()
+                                    await entry.get_by_role('status').filter(has_text='Code filled in the browser').wait_for(timeout=10000)
+                                finally:
+                                    await ui.close()
                             return SimpleNamespace(success=True)
                     # Use the real TLS/runtime, only substitute its installation-specific cert fixture.
                     runtime.close()
@@ -127,11 +134,11 @@ def _run(module):
                             chosen = next(c for c in choices['candidates'] if c['page_ref'] == tid)
                             result = json.loads(registry.dispatch('browser_vault', {**args, 'selection': chosen['selection']}, task_id=task, session_id=task))
                             assert result.get('status') == 'filled' and len(sent) == 1, result
-                            assert '123456' not in json.dumps(result)
+                            assert 'Q!7&z=R9' not in json.dumps(result)
                         finally:
                             sc.clear_session_vars(tokens)
                     assert first.locator('input').input_value() == ''
-                    assert second.locator('input').input_value() == '123456'
+                    assert second.locator('input').input_value() == 'Q!7&z=R9'
                     second.close()
                     target, choices = picker.choose(scope, origin, 'Fixture', task)
                     assert target is not None and choices is None

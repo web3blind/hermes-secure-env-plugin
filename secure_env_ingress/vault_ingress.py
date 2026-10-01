@@ -217,7 +217,7 @@ def fill_verification_code(target: VaultTarget, code: str, *, expires_at: float)
         return fill(target, code, expires_at)
     from agent.vault_login_classifier import (LoginControl, build_fill_js,
         build_inspection_js, build_otp_fills, classify_otp_controls)
-    if not isinstance(code, str) or not re.fullmatch(r'[A-Za-z0-9]{4,16}', code):
+    if not isinstance(code, str) or not re.fullmatch(r'[!-~]{4,16}', code):
         raise ValueError('invalid code')
     assert_browser_target(target)
     supervisor, session = _attached_supervisor(target.browser_task)

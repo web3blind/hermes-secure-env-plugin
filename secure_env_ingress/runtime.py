@@ -358,7 +358,7 @@ class IngressRuntime:
         self._code_groups.discard(claim.group_id)
         if (not isinstance(values, list) or len(values) != 1 or
                 not isinstance(values[0], str) or len(values[0]) > 16 or
-                not values[0].isascii() or not values[0].isalnum() or len(values[0]) < 4):
+                any(not 33 <= ord(ch) <= 126 for ch in values[0]) or len(values[0]) < 4):
             self._finish_completion('rejected', claim.group_id)
             raise HTTPError(400, 'invalid_values')
         try:

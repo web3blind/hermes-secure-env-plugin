@@ -130,7 +130,7 @@
       input.autocapitalize = "none";
       input.spellcheck = false;
       input.required = !optional;
-      if (codeMode) { input.minLength = 4; input.maxLength = 16; input.pattern = '[A-Za-z0-9]{4,16}'; }
+      if (codeMode) { input.minLength = 4; input.maxLength = 16; input.pattern = '[!-~]{4,16}'; }
       label.htmlFor = input.id;
       label.textContent = key;
       wrapper.append(label, input);
