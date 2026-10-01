@@ -329,9 +329,10 @@ def register(ctx):
                 return None if value is sc._UNSET else value
             if (closed or not isinstance(args, dict) or
                     (not {'origin', 'label'}.issubset(args) or set(args) - {'origin', 'label', 'mode', 'selection'}) or
-                    args.get('mode', 'login') not in ('login', 'code')):
+                    args.get('mode', 'login') not in ('login', 'code', 'payment')):
                 raise ValueError('invalid request')
             code_mode = args.get('mode', 'login') == 'code'
+            payment_mode = args.get('mode', 'login') == 'payment'
             if 'selection' in args and (not code_mode or not isinstance(args['selection'], str) or len(args['selection']) > 100):
                 raise ValueError('invalid selection')
             if bound(sc._SESSION_PLATFORM) != 'telegram' or bound(sc._CRON_SESSION) != '':
@@ -376,16 +377,16 @@ def register(ctx):
             # No model-supplied destination. The actual chat/thread come from bound gateway context.
             delivery.target('telegram', chat, thread)
             creation = asyncio.create_task(asyncio.to_thread(runtime.create_vault, ('telegram', owner_text), target,
-                                                              **({'mode': 'code'} if code_mode else {})))
+                                                              **({'mode': args['mode']} if code_mode or payment_mode else {})))
             try:
                 links = await asyncio.shield(creation)
                 from .vault_ingress import assert_browser_target
                 assert_profile_home(home)
                 if code_mode:
                     await asyncio.to_thread(assert_browser_target, target)
-                text = ('One-time HTTPS ' + ('verification code' if code_mode else 'login') + ' form: ' + links['url'] + ' for ' + target.origin + '. Anyone who can read this message can use the link. '
+                text = ('One-time HTTPS ' + ('verification code' if code_mode else 'payment card' if payment_mode else 'login') + ' form: ' + links['url'] + ' for ' + target.origin + '. Anyone who can read this message can use the link. '
                         'Do not use a public or untrusted chat. Do not forward it. ' +
-                        ('Submitting fills the current browser code field, not the site form.' if code_mode else 'Saving does not fill or sign in.'))
+                        ('Submitting fills the current browser code field, not the site form.' if code_mode else 'Saving stores the card including CVC in encrypted Vault; it does not fill or authorize payment.' if payment_mode else 'Saving does not fill or sign in.'))
                 delivery_task = asyncio.create_task(
                     delivery.send_gateway(gateway, 'telegram', chat, thread, text))
                 try:
@@ -423,7 +424,7 @@ def register(ctx):
                 if outcome['status'] == 'saved':
                     return json.dumps({'success': True, 'status': 'saved', 'saved': True,
                         'filled': False, 'handle': outcome['handle'], 'origin': outcome['origin'],
-                        'next': 'Recheck current browser page and origin, then use native browser_vault_list, type the identifier with browser_type and call native browser_vault_fill. Saving did not fill or sign in.'})
+                        'next': ('Recheck page and exact origin, list native Vault and call native browser_vault_fill, which requires human payment-fill confirmation. Never retry a decline. Filling is not permission to click Pay; sites may act on input.' if payment_mode else 'Recheck current browser page and origin, then use native browser_vault_list, type the identifier with browser_type and call native browser_vault_fill. Saving did not fill or sign in.')})
                 if code_mode and outcome['status'] == 'filled':
                     return json.dumps({'success': True, 'status': 'filled', 'saved': False,
                         'filled': True, 'origin': outcome['origin'],
@@ -432,7 +433,7 @@ def register(ctx):
                     'saved': None if outcome['status'] == 'unknown' else False,
                     'filled': None if code_mode and outcome['status'] == 'unknown' else False,
                     'error': ('Code fill was not confirmed; check the browser before retrying.' if code_mode else
-                              'Login was not confirmed saved. Recheck native browser_vault_list before retrying if status is unknown.')})
+                              'Vault storage was not confirmed. Recheck native browser_vault_list before retrying if status is unknown.')})
             except BaseException:
                 # A cancelled to_thread worker can complete AFTER its coroutine is cancelled.
                 # Wait for that exact issuance, then revoke it; never revoke a newer owner request.
@@ -549,16 +550,16 @@ def register(ctx):
                     'required': ['operation', 'parameters'], 'additionalProperties': False}},
         handler=operation_tool, is_async=True)
     ctx.register_tool(name='browser_vault', toolset='browser',
-        schema={'name': 'browser_vault', 'description': 'Secure ENV: Telegram HTTPS form for login, username, password, optional TOTP setup key, or verification code/passcode. Use mode=login (default) to SAVE credentials for an HTTPS origin in encrypted profile Vault; no open browser required, no automatic filling or sign-in. Later fill the matching site through native Vault tools. Use mode=code to FILL a recognized code/passcode field in an attached browser, without Vault storage or site submission; accepts 4-16 printable ASCII characters including punctuation, no whitespace. A native secret prompt returning prompt_unavailable does NOT establish that this plugin is unavailable: use the matching mode here in an authorized Telegram session. Neither mode needs a site-specific registered operation. Never put secrets in arguments or chat. Links grant access to chat readers. For workflow and failure diagnosis load the plugin usage skill.',
+        schema={'name': 'browser_vault', 'description': 'Secure ENV: Telegram HTTPS form for login, username, password, optional TOTP setup key, payment card storage, or verification code/passcode. Use mode=login (default) to SAVE credentials for an HTTPS origin in encrypted profile Vault; no open browser required, no automatic filling or sign-in. Later fill the matching site through native Vault tools. Use mode=code to FILL a recognized code/passcode field in an attached browser, without Vault storage or site submission; accepts 4-16 printable ASCII characters including punctuation, no whitespace. A native secret prompt returning prompt_unavailable does NOT establish that this plugin is unavailable: use the matching mode here in an authorized Telegram session. Payment mode saves card fields including CVC in encrypted native Vault for an exact HTTPS origin; no browser required, no fill, no payment authorization. Later native fill needs explicit human payment-fill confirmation; never retry a decline. No mode needs a site-specific registered operation. Never put secrets in arguments or chat. Links grant access to chat readers. For workflow and failure diagnosis load the plugin usage skill.',
                 'parameters': {'type': 'object', 'properties': {'origin': {'type': 'string', 'description': 'Exact HTTPS origin to store credentials for; for code mode, the current page origin. No path or trailing slash.'},
                     'label': {'type': 'string', 'description': 'Short public site label'},
                     'selection': {'type': 'string', 'description': 'Code mode only: opaque candidate returned by selection_required. Hermes chooses using its login context; never ask the user to identify a tab.'},
-                    'mode': {'type': 'string', 'enum': ['login', 'code'], 'description': 'login (default): save username/password and optional TOTP key without a browser. code: fill an attached verification-code/passcode field, no storage.'}}, 'required': ['origin', 'label'], 'additionalProperties': False}},
+                    'mode': {'type': 'string', 'enum': ['login', 'code', 'payment'], 'description': 'login (default): save username/password and optional TOTP key without a browser. code: fill an attached verification-code/passcode field, no storage. payment: save a card including CVC, no browser, fill or payment authorization.'}}, 'required': ['origin', 'label'], 'additionalProperties': False}},
         handler=vault_tool, is_async=True)
     ctx.register_skill('setup', Path(__file__).parent / 'setup' / 'SKILL.md',
                        description='Install and diagnose secure-env-ingress; never handle secret values.')
     ctx.register_skill('usage', Path(__file__).parent / 'usage' / 'SKILL.md',
-                       description='Use Secure ENV for Telegram login, username/password, TOTP setup keys, verification codes/passcodes, .env or trusted operations; handle prompt_unavailable.')
+                       description='Use Secure ENV for Telegram login, username/password, TOTP setup keys, payment card storage, verification codes/passcodes, .env or trusted operations; handle prompt_unavailable.')
     ctx.register_hook('pre_gateway_dispatch', hook)
     ctx.register_command('senv', command, description='Secure secret entry over HTTPS',
                          args_hint='<profile> [field1,field2]|setup|status|cancel')

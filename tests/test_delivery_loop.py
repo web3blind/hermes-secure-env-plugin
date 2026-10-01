@@ -97,7 +97,10 @@ def test_cross_loop_cancellation_cancels_transport_once(tmp_path):
     async def dispatch(gateway):
         task = asyncio.create_task(Delivery('this_chat', home).send_gateway(
             gateway, 'telegram', 'room', None, 'opaque fixture'))
-        assert await asyncio.to_thread(entered.wait, 3)
+        # First transport resolution imports gateway/plugin modules; parallel CI
+        # load may take longer than three seconds. This bounds readiness, not
+        # cancellation semantics or the number of transport calls.
+        assert await asyncio.to_thread(entered.wait, 15)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task

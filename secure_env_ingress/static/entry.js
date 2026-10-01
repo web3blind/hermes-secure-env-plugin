@@ -13,6 +13,7 @@
   let terminal = false;
   let vault = false;
   let codeMode = false;
+  let paymentMode = false;
   let operationMode = false;
 
   function decode(value) {
@@ -82,6 +83,7 @@
     return data;
   }
 
+  const PAYMENT_KEYS = ["Card number", "Cardholder name (optional)", "Expiry month", "Expiry year", "CVC", "Billing postal code (optional)"];
   const VAULT_KEYS = ["Username", "Password", "Authenticator key (optional)"];
   const OPTIONAL_KEY_HINT = "Optional. Paste the 2FA setup key the site showed when you switched on the authenticator app (letters and digits, spaces allowed), or its otpauth:// link. Leave empty when the site uses no authenticator app. The key is stored in the encrypted Vault so future codes are generated there instead of being typed in chat.";
 
@@ -100,6 +102,8 @@
     profile.textContent = data.label;
     vault = data.kind === 'browser_vault';
     codeMode = data.kind === 'browser_code';
+    paymentMode = data.kind === 'browser_payment';
+    if (paymentMode && (data.keys.length !== PAYMENT_KEYS.length || PAYMENT_KEYS.some((key, i) => data.keys[i] !== key))) throw new Error('invalid_response');
     operationMode = data.kind === 'secure_operation';
     if (operationMode) {
       if (data.keys.length !== 1 || data.keys[0] !== 'Secret' || typeof data.summary !== 'string' || !data.summary.trim()) throw new Error('invalid_response');
@@ -115,13 +119,13 @@
         || expectedKeys.some((key, index) => data.keys[index] !== key))) throw new Error('invalid_response');
     data.keys.forEach((key, index) => {
       if (typeof key !== "string" || !key) throw new Error("invalid_response");
-      const optional = vault && index === VAULT_KEYS.length - 1;
+      const optional = (vault && index === VAULT_KEYS.length - 1) || (paymentMode && (index === 1 || index === 5));
       const wrapper = document.createElement("div");
       wrapper.className = "field";
       const label = document.createElement("label");
       const input = document.createElement("input");
       input.id = `secret-${index}`;
-      input.type = vault && index === 0 ? "text" : "password";
+      input.type = (vault && index === 0) || (paymentMode && index !== 0 && index !== 4) ? "text" : "password";
       input.name = `secret-${index}`;
       // This is a one-time transfer form, not account registration on this host.
       // new-password can open Chrome's password generator and intercept navigation.
@@ -130,11 +134,19 @@
       input.autocapitalize = "none";
       input.spellcheck = false;
       input.required = !optional;
+      if (paymentMode) {
+        input.maxLength = [19, 120, 2, 4, 4, 32][index];
+        if ([0, 2, 3, 4].includes(index)) input.inputMode = 'numeric';
+        if (index === 0) { input.minLength = 12; input.pattern = '[0-9]{12,19}'; }
+        if (index === 2) input.pattern = '(0?[1-9]|1[0-2])';
+        if (index === 3) input.pattern = '[0-9]{4}';
+        if (index === 4) { input.minLength = 3; input.pattern = '[0-9]{3,4}'; }
+      }
       if (codeMode) { input.minLength = 4; input.maxLength = 16; input.pattern = '[!-~]{4,16}'; }
       label.htmlFor = input.id;
       label.textContent = key;
       wrapper.append(label, input);
-      if (optional) {
+      if (optional && vault) {
         const hint = document.createElement("p");
         hint.className = "hint";
         hint.id = `${input.id}-hint`;
@@ -152,7 +164,7 @@
       }
       fields.append(wrapper);
     });
-    intro.textContent = operationMode ? "Review the operation and target below. Enter the secret only if you intend to authorize this exact action. Anyone with this link can execute it; this page cannot verify who opened the link. The secret is not saved by this form." : codeMode ? "Enter only the one-time code from email, SMS, or your authenticator app. The code fills the captured browser page; this does not submit the site's form. Never type it in chat. Anyone with this link can use it." : vault ? "Save a login for this exact site. Anyone with this link can submit it. Saving does not fill the browser or sign in. Enter credentials only here, never in chat." : "Enter your secrets. They are sent directly to the server, not through chat. This page does not store them in browser storage.";
+    intro.textContent = paymentMode ? "Save a payment card for this exact HTTPS origin. Card number and CVC are encrypted in the native Vault. Cardholder name and billing postal code are optional. Enter digits only for number, month, four-digit year and CVC. Saving does not fill a checkout or authorize any payment; later native filling requires your separate confirmation. Anyone with this link can submit it. Never send card details in chat." : operationMode ? "Review the operation and target below. Enter the secret only if you intend to authorize this exact action. Anyone with this link can execute it; this page cannot verify who opened the link. The secret is not saved by this form." : codeMode ? "Enter only the one-time code from email, SMS, or your authenticator app. The code fills the captured browser page; this does not submit the site's form. Never type it in chat. Anyone with this link can use it." : vault ? "Save a login for this exact site. Anyone with this link can submit it. Saving does not fill the browser or sign in. Enter credentials only here, never in chat." : "Enter your secrets. They are sent directly to the server, not through chat. This page does not store them in browser storage.";
     form.hidden = false;
     form.querySelector("input").focus();
   }
@@ -192,11 +204,12 @@
     try {
       const response = await post("/submit", { token: capability, initData, values });
       if (codeMode && response.filled !== true) throw new Error('fill_unconfirmed');
+      if (paymentMode && response.saved !== true) throw new Error('save_unconfirmed');
       if (operationMode && response.completed !== true) throw new Error('operation_unconfirmed');
-      disableAndClear(operationMode ? "Operation reported complete. You can close this page." : codeMode ? "Code filled in the browser. Check the site and submit its form if needed. You can close this page." : vault ? "Login saved to the encrypted Vault. The browser has not been filled or signed in. You can close this page." : "Secrets saved. You can close this page.");
+      disableAndClear(paymentMode ? "Card saved to the encrypted Vault. No checkout was filled and no payment was authorized. You can close this page." : operationMode ? "Operation reported complete. You can close this page." : codeMode ? "Code filled in the browser. Check the site and submit its form if needed. You can close this page." : vault ? "Login saved to the encrypted Vault. The browser has not been filled or signed in. You can close this page." : "Secrets saved. You can close this page.");
     } catch (error) {
       const rejectedKey = vault && error && error.message === "invalid_authenticator_key";
-      disableAndClear(operationMode ? "The operation outcome is unknown or rejected. Fields were cleared. Verify the target independently before requesting another link; do not retry blindly." : codeMode ? "Code fill was not confirmed. Fields were cleared. Check the browser before requesting a new link." : rejectedKey ? "The authenticator key was rejected, so nothing was saved. Check the setup key, then request a new link." : vault ? "The save result is unconfirmed. Fields were cleared. Check Vault metadata without revealing the password; request a new link only if no item was saved." : "The save result is unconfirmed: the request was rejected or no response was received. The fields have been cleared. Check whether the keys were saved without displaying their values. Request a new link to try again.");
+      disableAndClear(paymentMode ? "Card storage was rejected or unconfirmed. Fields were cleared. Check native Vault metadata without exposing card details before requesting another link." : operationMode ? "The operation outcome is unknown or rejected. Fields were cleared. Verify the target independently before requesting another link; do not retry blindly." : codeMode ? "Code fill was not confirmed. Fields were cleared. Check the browser before requesting a new link." : rejectedKey ? "The authenticator key was rejected, so nothing was saved. Check the setup key, then request a new link." : vault ? "The save result is unconfirmed. Fields were cleared. Check Vault metadata without revealing the password; request a new link only if no item was saved." : "The save result is unconfirmed: the request was rejected or no response was received. The fields have been cleared. Check whether the keys were saved without displaying their values. Request a new link to try again.");
     } finally {
       values.fill("");
       capability = "";

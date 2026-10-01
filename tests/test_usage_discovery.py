@@ -15,9 +15,9 @@ def test_registered_usage_and_both_modes(tmp_path, monkeypatch):
     with registered(monkeypatch, home, settings=settings), _profile_runtime_scope(home, {}):
         entry = registry.get_entry('browser_vault', scope=str(home))
         description = entry.schema['description'].lower()
-        for term in ('secure env', 'login', 'username', 'password', 'code', 'passcode', 'prompt_unavailable'):
+        for term in ('secure env', 'login', 'username', 'password', 'code', 'passcode', 'payment', 'confirmation', 'prompt_unavailable'):
             assert term in description
-        assert set(entry.schema['parameters']['properties']['mode']['enum']) == {'login', 'code'}
+        assert set(entry.schema['parameters']['properties']['mode']['enum']) == {'login', 'code', 'payment'}
         assert 'mode' not in entry.schema['parameters']['required']
         result = json.loads(skill_view('secure-env-ingress:usage'))
         assert result['success'], result

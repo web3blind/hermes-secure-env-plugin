@@ -352,6 +352,12 @@ class _Handler(BaseHTTPRequestHandler):
                     or not isinstance(value['label'], str) or len(value['label'].encode('utf-8')) > 768):
                 raise RuntimeError('unsafe session response')
             return {'label': value['label'], 'keys': ['Verification code'], 'kind': 'browser_code'}
+        if isinstance(value, dict) and value.get('kind') == 'browser_payment':
+            from .payment import PAYMENT_KEYS
+            if (set(value) != {'label', 'keys', 'kind'} or value['keys'] != list(PAYMENT_KEYS)
+                    or not isinstance(value['label'], str) or len(value['label'].encode('utf-8')) > 768):
+                raise RuntimeError('unsafe session response')
+            return value
         if isinstance(value, dict) and value.get('kind') == 'browser_vault':
             if (set(value) != {'label', 'keys', 'kind'}
                     or value['keys'] != ['Username', 'Password', 'Authenticator key (optional)']

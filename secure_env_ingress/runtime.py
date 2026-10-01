@@ -20,6 +20,7 @@ from .telegram_webapp import verify_init_data, InitDataError
 from .tls import validate_certificate, create_server_ssl_context
 from .writer import add_missing
 from .code_targets import CodeTarget
+from .payment import PAYMENT_KEYS, payment_secret
 from .vault_ingress import VaultLoginTarget, capture_login_target, VaultTarget, assert_browser_target, assert_profile_home, bind_vault_home, assert_vault_home
 
 # Browser Vault form fields. The authenticator setup key is optional (empty when the site has no
@@ -56,6 +57,7 @@ class IngressRuntime:
         self._vault_context = None
         self._vault_binding = None
         self._code_groups = set()
+        self._payment_groups = set()
         self._operation_groups = set()
         self._operation_context = None
         self._operation_inflight = None  # (group, owner); persists until callback returns
@@ -126,14 +128,14 @@ class IngressRuntime:
         with self._lock:
             if (self._closed or not isinstance(owner, tuple) or len(owner) != 2
                     or owner[0] != 'telegram' or owner not in self.config.owners
-                    or mode not in ('login', 'code')):
+                    or mode not in ('login', 'code', 'payment')):
                 raise HTTPError(403, 'denied')
             assert_profile_home(self.home)
             if mode == 'code':
                 assert_browser_target(target)
             else:
                 target = capture_login_target(target.origin, target.label, target.session_id, target.session_key)
-            binding = bind_vault_home(self.home) if mode == 'login' else None
+            binding = bind_vault_home(self.home) if mode != 'code' else None
             self._tls()
             self._leader.acquire()
             try:
@@ -144,13 +146,16 @@ class IngressRuntime:
                     self._server.start()
                 browser, mini = self._store.issue_pair(
                     platform=owner[0], user_id=owner[1], hermes_home=self.home,
-                    profile_name='browser_vault_code' if mode == 'code' else 'browser_vault',
-                    allowed_keys=CODE_KEYS if mode == 'code' else VAULT_LOGIN_KEYS,
+                    profile_name='browser_vault_' + mode if mode != 'login' else 'browser_vault',
+                    allowed_keys=CODE_KEYS if mode == 'code' else PAYMENT_KEYS if mode == 'payment' else VAULT_LOGIN_KEYS,
                     target_id=(id(target), os.getuid()),
                     ttl_seconds=min(self.config.ttl_seconds, 240))
                 self._targets = {browser.group_id: target}
                 self._finish_completion('superseded')
                 self._code_groups.clear()
+                self._payment_groups.clear()
+                if mode == 'payment':
+                    self._payment_groups.add(browser.group_id)
                 if mode == 'code':
                     self._code_groups.add(browser.group_id)
                 from hermes_constants import set_hermes_home_override, reset_hermes_home_override
@@ -248,9 +253,10 @@ class IngressRuntime:
                 from hermes_constants import profile_name_for_home
                 profile = profile_name_for_home(self.home) or 'default'
                 code_mode = claim.group_id in self._code_groups
+                payment_mode = claim.group_id in self._payment_groups
                 return {'label': target.label + ' — ' + target.origin + ' — Profile: ' + profile,
-                        'keys': list(CODE_KEYS if code_mode else VAULT_LOGIN_KEYS),
-                        'kind': 'browser_code' if code_mode else 'browser_vault'}
+                        'keys': list(CODE_KEYS if code_mode else PAYMENT_KEYS if payment_mode else VAULT_LOGIN_KEYS),
+                        'kind': 'browser_code' if code_mode else 'browser_payment' if payment_mode else 'browser_vault'}
             return {'label': claim.profile_name, 'keys': list(claim.allowed_keys)}
 
     def submit(self, token, init_data, values):
@@ -381,9 +387,12 @@ class IngressRuntime:
         return {'filled': True}
 
     def _submit_vault(self, token, claim, target, values):
+        payment_mode = claim.group_id in self._payment_groups
+        kind = 'payment' if payment_mode else 'login'
         consumed = self._store.consume(token, mode=claim.mode, platform=claim.platform,
                                        user_id=claim.user_id, hermes_home=self.home,
-                                       profile_name='browser_vault', allowed_keys=VAULT_LOGIN_KEYS,
+                                       profile_name='browser_vault_payment' if payment_mode else 'browser_vault',
+                                       allowed_keys=PAYMENT_KEYS if payment_mode else VAULT_LOGIN_KEYS,
                                        target_id=(id(target), os.getuid()))
         if consumed is None:
             raise HTTPError(410, 'invalid_session')
@@ -391,30 +400,40 @@ class IngressRuntime:
         self._vault_context = None
         binding = self._vault_binding[1]
         self._vault_binding = None
-        if (not isinstance(values, list) or len(values) not in (2, 3)
-                or any(not isinstance(v, str) or len(v.encode('utf-8')) > 16384
-                       or any(c in v for c in ('\r', '\n', '\x00')) for v in values)
-                or not values[0] or not values[1]):
-            self._finish_completion('rejected', claim.group_id)
-            raise HTTPError(400, 'invalid_values')
-        secret = {'identifier_type': 'username', 'identifier': values[0], 'password': values[1]}
-        if len(values) == 3 and values[2].strip():
-            # Optional third field: the authenticator setup key. Validate it here so a typo is reported
-            # as such (and never as an unknown write outcome), and store the canonical form.
-            from agent.vault_store import normalize_otp_secret, totp_now
+        if payment_mode:
             try:
-                otp_secret = normalize_otp_secret(values[2])
-                # Native normalization checks alphabet/parameters but not base32
-                # decoding. Exercise the native code generator before any write.
-                if not otp_secret or not totp_now(otp_secret, at=0):
-                    raise ValueError('unusable key')
-            except Exception:
-                # Never reflect exception text: it may contain the submitted key.
+                secret = payment_secret(values)
+            except ValueError:
                 self._finish_completion('rejected', claim.group_id)
-                raise HTTPError(400, 'invalid_authenticator_key') from None
-            # The native writer normalizes again; for non-default URI parameters
-            # it accepts the original URI, not the canonical pipe-delimited form.
-            secret['otp_secret'] = values[2] if '|' in otp_secret else otp_secret
+                raise HTTPError(400, 'invalid_payment_values') from None
+            except Exception:
+                self._finish_completion('failed', claim.group_id)
+                raise HTTPError(409, 'write_failed') from None
+        else:
+            if (not isinstance(values, list) or len(values) not in (2, 3)
+                    or any(not isinstance(v, str) or len(v.encode('utf-8')) > 16384
+                           or any(c in v for c in ('\r', '\n', '\x00')) for v in values)
+                    or not values[0] or not values[1]):
+                self._finish_completion('rejected', claim.group_id)
+                raise HTTPError(400, 'invalid_values')
+            secret = {'identifier_type': 'username', 'identifier': values[0], 'password': values[1]}
+            if len(values) == 3 and values[2].strip():
+                # Optional third field: the authenticator setup key. Validate it here so a typo is reported
+                # as such (and never as an unknown write outcome), and store the canonical form.
+                from agent.vault_store import normalize_otp_secret, totp_now
+                try:
+                    otp_secret = normalize_otp_secret(values[2])
+                    # Native normalization checks alphabet/parameters but not base32
+                    # decoding. Exercise the native code generator before any write.
+                    if not otp_secret or not totp_now(otp_secret, at=0):
+                        raise ValueError('unusable key')
+                except Exception:
+                    # Never reflect exception text: it may contain the submitted key.
+                    self._finish_completion('rejected', claim.group_id)
+                    raise HTTPError(400, 'invalid_authenticator_key') from None
+                # The native writer normalizes again; for non-default URI parameters
+                # it accepts the original URI, not the canonical pipe-delimited form.
+                secret['otp_secret'] = values[2] if '|' in otp_secret else otp_secret
         try:
             assert_profile_home(self.home)
             if not isinstance(target, VaultLoginTarget):
@@ -429,14 +448,14 @@ class IngressRuntime:
             self._finish_completion('expired', claim.group_id)
             raise HTTPError(410, 'invalid_session')
         try:
-            meta = store.add_item('login', target.label, secret, origin=target.origin)
+            meta = store.add_item(kind, target.label, secret, origin=target.origin)
             after = bind_vault_home(self.home)
             if after.components[:-1] != binding.components[:-1] or (
                     binding.components[-1][1] is not None and after.components[-1] != binding.components[-1]):
                 raise RuntimeError('vault directory changed')
-            if (meta.origin != target.origin or meta.kind != 'login' or
+            if (meta.origin != target.origin or meta.kind != kind or
                     not any(item.id == meta.id and item.origin == target.origin and
-                            item.kind == 'login' for item in store.list_items())):
+                            item.kind == kind for item in store.list_items())):
                 raise RuntimeError('native Vault contract changed')
             self._finish_completion('saved', claim.group_id, handle=meta.id, origin=target.origin)
             return {'saved': True}
@@ -458,6 +477,7 @@ class IngressRuntime:
             if self._vault_context is not None and self._vault_context[0] == current[0]:
                 self._vault_context = None
             self._code_groups.discard(current[0])
+            self._payment_groups.discard(current[0])
             self._operation_groups.discard(current[0])
             if self._operation_context is not None and self._operation_context[0] == current[0]:
                 self._operation_context = None

@@ -92,9 +92,10 @@ def test_vault_tool_reports_bounded_session_binding_failure(tmp_path, monkeypatc
     assert 'https://site.test' not in raw
 
 
+@pytest.mark.parametrize('secret_kind', ['login', 'payment'])
 @pytest.mark.parametrize('mode', ['this_chat', 'home'])
 @pytest.mark.parametrize('running_dispatch_loop', [False, True])
-def test_registered_tool_https_native_vault(mode, running_dispatch_loop, tmp_path, monkeypatch):
+def test_registered_tool_https_native_vault(secret_kind, mode, running_dispatch_loop, tmp_path, monkeypatch):
     from agent.vault_store import VaultStore
     from gateway import config as gateway_config, session_context as sc
     from gateway.config import Platform
@@ -121,8 +122,8 @@ def test_registered_tool_https_native_vault(mode, running_dispatch_loop, tmp_pat
         runtime = original_runtime(cfg, active_home, token, trust_roots=root)
         original_create = runtime.create_vault
 
-        def issue(owner, target):
-            links = original_create(owner, target)
+        def issue(owner, target, **kwargs):
+            links = original_create(owner, target, **kwargs)
             claim = runtime._store.peek(urlsplit(links['url']).fragment)
             assert owner == ('telegram', '7')
             assert claim is not None and claim.expires_at - claim.created_at == 240
@@ -141,17 +142,20 @@ def test_registered_tool_https_native_vault(mode, running_dispatch_loop, tmp_pat
     monkeypatch.setattr('secure_env_ingress.code_targets.discover', no_browser)
     monkeypatch.setattr(runtime_module, 'assert_browser_target', no_browser)
     monkeypatch.setattr('secure_env_ingress.vault_ingress.assert_browser_target', no_browser)
+    from test_payment_ingress import card_values
+    values = card_values() if secret_kind == 'payment' else ['synthetic-user', 'synthetic-only-password']
     observed = []
 
     class Adapter:
         async def send(self, chat_id, content, metadata=None):
             observed.append((chat_id, metadata, content))
             # Link is delivered only through this transport, never the tool result.
-            url = content.split('One-time HTTPS login form: ', 1)[1].split(' for ', 1)[0]
+            assert ('payment card form' if secret_kind == 'payment' else 'login form') in content
+            url = content.split('form: ', 1)[1].split(' for ', 1)[0]
             token = urlsplit(url).fragment
             status, body = await asyncio.to_thread(post, settings, root, '/submit', {
                 'token': token, 'initData': '',
-                'values': ['synthetic-user', 'synthetic-only-password']})
+                'values': values})
             assert (status, body) == (200, {'saved': True})
             return SimpleNamespace(success=True)
 
@@ -177,7 +181,7 @@ def test_registered_tool_https_native_vault(mode, running_dispatch_loop, tmp_pat
             try:
                 def dispatch():
                     return registry.dispatch('browser_vault',
-                        {'origin': target.origin, 'label': target.label},
+                        {'origin': target.origin, 'label': target.label, 'mode': secret_kind},
                         task_id='sid', session_id='sid')
 
                 async def inside_loop():
@@ -196,9 +200,15 @@ def test_registered_tool_https_native_vault(mode, running_dispatch_loop, tmp_pat
             else ('77', {'thread_id': '55'}))
         store = VaultStore(home / 'vault')
         meta = store.get_meta(result['handle'])
-        assert meta is not None and meta.identifier == 'synthetic-user'
-        assert meta.origin == target.origin and meta.kind == 'login'
-        assert store.resolve_secret(meta.id) == {'password': 'synthetic-only-password'}
+        assert meta is not None and meta.identifier == ('synthetic-user' if secret_kind == 'login' else None)
+        assert meta.origin == target.origin and meta.kind == secret_kind
+        if secret_kind == 'login':
+            assert store.resolve_secret(meta.id) == {'password': 'synthetic-only-password'}
+        else:
+            from secure_env_ingress.payment import payment_secret
+            assert store.resolve_secret(meta.id) == payment_secret(values)
+            assert 'confirmation' in result['next'] and 'identifier' not in result['next']
+            assert values[0] not in raw
         from tools.browser_vault_tool import browser_vault_list
         native = json.loads(browser_vault_list())
         assert any(item['handle'] == meta.id and item['origin'] == target.origin
