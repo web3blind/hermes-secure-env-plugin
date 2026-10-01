@@ -78,7 +78,10 @@ async def test_tool_denies_unbound_context_without_issuing_form(tmp_path, monkey
         def on_unload(self, *args, **kwargs): pass
     ctx = Context()
     register(ctx)
-    assert set(ctx.tools) == {'browser_vault', 'secure_operation'}
+    assert {'browser_vault', 'secure_operation'} <= set(ctx.tools)
+    payment = json.loads(await ctx.tools['secure_payment_fill'](
+        {'handle': 'vault_fixture', 'parent': 'p', 'origin': 'https://example.test'}, task_id='unbound'))
+    assert payment == {'success': False, 'status': 'session_binding'}
     result = json.loads(await ctx.tools['browser_vault'](
         {'origin': 'https://example.test', 'label': 'Synthetic'}, task_id='unbound'))
     assert result['success'] is False

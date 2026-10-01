@@ -1,9 +1,10 @@
 name: secure-env-ingress
-version: 0.7.0
-description: "Secure ENV: Telegram HTTPS forms for login/password, TOTP keys, payment card storage, verification codes/passcodes, .env secrets and trusted operations."
+version: 0.7.1
+description: "Secure ENV: Telegram HTTPS forms for login/password, TOTP keys, payment card storage/protected iframe fill, verification codes/passcodes, .env secrets and trusted operations."
 author: web3blind
 provides_tools:
   - browser_vault
+  - secure_payment_fill
   - secure_operation
 provides_hooks:
   - pre_gateway_dispatch

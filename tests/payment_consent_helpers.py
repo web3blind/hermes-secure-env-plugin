@@ -3,7 +3,7 @@ from contextlib import contextmanager
 
 
 @contextmanager
-def payment_consent(choice, *, session='synthetic-payment-consent'):
+def payment_consent(choice, *, session='synthetic-payment-consent', before_decision=None):
     from gateway import session_context as sc
     from tools import approval
     seen = []
@@ -11,6 +11,8 @@ def payment_consent(choice, *, session='synthetic-payment-consent'):
     def notify(data):
         seen.append(data)
         assert data['pattern_key'] == 'mcp_elicitation'
+        if before_decision is not None:
+            before_decision()
         if choice == 'unresolved':
             assert approval.withdraw_gateway_approval(session, data['request_id'], 'synthetic withdrawal')
         else:

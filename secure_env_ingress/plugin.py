@@ -124,6 +124,9 @@ class LazyRuntime:
 
 def register(ctx):
     code_selection = CodeSelection()
+    from .payment_fill import PaymentSelection
+    payment_selection = PaymentSelection()
+    payment_lock = threading.Lock()
     from hermes_constants import get_hermes_home, set_hermes_home_override, reset_hermes_home_override
     home = Path(get_hermes_home())
     closed = False
@@ -540,6 +543,82 @@ def register(ctx):
             if links and runtime and not links['completion'].done():
                 await asyncio.shield(asyncio.to_thread(runtime.cancel_group, links['group_id']))
 
+    async def payment_tool(args, *, task_id=None, session_id=None, **_kwargs):
+        from gateway import session_context as sc
+        from agent.delegation_context import is_delegated_child_context
+        from hermes_constants import profile_name_for_home
+        from .payment_fill import payment_backend, approved_fill, release
+        cancelled = threading.Event()
+        vault_binding = None
+        from .vault_ingress import bind_vault_home, assert_vault_home
+        def bound(var):
+            value = var.get()
+            return None if value is sc._UNSET else value
+        def guard():
+            expected = profile_name_for_home(home) or 'default'
+            sid = bound(sc._SESSION_ID)
+            owner = bound(sc._SESSION_USER_ID)
+            if (closed or cancelled.is_set() or is_delegated_child_context()
+                    or bound(sc._SESSION_PLATFORM) != 'telegram' or bound(sc._CRON_SESSION) != ''
+                    or not sid or sid != task_id or (session_id and sid != session_id)
+                    or not bound(sc._SESSION_KEY) or not isinstance(owner, str)
+                    or not owner.isascii() or not owner.isdecimal()
+                    or ('telegram', owner) not in configured_owners(read_settings(home))
+                    or not bound(sc._SESSION_CHAT_ID)
+                    or not str(bound(sc._SESSION_CHAT_ID)).lstrip('-').isdecimal()
+                    or bound(sc._SESSION_CHAT_TYPE) not in ('dm', 'group', 'forum')
+                    or bound(sc._SESSION_PROFILE) not in ((expected, '') if expected == 'default' else (expected,))):
+                raise ValueError('session mismatch')
+            assert_profile_home(home)
+            if vault_binding is not None:
+                assert_vault_home(vault_binding)
+        try:
+            guard()
+            vault_binding = bind_vault_home(home)
+            if (not isinstance(args, dict) or not {'handle', 'parent', 'origin'} <= set(args)
+                    or set(args) - {'handle', 'parent', 'origin', 'selection'}
+                    or any(not isinstance(v, str) or not 1 <= len(v) <= 200 for v in args.values())):
+                raise ValueError('invalid request')
+        except Exception:
+            return json.dumps({'success': False, 'status': 'session_binding'})
+        scope = (str(home), task_id, bound(sc._SESSION_KEY), bound(sc._SESSION_USER_ID),
+                 str(bound(sc._SESSION_CHAT_ID)), str(bound(sc._SESSION_THREAD_ID)))
+        def work():
+            if not payment_lock.acquire(blocking=False):
+                return {'success': False, 'status': 'payment_busy'}
+            target = None
+            try:
+                guard()
+                payment_backend(args['handle'], args['origin'])
+                target, response = payment_selection.choose(scope, task_id, args['parent'],
+                    args['origin'], args['handle'], args.get('selection'))
+                if response is not None:
+                    return response
+                return approved_fill(target, args['handle'], guard)
+            except Exception:
+                return {'success': False, 'status': 'target_refused'}
+            finally:
+                if target is not None:
+                    release(target)
+                payment_lock.release()
+        worker = asyncio.create_task(asyncio.to_thread(work))
+        try:
+            return json.dumps(await asyncio.shield(worker))
+        except asyncio.CancelledError:
+            cancelled.set()
+            await asyncio.shield(worker)
+            raise
+
+    ctx.register_tool(name='secure_payment_fill', toolset='browser',
+        schema={'name': 'secure_payment_fill', 'description': 'Secure ENV: protected payment iframe fill from a saved native Vault handle. Additive tool, not a replacement for browser_vault_fill. Requires an explicitly task-selected supervisor parent target, exact HTTPS frame origin matching the saved card, and separate native human confirmation identifying card label/origin. No card values, arbitrary selectors, endpoints or JS arguments. Multiple direct child frames/forms return bounded opaque selections; Hermes chooses using task context. No Pay click, registration or form submission; sites may act on input. Never retry payment_declined or unknown automatically. Native local payment entries only; no manager unlocking. Load secure-env-ingress:usage for supported field formats and refusal boundaries.',
+            'parameters': {'type': 'object', 'properties': {
+                'handle': {'type': 'string', 'description': 'Native vault_ payment handle from Vault listing, never card values'},
+                'parent': {'type': 'string', 'description': 'Exact task-selected supervisor parent page target ID; never globally auto-picked'},
+                'origin': {'type': 'string', 'description': 'Exact HTTPS origin of payment child frame, matching native Vault binding'},
+                'selection': {'type': 'string', 'description': 'Opaque selection returned for this task, parent, origin and handle; consumed within 120 seconds'}},
+                'required': ['handle', 'parent', 'origin'], 'additionalProperties': False}},
+        handler=payment_tool, is_async=True)
+
     from .operations import load_configured_consumers
     load_configured_consumers(home, read_settings(home, consumer_config=True))
     ctx.register_tool(name='secure_operation', toolset='secure_env',
@@ -550,7 +629,7 @@ def register(ctx):
                     'required': ['operation', 'parameters'], 'additionalProperties': False}},
         handler=operation_tool, is_async=True)
     ctx.register_tool(name='browser_vault', toolset='browser',
-        schema={'name': 'browser_vault', 'description': 'Secure ENV: Telegram HTTPS form for login, username, password, optional TOTP setup key, payment card storage, or verification code/passcode. Use mode=login (default) to SAVE credentials for an HTTPS origin in encrypted profile Vault; no open browser required, no automatic filling or sign-in. Later fill the matching site through native Vault tools. Use mode=code to FILL a recognized code/passcode field in an attached browser, without Vault storage or site submission; accepts 4-16 printable ASCII characters including punctuation, no whitespace. A native secret prompt returning prompt_unavailable does NOT establish that this plugin is unavailable: use the matching mode here in an authorized Telegram session. Payment mode saves card fields including CVC in encrypted native Vault for an exact HTTPS origin; no browser required, no fill, no payment authorization. Later native fill needs explicit human payment-fill confirmation; never retry a decline. No mode needs a site-specific registered operation. Never put secrets in arguments or chat. Links grant access to chat readers. For workflow and failure diagnosis load the plugin usage skill.',
+        schema={'name': 'browser_vault', 'description': 'Secure ENV: Telegram HTTPS form for login, username, password, optional TOTP setup key, payment card storage, or verification code/passcode. Use mode=login (default) to SAVE credentials for an HTTPS origin in encrypted profile Vault; no open browser required, no automatic filling or sign-in. Later fill the matching site through native Vault tools. Use mode=code to FILL a recognized code/passcode field in an attached browser, without Vault storage or site submission; accepts 4-16 printable ASCII characters including punctuation, no whitespace. A native secret prompt returning prompt_unavailable does NOT establish that this plugin is unavailable: use the matching mode here in an authorized Telegram session. Payment mode saves card fields including CVC in encrypted native Vault for an exact HTTPS origin; no browser required, no fill, no payment authorization. Later native fill needs explicit human payment-fill confirmation; for supported exact hosted-card iframes discover secure_payment_fill, the additive protected plugin path with the same native human consent. Never retry a decline. No mode needs a site-specific registered operation. Never put secrets in arguments or chat. Links grant access to chat readers. For workflow and failure diagnosis load the plugin usage skill.',
                 'parameters': {'type': 'object', 'properties': {'origin': {'type': 'string', 'description': 'Exact HTTPS origin to store credentials for; for code mode, the current page origin. No path or trailing slash.'},
                     'label': {'type': 'string', 'description': 'Short public site label'},
                     'selection': {'type': 'string', 'description': 'Code mode only: opaque candidate returned by selection_required. Hermes chooses using its login context; never ask the user to identify a tab.'},
@@ -559,13 +638,14 @@ def register(ctx):
     ctx.register_skill('setup', Path(__file__).parent / 'setup' / 'SKILL.md',
                        description='Install and diagnose secure-env-ingress; never handle secret values.')
     ctx.register_skill('usage', Path(__file__).parent / 'usage' / 'SKILL.md',
-                       description='Use Secure ENV for Telegram login, username/password, TOTP setup keys, payment card storage, verification codes/passcodes, .env or trusted operations; handle prompt_unavailable.')
+                       description='Use Secure ENV for Telegram login, username/password, TOTP setup keys, payment card storage and protected iframe fill, verification codes/passcodes, .env or trusted operations; handle prompt_unavailable.')
     ctx.register_hook('pre_gateway_dispatch', hook)
     ctx.register_command('senv', command, description='Secure secret entry over HTTPS',
                          args_hint='<profile> [field1,field2]|setup|status|cancel')
     def close():
         nonlocal closed
         closed = True
+        payment_selection.close()
         for runtime in runtimes.values():
             runtime.close()
         from .operations import clear_consumers
