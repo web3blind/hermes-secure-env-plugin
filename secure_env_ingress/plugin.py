@@ -542,21 +542,23 @@ def register(ctx):
     from .operations import load_configured_consumers
     load_configured_consumers(home, read_settings(home, consumer_config=True))
     ctx.register_tool(name='secure_operation', toolset='secure_env',
-        schema={'name': 'secure_operation', 'description': 'Request a pre-registered trusted one-shot operation. Only public operation name and nonsensitive JSON parameters; NEVER send the secret in arguments or chat. HTTPS form displays a frozen summary before secret entry. The link is bearer authorization, not identity verification. Result is fixed status only.',
+        schema={'name': 'secure_operation', 'description': 'Secure ENV: HTTPS secret entry for a pre-registered trusted one-shot operation. Not the browser login/password or verification-code form; browser secret entry does not require registering an operation for each website. Only public operation name and nonsensitive JSON parameters; NEVER send the secret in arguments or chat. HTTPS form displays a frozen summary before secret entry. The link is bearer authorization, not identity verification. Result is fixed status only.',
                 'parameters': {'type': 'object', 'properties': {
                     'operation': {'type': 'string', 'description': 'Administrator-registered operation identifier'},
                     'parameters': {'type': 'object', 'description': 'Nonsensitive operation parameters, never a password'}},
                     'required': ['operation', 'parameters'], 'additionalProperties': False}},
         handler=operation_tool, is_async=True)
     ctx.register_tool(name='browser_vault', toolset='browser',
-        schema={'name': 'browser_vault', 'description': 'Send a one-time HTTPS form to the bound Telegram chat. Default login mode saves username/password and optional authenticator setup key for the specified HTTPS origin to the profile encrypted Vault. No open browser or tab is required. Saving does not fill or sign in; later native filling must verify the target page origin. mode=code instead asks only for a one-time email/SMS/authenticator verification code and fills the captured browser page over supervisor CDP, without storing it or submitting the site form. Never put code or credentials in tool arguments or chat. Link grants access to any chat reader.',
+        schema={'name': 'browser_vault', 'description': 'Secure ENV: Telegram HTTPS form for login, username, password, optional TOTP setup key, or verification code/passcode. Use mode=login (default) to SAVE credentials for an HTTPS origin in encrypted profile Vault; no open browser required, no automatic filling or sign-in. Later fill the matching site through native Vault tools. Use mode=code to FILL a recognized code/passcode field in an attached browser, without Vault storage or site submission; accepts 4-16 printable ASCII characters including punctuation, no whitespace. A native secret prompt returning prompt_unavailable does NOT establish that this plugin is unavailable: use the matching mode here in an authorized Telegram session. Neither mode needs a site-specific registered operation. Never put secrets in arguments or chat. Links grant access to chat readers. For workflow and failure diagnosis load the plugin usage skill.',
                 'parameters': {'type': 'object', 'properties': {'origin': {'type': 'string', 'description': 'Exact HTTPS origin to store credentials for; for code mode, the current page origin. No path or trailing slash.'},
                     'label': {'type': 'string', 'description': 'Short public site label'},
                     'selection': {'type': 'string', 'description': 'Code mode only: opaque candidate returned by selection_required. Hermes chooses using its login context; never ask the user to identify a tab.'},
-                    'mode': {'type': 'string', 'enum': ['login', 'code'], 'description': 'Omit for login; code for standalone one-time verification field'}}, 'required': ['origin', 'label'], 'additionalProperties': False}},
+                    'mode': {'type': 'string', 'enum': ['login', 'code'], 'description': 'login (default): save username/password and optional TOTP key without a browser. code: fill an attached verification-code/passcode field, no storage.'}}, 'required': ['origin', 'label'], 'additionalProperties': False}},
         handler=vault_tool, is_async=True)
     ctx.register_skill('setup', Path(__file__).parent / 'setup' / 'SKILL.md',
                        description='Install and diagnose secure-env-ingress; never handle secret values.')
+    ctx.register_skill('usage', Path(__file__).parent / 'usage' / 'SKILL.md',
+                       description='Use Secure ENV for Telegram login, username/password, TOTP setup keys, verification codes/passcodes, .env or trusted operations; handle prompt_unavailable.')
     ctx.register_hook('pre_gateway_dispatch', hook)
     ctx.register_command('senv', command, description='Secure secret entry over HTTPS',
                          args_hint='<profile> [field1,field2]|setup|status|cancel')

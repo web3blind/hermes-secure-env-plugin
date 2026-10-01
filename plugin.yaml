@@ -1,6 +1,6 @@
 name: secure-env-ingress
-version: 0.6.7
-description: Profile-scoped HTTPS secret entry through normalized Hermes gateway commands.
+version: 0.6.8
+description: "Secure ENV: Telegram HTTPS forms for login/password, TOTP keys, verification codes/passcodes, .env secrets and trusted operations."
 author: web3blind
 provides_tools:
   - browser_vault

@@ -113,6 +113,21 @@ Browser Vault requests use at most 240 seconds even when configured TTL is highe
 
 The owner/session, profile context and exact HTTPS origin are bound to the storage request; browser identity is not. Ownership, permissions, symlinks/hardlinks and Vault path identity are checked before write. Native path-based writes are not a defense against a hostile same-UID/root process. Identifiers are agent-visible native metadata; passwords are not. Authenticator setup keys are stored by the native encrypted Vault for subsequent native code generation; cards, addresses, third-party password-manager unlocking and restart-resume are outside this feature.
 
+### Choosing the protected-entry workflow
+
+The plugin ships the runtime skill `secure-env-ingress:usage` (separate from installation `setup`). Its tool descriptions explicitly cover **login/username/password** as well as **verification codes/passcodes**, so discovery need not depend on this README or another conversation's memory.
+
+- **Save login/password and optional TOTP setup key:** `browser_vault` with `mode="login"` (or omit mode). No browser required. Saving is not filling or signing in. Afterwards list the native Vault, enter only the public username, and use native password filling on the verified origin. Reuse matching saved entries; support username-first/password-only pages without treating them as OTP forms.
+- **Fill a recognized standalone code/passcode field:** `browser_vault` with `mode="code"`, using the current task's supported browser connection. No Vault storage or automatic site submission. The agent resolves multiple candidates, not the user.
+- **Write an ENV secret:** `/senv <profile> <FIELD1,FIELD2>`. Do not use this to read secrets back and manually fill a browser.
+- **Run a pre-registered trusted action:** `secure_operation`. Such registration is NOT required for browser login/password or code forms.
+
+Native Vault prompts and this plugin's Telegram HTTPS forms are different paths. Native `prompt_unavailable` does not prove this plugin is unavailable: discover its `browser_vault` tool and select the appropriate mode, subject to real session authorization, delivery and HTTPS availability. Code mode is not a substitute for arbitrary account passwords.
+
+On `expired`, reissue only when the user is ready. On `unknown`, inspect the browser without reading the secret before retrying. On `runtime_preflight`, diagnose the failed preparation step: that label is not a root cause. Never loop identical failed calls or claim all secret entry is unavailable based on another tool's error. Login/code links last at most 240 seconds, possibly less by configuration.
+
+These instructions do not change field recognition, origin/form guards or native login filling, and require no Hermes core patch. Tool descriptions/skill registration take effect when the plugin is reloaded; an already-running conversation can still contain older guidance. This improves discovery, not a guarantee of every model's choice or every site's compatibility.
+
 ### Standalone verification code and plugin-owned selection (0.6.6)
 
 When the already-attached browser page asks for an email, SMS or authenticator one-time code without a new username/password, use the same plugin tool with `{"origin":"https://example.com","label":"Example verification","mode":"code"}`. The owner receives a single-use HTTPS form with one masked **Verification code** field. Enter the code there (4–16 printable ASCII characters, including punctuation; no spaces or control characters), never in chat or tool arguments. No saved login or authenticator seed is required. The code is not stored in Vault, `.env`, or on disk; the form submits it to the live HTTPS runtime, which inspects the existing page and fills its unambiguous code control over the captured supervisor's CDP WebSocket. The site form is **not** explicitly submitted; some sites auto-submit on input. The tool reports `filled` only after the supervisor returns an exact fill count; uncertain outcomes require checking the page before retrying. The link expires within 240 seconds and cancellation, supersession, replay, changed page/origin/profile, or missing/ambiguous controls fail closed. Numeric and alphanumeric codes are supported, including standard adjacent one-character boxes.

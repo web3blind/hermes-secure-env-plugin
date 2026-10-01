@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-secure-env-ingress"
-version = "0.6.7"
+version = "0.6.8"
 description = "Profile-scoped HTTPS secret ingress for Hermes messaging gateways"
 requires-python = ">=3.11"
 dependencies = [
@@ -21,4 +21,4 @@ include = ["secure_env_ingress*", "scripts"]
 exclude = ["secure_env_ingress_probe*"]
 
 [tool.setuptools.package-data]
-secure_env_ingress = ["static/*.js", "static/*.css", "templates/*.html", "setup/*.md", "OPERATIONS.md", "plugin.yaml"]
+secure_env_ingress = ["static/*.js", "static/*.css", "templates/*.html", "setup/*.md", "usage/*.md", "OPERATIONS.md", "plugin.yaml"]
