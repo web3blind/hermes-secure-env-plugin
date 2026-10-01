@@ -153,6 +153,10 @@ Code mode discovers forms through the existing task-owned CDP supervisor transpo
 
 Version 0.6.4 restores `/senv <profile> <FIELD,...>` when trusted operation consumers are configured. ENV setup validates its own settings without rejecting or modifying the separate `consumers` section. Unknown ENV settings remain rejected; consumer validation and activation remain the responsibility of the operation loader.
 
+## Isolated configured consumer failures (0.7.2)
+
+A rejected administrator-configured consumer now blocks only its named `secure_operation`, not the entire plugin. Valid consumers activate independently of entry order. ENV forms, login/password/TOTP, code entry, payment-card storage and `secure_payment_fill` stay registered. All existing source hash, ownership, path, permissions and factory checks remain required; mismatching source is never executed. Malformed consumers containers disable configured operations, while sanitized startup warnings identify entry position and a fixed reason/stage without exposing configuration or exception details. Reload/unload cannot retain stale configured factories; collisions fail closed without falling back to a preexisting factory. See the operation contract below for lifecycle and trusted-code limits.
+
 ## One-shot secret operations (0.6.3)
 
 Version 0.6.3 fixes premature `unknown` results while a submitted operation is still running. Consuming the one-use link no longer ends the wait for its callback; the original deadline and cancellation behavior remain in effect.

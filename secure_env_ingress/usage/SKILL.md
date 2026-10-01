@@ -69,6 +69,7 @@ A native code prompt returning `prompt_unavailable` does not rule out this plugi
 ## Other destinations
 
 - Secret deliberately destined for an ENV file: `/senv <profile> <FIELD1,FIELD2>`. Do not use an ENV file as a workaround for browser filling and then read the secret back.
+- A rejected configured consumer (0.7.2) disables only its named trusted operation. Do not infer that ENV/login/TOTP/code/card storage or protected iframe fill is unavailable. `consumer_binding` means that operation cannot issue a link; ask the operator to review its pinned configuration, never invent a replacement handler or update hashes merely to bypass validation.
 - Secret for an administrator-registered trusted action: `secure_operation`. This is a different workflow, not a prerequisite for ordinary login/password or code entry. Do not invent handlers or register arbitrary execution merely to fill a browser field.
 - Installation/TLS configuration: `secure-env-ingress:setup`, not this usage skill.
 

@@ -76,7 +76,8 @@ def configured_fixture(home, settings, ciphertext):
     return settings
 
 
-def test_registered_dispatch_https_encrypted_action(tmp_path, monkeypatch):
+@pytest.mark.parametrize('bad_first', [False, True])
+def test_registered_dispatch_https_encrypted_action(tmp_path, monkeypatch, bad_first):
     from gateway import session_context as sc
     from gateway.config import Platform
     from gateway.platforms.event import MessageEvent
@@ -94,6 +95,13 @@ def test_registered_dispatch_https_encrypted_action(tmp_path, monkeypatch):
     key = base64.urlsafe_b64encode(hashlib.pbkdf2_hmac('sha256', secret.encode(), b'fixture-salt', 1000, dklen=32))
     ciphertext = Fernet(key).encrypt(b'synthetic-payload')
     settings = configured_fixture(home, settings, ciphertext)
+    bad_module = home / 'bad_action.py'
+    bad_module.write_text("raise RuntimeError('synthetic-private-error')")
+    bad_module.chmod(0o600)
+    bad = {'path': str(bad_module), 'factory': 'factory', 'sha256': '0' * 64}
+    good = settings['consumers']['fixture_action']
+    pairs = [('fixture_action', good), ('bad_action', bad)]
+    settings['consumers'] = dict(reversed(pairs) if bad_first else pairs)
     # The HTTPS runtime accepts only ingress settings, not plugin-only allowlist.
     https_settings = {k: v for k, v in settings.items() if k != 'consumers'}
     original = runtime_module.IngressRuntime
@@ -134,7 +142,7 @@ def test_registered_dispatch_https_encrypted_action(tmp_path, monkeypatch):
                     {'operation': 'fixture_action', 'parameters': {'target': 'fixture'}},
                     task_id='sid', session_id='sid')
                 assert json.loads(registry.dispatch('secure_operation',
-                    {'operation': 'missing', 'parameters': {}}, task_id='sid', session_id='sid')) == {
+                    {'operation': 'bad_action', 'parameters': {}}, task_id='sid', session_id='sid')) == {
                         'success': False, 'status': 'consumer_binding'}
             finally:
                 sc.clear_session_vars(tokens)
@@ -169,19 +177,13 @@ def test_configured_consumer_startup_fail_closed(tmp_path, monkeypatch, fault):
     elif fault == 'verified':
         item['requires_verified_principal'] = True
     try:
-        if fault == 'verified':
-            with registered(monkeypatch, home, settings=settings):
-                with pytest.raises(ValueError):
-                    bind(home, 'fixture_action', {'target': 'fixture'})
-        else:
-            with pytest.raises((ValueError, OSError)):
-                with registered(monkeypatch, home, settings=settings):
-                    pytest.fail('startup unexpectedly accepted unsafe consumer')
-            if fault != 'duplicate':
-                with pytest.raises(ValueError):
-                    bind(home, 'fixture_action', {'target': 'fixture'})
-            else:
-                assert bind(home, 'fixture_action', {})[0].summary == 'Manual'
+        with registered(monkeypatch, home, settings=settings) as (manager, _):
+            from tools.registry import registry
+            assert 'senv' in manager._plugin_commands
+            assert all(registry.get_entry(name, scope=str(home)) for name in (
+                'browser_vault', 'secure_payment_fill', 'secure_operation'))
+            with pytest.raises(ValueError):
+                bind(home, 'fixture_action', {'target': 'fixture'})
             assert not (home / 'secrets-ingress').exists()
     finally:
         clear_consumers(home)

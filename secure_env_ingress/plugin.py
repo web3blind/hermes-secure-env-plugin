@@ -144,7 +144,16 @@ def register(ctx):
         token = set_hermes_home_override(selected_home)
         try:
             from hermes_cli.plugins import load_config_readonly
-            raw = load_config_readonly() or {}
+            from yaml import YAMLError
+            try:
+                raw = load_config_readonly() or {}
+            except (OSError, ValueError, YAMLError):
+                if not consumer_config:
+                    raise
+                # Consumer discovery alone is optional. No exception details or
+                # config contents are safe to display; normal ingress still uses
+                # its existing strict read/validation path when requested.
+                return None
             try:
                 entry = raw['plugins']['entries'][ctx.plugin_id]
             except (KeyError, TypeError):
@@ -154,7 +163,7 @@ def register(ctx):
                 source = entry.get('config')
             if not isinstance(source, dict):
                 if consumer_config and isinstance(entry, dict) and ('settings' in entry or 'config' in entry):
-                    raise ValueError('invalid plugin settings')
+                    return None
                 return {}
             if consumer_config:
                 return copy.deepcopy(source.get('consumers', {}))

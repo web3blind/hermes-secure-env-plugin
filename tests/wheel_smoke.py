@@ -33,6 +33,6 @@ with tempfile.TemporaryDirectory(prefix='senv-wheel-smoke-') as temporary:
     operation_target = Path(temporary) / 'configured-operation'
     operation_target.mkdir()
     with MonkeyPatch.context() as monkeypatch:
-        test_registered_dispatch_https_encrypted_action(operation_target, monkeypatch)
+        test_registered_dispatch_https_encrypted_action(operation_target, monkeypatch, bad_first=True)
     print('FRESH_WHEEL_CONFIGURED_OPERATION_HTTPS_E2E=PASS')
     print('FRESH_WHEEL_DISCOVERY_AND_HTTPS_E2E=PASS')
