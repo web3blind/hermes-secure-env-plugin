@@ -1,0 +1,209 @@
+{
+  "tag": "DIV",
+  "id": "",
+  "classes": "credit-card-wrapper",
+  "children": [
+    {
+      "tag": "SPAN",
+      "id": "",
+      "classes": "custom-input-wrapper",
+      "children": [
+        {
+          "tag": "INPUT",
+          "id": "creditCardHolder",
+          "classes": "custom-input",
+          "children": [],
+          "attributes": {
+            "name": "creditCardHolder",
+            "type": "text",
+            "placeholder": "",
+            "maxlength": "40",
+            "autocomplete": "off",
+            "required": "required"
+          }
+        },
+        {
+          "tag": "LABEL",
+          "id": "",
+          "classes": "custom-input-label",
+          "children": [
+            {
+              "tag": "SPAN",
+              "id": "",
+              "classes": "",
+              "children": []
+            }
+          ],
+          "text": "Card holder*"
+        }
+      ]
+    },
+    {
+      "tag": "SPAN",
+      "id": "",
+      "classes": "custom-input-wrapper",
+      "children": [
+        {
+          "tag": "INPUT",
+          "id": "_KKnr",
+          "classes": "custom-input custom-input-icon",
+          "children": [],
+          "attributes": {
+            "name": "_KKnr",
+            "type": "text",
+            "placeholder": "",
+            "maxlength": "30",
+            "autocomplete": "off",
+            "required": "required"
+          }
+        },
+        {
+          "tag": "LABEL",
+          "id": "_KKnr-label",
+          "classes": "custom-input-label",
+          "children": [
+            {
+              "tag": "SPAN",
+              "id": "",
+              "classes": "",
+              "children": []
+            }
+          ],
+          "text": "Card number*"
+        },
+        {
+          "tag": "DIV",
+          "id": "brand_visa",
+          "classes": "brand",
+          "children": [
+            {
+              "tag": "IMG",
+              "id": "",
+              "classes": "",
+              "children": [],
+              "source": "https://www.computop-paygate.com/Templates/imagesHetzner_AG/visa.svg",
+              "attributes": {},
+              "naturalWidth": 45,
+              "naturalHeight": 20
+            }
+          ]
+        },
+        {
+          "tag": "DIV",
+          "id": "brand_mastercard",
+          "classes": "brand",
+          "children": [
+            {
+              "tag": "IMG",
+              "id": "",
+              "classes": "",
+              "children": [],
+              "source": "https://www.computop-paygate.com/Templates/imagesHetzner_AG/mastercard.svg",
+              "attributes": {},
+              "naturalWidth": 45,
+              "naturalHeight": 20
+            }
+          ]
+        },
+        {
+          "tag": "DIV",
+          "id": "brand_amex",
+          "classes": "brand",
+          "children": [
+            {
+              "tag": "IMG",
+              "id": "",
+              "classes": "",
+              "children": [],
+              "source": "https://www.computop-paygate.com/Templates/imagesHetzner_AG/amex.svg",
+              "attributes": {},
+              "naturalWidth": 45,
+              "naturalHeight": 20
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": "SPAN",
+      "id": "",
+      "classes": "custom-input-wrapper",
+      "children": [
+        {
+          "tag": "INPUT",
+          "id": "expiry_date",
+          "classes": "custom-input",
+          "children": [],
+          "attributes": {
+            "name": "expiry_date",
+            "type": "text",
+            "placeholder": "",
+            "autocomplete": "off",
+            "required": "required"
+          }
+        },
+        {
+          "tag": "LABEL",
+          "id": "",
+          "classes": "custom-input-label",
+          "children": [
+            {
+              "tag": "SPAN",
+              "id": "",
+              "classes": "",
+              "children": []
+            }
+          ],
+          "text": "Expires (MM/YY)*"
+        }
+      ]
+    },
+    {
+      "tag": "SPAN",
+      "id": "",
+      "classes": "custom-input-wrapper",
+      "children": [
+        {
+          "tag": "INPUT",
+          "id": "cccvc",
+          "classes": "custom-input",
+          "children": [],
+          "attributes": {
+            "name": "cccvc",
+            "type": "text",
+            "placeholder": "",
+            "maxlength": "4",
+            "autocomplete": "off"
+          }
+        },
+        {
+          "tag": "LABEL",
+          "id": "",
+          "classes": "custom-input-label",
+          "children": [
+            {
+              "tag": "SPAN",
+              "id": "",
+              "classes": "",
+              "children": []
+            }
+          ],
+          "text": "CVC code*"
+        },
+        {
+          "tag": "SPAN",
+          "id": "",
+          "classes": "custom-input-info",
+          "children": [
+            {
+              "tag": "A",
+              "id": "",
+              "classes": "link-info",
+              "children": []
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

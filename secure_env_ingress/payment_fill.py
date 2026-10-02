@@ -98,10 +98,11 @@ _GUARD = r'''function(nodes, inspection=false, strictMutations=inspection) {
     return JSON.stringify([s.display,s.visibility,s.opacity,s.pointerEvents,s.contentVisibility]);
   };
   // Host authority must be added before taking immutable snapshots below.
-  const presentation=new Set(nodes);
+  const presentation=new Set(nodes), labelRoots=new Set();
   for(const n of nodes) {
     for(const label of [...Array.from(n.labels || []), ...(n.getAttribute('aria-labelledby') || '')
       .split(/\s+/).filter(Boolean).map(id=>doc.getElementById(id)).filter(Boolean)]) {
+      labelRoots.add(label);
       presentation.add(label);
       for(const e of label.querySelectorAll('*')) presentation.add(e);
     }
@@ -112,16 +113,138 @@ _GUARD = r'''function(nodes, inspection=false, strictMutations=inspection) {
   // Sibling attributes can influence protected controls through relational CSS.
   // Refuse the exception if styles are opaque or contain attribute-sensitive
   // selectors; checking only final computed style would miss reverted attacks.
+  const slots=new Map();
   const decorationSafe=()=> {
     const decoded=selector=>selector.replace(/\/\*[\s\S]*?\*\//g,'')
       .replace(/\\([0-9a-f]{1,6})\s?|\\([^\r\n])/gi,(_,hex,char)=>hex ? String.fromCodePoint(parseInt(hex,16) || 0xfffd) : char);
     // Effects on display:none icons may compute as none until briefly shown.
     // Deny stylesheet motion/paint effects rather than trusting final geometry.
-    const effectsSafe=s=>!s || ['transform','translate','rotate','scale','filter','backdrop-filter','box-shadow','animation-name','offset-path']
+    const effectsSafe=s=>!s || boundedPaint(s) && ['transform','translate','rotate','scale','filter','backdrop-filter','box-shadow','animation-name','offset-path']
       .every(k=>!s.getPropertyValue(k) || s.getPropertyValue(k)==='none') &&
       (!s.getPropertyValue('zoom') || ['1','normal'].includes(s.getPropertyValue('zoom'))) &&
       (!s.getPropertyValue('transition-duration') || /^0s(?:,\s*0s)*$/.test(s.getPropertyValue('transition-duration')));
-    const safe=rules=>Array.from(rules).every(r=> effectsSafe(r.style) &&
+    // Legacy strict-SPAN policy is unchanged. The reserved-slot policy scopes
+    // paint/motion rules to possible decoration/ancestor matches, not unrelated
+    // Bootstrap widgets. Strip state predicates to include latent :hover/focus
+    // rules; relational/attribute selectors and opaque/scope/container CSS still
+    // fail globally. Unknown selector syntax fails closed for effect rules.
+    const relevantEffects=r=> {
+      if(!slots.size || icons.size) return effectsSafe(r.style);
+      if(!r.style || !r.selectorText) return true; // keyframes require a denied animation-name
+      const branches=r.selectorText.split(/,(?![^()]*\))/);
+      if(branches.length>1) return branches.every(selectorText=>relevantEffects({style:r.style,selectorText}));
+      const selector=decoded(r.selectorText).replace(/:not\([^()]*\)/gi,'')
+        .replace(/::?[\w-]+(?:\([^()]*\))?/g,'').replace(/(^|,)\s*(?=,|$)/g,'$1 *');
+      const candidates=new Set();
+      for(const [e,s] of slots) for(const a of [...chain(e),s.image]) if(a.nodeType===1) candidates.add(a);
+      try {
+        // Resolve protected-state authority before any property or role exception.
+        // Activation and custom properties can expose an already oversized subject.
+        const raw=decoded(r.selectorText);
+        const stateBearing=s=>s.replace(/::[\w-]+(?:\([^()]*\))?/g,'')
+          .replace(/:(?:root|before|after|first-letter|first-line|first-child|last-child|only-child|first-of-type|last-of-type|only-of-type)\b/gi,'')
+          .replace(/:(?:nth-child|nth-last-child|nth-of-type|nth-last-of-type|lang|dir)\([^:()]*\)/gi,'').includes(':');
+        const dynamic=stateBearing(raw);
+        let subjects;
+        const allSubjects=()=>subjects ||= Array.from(doc.querySelectorAll(selector));
+        let dependent=dynamic && Array.from(protectedNodes).some(e=>e.nodeType===1 && e.matches(selector));
+        if(dynamic) for(const m of raw.matchAll(/\([^()]*\)|\[[^\]]*\]|(\s*[>+~]\s*|\s+)/g)) {
+          if(!m[1]) continue;
+          const prefix=raw.slice(0,m.index).trim();
+          if(!stateBearing(prefix)) continue;
+          const possible=prefix.replace(/:not\([^()]*\)/gi,'').replace(/::?[\w-]+(?:\([^()]*\))?/g,'').trim() || '*';
+          if(Array.from(protectedNodes).some(e=>e.nodeType===1 && e.matches(possible))) dependent=true;
+        }
+        if(dependent && Array.from(r.style).some(k=>
+          k.startsWith('--') || /\b(?:var|env)\s*\(/i.test(r.style.getPropertyValue(k)))) return false;
+        const matching=Array.from(candidates).filter(e=>e.matches(selector));
+        if(matching.length) {
+          if(dependent && !allSubjects().every(e=>candidates.has(e))) return false;
+          if(!effectsSafe(r.style)) return false;
+          for(const e of matching) {
+            const entry=slots.get(e) || Array.from(slots.values()).find(s=>s.image===e);
+            if(!entry) {
+              // Immutable ancestors may lay out the form, but latent state rules
+              // must not resize/reposition it between checks and then revert.
+              if(dynamic && Array.from(r.style).some(k=>/^(?:display|position|inset|top|right|bottom|left|width|height|min-|max-|margin|padding|border|overflow|flex|grid|contain)/.test(k))) return false;
+              continue;
+            }
+            const image=e===entry.image,cs=getComputedStyle(e),w=entry.image.naturalWidth,h=entry.image.naturalHeight;
+            for(const k of r.style) {
+              const v=r.style.getPropertyValue(k);
+              if(['width','height'].includes(k) && !['auto',(k==='width' ? w : h)+'px'].includes(v)) return false;
+              if(['min-width','min-height'].includes(k) && !['auto','0px','0'].includes(v)) return false;
+              if(['max-width','max-height'].includes(k) && v!=='none') return false;
+              if(['left','bottom'].includes(k) && v!=='auto') return false;
+              if(['top','right'].includes(k) && v!==cs.getPropertyValue(k)) return false;
+              if(k==='display' && !(image ? ['inline','block'] : ['none','flex']).includes(v)) return false;
+              if(k==='position' && v!==(image ? 'static' : 'absolute')) return false;
+              if(/^(?:margin|padding|border)(?:-|$)/.test(k) && !/^(?:0(?:px)?|none)$/.test(v)) return false;
+              if(/^(?:flex|grid|inset|contain|overflow|content|order|float|z-index)/.test(k)) return false;
+            }
+          }
+          return true;
+        }
+        if(nodes.some(e=>e.matches(selector))) {
+          if((dependent || !effectsSafe(r.style)) && !allSubjects().every(e=>nodes.includes(e))) return false;
+          if(/:/.test(decoded(r.selectorText)) && Array.from(r.style).some(k=>
+            /^(?:display|position|inset|top|right|bottom|left|width|height|min-|max-|margin|padding|overflow|flex|grid|contain)/.test(k) || (/^border-(?:top|right|bottom|left)-width$/.test(k) && r.style.getPropertyValue(k)!=='1px'))) return false;
+          // Inset input paint and border/shadow transitions do not move setters
+          // or resize boxes. Other motion on controls remains unsupported.
+          if((r.style.getPropertyValue('outline-style') && r.style.getPropertyValue('outline-style')!=='none') ||
+             (r.style.getPropertyValue('outline-width') && !['0px','0','initial'].includes(r.style.getPropertyValue('outline-width')))) return false;
+          return ['transform','translate','rotate','scale','filter','backdrop-filter','animation-name','offset-path']
+            .every(k=>!r.style.getPropertyValue(k) || r.style.getPropertyValue(k)==='none') &&
+            (!r.style.getPropertyValue('zoom') || ['1','normal'].includes(r.style.getPropertyValue('zoom'))) &&
+            (!r.style.getPropertyValue('box-shadow') ||
+              /^rgba\(0, 0, 0, 0\.04\) 0px 2px 0px 0px inset$/.test(r.style.getPropertyValue('box-shadow'))) &&
+            (!r.style.getPropertyValue('transition-property') || r.style.getPropertyValue('transition-property')
+              .split(',').every(k=>['border-color','box-shadow'].includes(k.trim())));
+        }
+        // Descendants remain classifier/identity authority, but do not inherit
+        // the geometrically bounded floating-label paint exception.
+        const labels=Array.from(labelRoots).filter(e=>!nodes.includes(e));
+        if(labels.some(e=>e.matches(selector))) {
+          if((dependent || !effectsSafe(r.style)) && !allSubjects().every(e=>labels.includes(e))) return false;
+          if(/:/.test(decoded(r.selectorText)) && Array.from(r.style).some(k=>
+            (/^(?:display|position|inset|right|bottom|left|width|height|min-|max-|margin|padding|border|overflow|flex|grid|contain)/.test(k)) || (k==='top' && r.style.top!=='8px'))) return false;
+          if(r.style.opacity && r.style.opacity!=='1') return false;
+          return ['translate','rotate','scale','filter','backdrop-filter','box-shadow','animation-name','offset-path']
+            .every(k=>!r.style.getPropertyValue(k) || r.style.getPropertyValue(k)==='none') &&
+            (!r.style.getPropertyValue('transform') || ['none','translateY(-0.25rem) scale(0.75)'].includes(r.style.getPropertyValue('transform'))) &&
+            (!r.style.getPropertyValue('zoom') || ['1','normal'].includes(r.style.getPropertyValue('zoom'))) &&
+            (!r.style.getPropertyValue('transition-property') || r.style.getPropertyValue('transition-property').split(',').every(k=>['transform','opacity'].includes(k.trim()))) &&
+            (!r.style.getPropertyValue('transition-duration') || r.style.getPropertyValue('transition-duration').split(',').every(k=>['0s','0.15s'].includes(k.trim())));
+        }
+        if(!dependent) return true; // unrelated widget effects remain out of scope
+        // Only ordinary paint on the actual provider's normal-flow button is
+        // supported outside protected roles. No variables, activation, motion or
+        // unknown subjects inherit a capability from this cosmetic exception.
+        const neutral={'background-image':'none','background-position-x':'0%',
+          'background-position-y':'0%','background-size':'auto','background-repeat':'repeat',
+          'background-attachment':'scroll','background-origin':'padding-box',
+          'background-clip':'border-box','box-shadow':'none'};
+        return allSubjects().length>0 && !/::/.test(raw) && allSubjects().every(e=> {
+          if(e.tagName!=='BUTTON' || !e.classList.contains('custom-button-red') ||
+             !e.form || !nodes.some(n=>n.form===e.form) || e.children.length || !noPseudo(e)) return false;
+          const s=getComputedStyle(e),b=e.getBoundingClientRect(),f=e.form.getBoundingClientRect();
+          const range=doc.createRange();range.selectNodeContents(e);
+          const text=range.getBoundingClientRect();
+          return ['static','relative'].includes(s.position) && boundedPaint(s) &&
+            s.outlineStyle==='none' && s.textShadow==='none' && s.webkitTextStrokeWidth==='0px' &&
+            (!e.textContent.trim() || (text.left>=b.left-1 && text.right<=b.right+1 && text.top>=b.top-1 && text.bottom<=b.bottom+1)) &&
+            ['transform','translate','rotate','scale','filter','backdropFilter','boxShadow','offsetPath','animationName']
+              .every(k=>s[k]==='none') && ['1','normal'].includes(s.zoom) &&
+            b.width>0 && b.width<=Math.min(f.width,doc.defaultView.innerWidth) && b.height>0 && b.height<=64 &&
+            b.left>=f.left-1 && b.right<=f.right+1 && b.top>=f.top-1 && b.bottom<=f.bottom+1;
+        }) && Array.from(r.style).every(k=> {
+          const v=r.style.getPropertyValue(k);
+          return ['color','background-color'].includes(k) ? CSS.supports('color',v) && !/^(?:inherit|initial|unset|revert)/.test(v) :
+            Object.hasOwn(neutral,k) && (v===neutral[k] || v==='initial');
+        });
+      } catch {return false;}
+    };
+    const safe=rules=>Array.from(rules).every(r=> relevantEffects(r) &&
       // Scope root/limit selectors live in start/end, not selectorText.
       // Conservatively deny scope rules rather than guessing selector effects.
       (!('start' in r) && !('end' in r) && !('containerName' in r) &&
@@ -194,21 +317,114 @@ _GUARD = r'''function(nodes, inspection=false, strictMutations=inspection) {
       }
     }
   }
+  // Additive DIV+IMG contract: immutable absolute decoration entirely inside
+  // an existing selected input's right-padding reserve. Intrinsic image size
+  // bounds hidden paint; no temporary display/style probes touch the provider.
+  // This does NOT grant arbitrary DIVs a restyling or normal-flow exception.
+  const slotInline=text=> {
+    const s=doc.createElement('div').style;s.cssText=text || '';
+    if(Array.from(s).some(k=>k!=='display') || s.getPropertyPriority('display') ||
+       !['','none','flex'].includes(s.display)) return false;
+    return true;
+  };
+  const inert=e=>!e.hasAttribute('tabindex') && !e.hasAttribute('contenteditable') &&
+    !e.hasAttribute('role') && !Array.from(e.attributes).some(a=>/^on/i.test(a.name));
+  const noPseudo=e=>['::before','::after'].every(p=>['none','normal'].includes(getComputedStyle(e,p).content));
+  const zeroEdges=s=>['marginTop','marginRight','marginBottom','marginLeft','paddingTop','paddingRight','paddingBottom','paddingLeft',
+    'borderTopWidth','borderRightWidth','borderBottomWidth','borderLeftWidth'].every(k=>s[k]==='0px');
+  // Rectangles and ordinary border widths do not bound border-image outsets
+  // or Chromium reflections. Check both computed and latent declarations.
+  const boundedPaint=s=>['border-image-source','-webkit-box-reflect'].every(k=>
+    !s.getPropertyValue(k) || s.getPropertyValue(k)==='none') &&
+    (!s.getPropertyValue('border-image-outset') || /^0(?:px)?(?:\s+0(?:px)?)*$/.test(s.getPropertyValue('border-image-outset')));
+  const slotBox=(e,n,image)=> {
+    const h=n.parentElement,s=getComputedStyle(e),is=getComputedStyle(image),hs=getComputedStyle(h),ns=getComputedStyle(n);
+    const w=image.naturalWidth,t=image.naturalHeight;
+    const dimension=(v,size)=>v==='auto' || v===size+'px';
+    if(e.tagName!=='DIV' || image.tagName!=='IMG' || e.children.length!==1 || e.firstElementChild!==image ||
+       Array.from(e.childNodes).some(c=>c.nodeType===3 && c.textContent.trim()) || image.childNodes.length ||
+       !image.complete || !image.currentSrc || !Number.isInteger(w) || !Number.isInteger(t) ||
+       w<=0 || t<=0 || w>64 || t>64 || !inert(e) || !inert(image) || !noPseudo(e) || !noPseudo(image) ||
+       e.parentElement!==h || !['none','flex'].includes(s.display) || s.position!=='absolute' ||
+       !zeroEdges(s) || !zeroEdges(is) || !noEffects(s) || !noEffects(is) || !boundedPaint(s) || !boundedPaint(is) ||
+       s.visibility!=='visible' || s.opacity!=='1' || s.contentVisibility!=='visible' ||
+       is.visibility!=='visible' || is.opacity!=='1' || is.contentVisibility!=='visible' ||
+       !dimension(s.width,w) || !dimension(s.height,t) || !dimension(is.width,w) || !dimension(is.height,t) ||
+       !['0px','auto'].includes(s.minWidth) || !['0px','auto'].includes(s.minHeight) || s.maxWidth!=='none' || s.maxHeight!=='none' ||
+       !['0px','auto'].includes(is.minWidth) || !['0px','auto'].includes(is.minHeight) || is.maxWidth!=='none' || is.maxHeight!=='none' ||
+       (s.display==='none' && s.bottom!=='auto') || !/^\d+(?:\.\d+)?px$/.test(s.right) || !/^\d+(?:\.\d+)?px$/.test(s.top) ||
+       hs.position!=='relative' || !zeroEdges(hs) || chain(h).some(a=>a.nodeType===1 && !noEffects(getComputedStyle(a))) ||
+       is.position!=='static' || is.cssFloat!=='none' || s.cssFloat!=='none' ||
+       !['auto','0'].includes(s.zIndex) || !['auto','0'].includes(is.zIndex)) return null;
+    const hr=h.getBoundingClientRect(),nr=n.getBoundingClientRect();
+    const x=hr.right-parseFloat(s.right)-w,y=hr.top+parseFloat(s.top);
+    const box={left:x,right:x+w,top:y,bottom:y+t,width:w,height:t};
+    // Only the input border/padding area may overlap; never its editable text
+    // rectangle or any other protected control/label. No pointer filling occurs.
+    if(x<nr.right-parseFloat(ns.paddingRight) || box.right>nr.right-parseFloat(ns.borderRightWidth) ||
+       y<nr.top+parseFloat(ns.borderTopWidth) || box.bottom>nr.bottom-parseFloat(ns.borderBottomWidth) ||
+       Array.from(presentation).filter(p=>p!==n).some(p=>Array.from(p.getClientRects()).some(q=>
+         q.width && q.height && box.right>q.left && box.left<q.right && box.bottom>q.top && box.top<q.bottom))) return null;
+    if(s.display==='flex') {
+      const r=e.getBoundingClientRect(),ir=image.getBoundingClientRect();
+      if([r,ir].some(r=>r.left!==x || r.top!==y || r.width!==w || r.height!==t)) return null;
+    } else if(s.left!=='auto') return null;
+    return JSON.stringify(box);
+  };
+  if(!strictMutations) for(const n of nodes) for(const e of n.parentElement?.children || []) {
+    const image=e.firstElementChild;
+    if(!protectedNodes.has(e) && image && slotInline(e.getAttribute('style')) && slotBox(e,n,image)) {
+      slots.set(e,{input:n,image,source:image.currentSrc,imageAttrs:attrs(image),seenStyle:e.hasAttribute('style'),
+        attributes:JSON.stringify(Array.from(e.attributes,a=>[a.name,a.value]).filter(a=>a[0]!=='style')),
+        box:slotBox(e,n,image),path:chain(e)});
+      // IMG mutations are not exception targets: the observer rejects every
+      // attribute/topology change, while its computed flex-item display may vary.
+    }
+  }
   const authority=Array.from(protectedNodes,e=>({e,attributes:attrs(e),style:style(e)}));
-  const positions=hosts.size ? Array.from(presentation,e=>({e,geometry:geometry(e)})) : [];
+  // Floating noninteractive labels may change visual geometry through immutable
+  // focus/placeholder CSS. Retained nodes, semantics and visibility stay bound.
+  // Controls/wrappers never get that exception; the legacy SPAN contract remains.
+  const positions=hosts.size ? Array.from(presentation,e=>({e,geometry:geometry(e)})) :
+    slots.size ? Array.from(new Set(nodes.flatMap(n=>[n,n.parentElement])),e=>({e,geometry:geometry(e)})) : [];
+  const cssIdentity=()=> {
+    const rows=s=>{try{return [s.href,Array.from(s.cssRules,r=>[r.cssText,r.styleSheet ? rows(r.styleSheet) : null])];}catch{return ['opaque'];}};
+    return JSON.stringify([...Array.from(doc.styleSheets),...Array.from(doc.adoptedStyleSheets || [])].map(rows));
+  };
+  const cssAtBinding=slots.size ? cssIdentity() : null;
+  // State-stripped selectors and immutable CSS/DOM authority make this verdict
+  // visibility-independent. Cache the costly recursive analysis; do not scan
+  // thousands of Bootstrap rules once per mutation within a bounded CDP call.
+  const slotCssSafe=slots.size ? decorationSafe() : null;
+  const labelsWithinControls=()=>nodes.every(n=>Array.from(n.labels || []).every(l=>{
+    const s=getComputedStyle(l),r=l.getBoundingClientRect(),b=n.getBoundingClientRect();
+    return s.position==='absolute' && s.pointerEvents==='none' && noPseudo(l) &&
+      r.left>=b.left && r.right<=b.right && r.top>=b.top && r.bottom<=b.bottom;
+  }));
   let changed=false;
   const observe=records=> {
     for(const r of records) {
       // No child-list draining/bypass: even remove+reattach fails permanently.
       // Style sheets, labels, control semantics and all topology stay strict.
+      // Chromium can lose a lazily serialized CSSOM oldValue on removal.
+      // Only the first style creation may have a null witness; removals and
+      // remove/recreate batches are not display toggles and stay sticky.
+      if(r.type==='attributes' && r.attributeName==='style' && slots.has(r.target)) {
+        const s=slots.get(r.target);
+        if(r.oldValue===null && s.seenStyle) changed=true;
+        s.seenStyle=true;
+      }
       const unrelated=r.type==='attributes' && !protectedNodes.has(r.target);
-      const safeStyle=unrelated && r.attributeName==='style' && icons.has(r.target) &&
-        inlineIconStyle(r.oldValue)===icons.get(r.target).baseline &&
-        inlineIconStyle(r.target.getAttribute('style'))===icons.get(r.target).baseline &&
-        boundedIcon(r.target,icons.get(r.target).host);
+      const safeStyle=unrelated && r.attributeName==='style' && (
+        (icons.has(r.target) && inlineIconStyle(r.oldValue)===icons.get(r.target).baseline &&
+          inlineIconStyle(r.target.getAttribute('style'))===icons.get(r.target).baseline &&
+          boundedIcon(r.target,icons.get(r.target).host)) ||
+        (slots.has(r.target) && r.target.getAttribute('style')!==null &&
+          ['none','flex'].includes(r.target.style.display) &&
+          slotInline(r.oldValue) && slotInline(r.target.getAttribute('style'))));
       const safeHidden=unrelated && r.attributeName==='value' &&
         r.target.tagName==='INPUT' && r.target.type==='hidden';
-      if(strictMutations || (!safeStyle && !safeHidden) || !decorationSafe()) changed=true;
+      if(strictMutations || (!safeStyle && !safeHidden) || !(slots.size ? slotCssSafe : decorationSafe())) changed=true;
     }
   };
   const observer=new MutationObserver(observe);
@@ -216,9 +432,14 @@ _GUARD = r'''function(nodes, inspection=false, strictMutations=inspection) {
   const equal=(a,b)=>a.length===b.length && a.every((e,i)=>e===b[i]);
   const valid=()=> {
     observe(observer.takeRecords());
+    if(slots.size && (cssIdentity()!==cssAtBinding || !labelsWithinControls())) changed=true;
     return !changed && document===doc && location.href===href && self.origin===origin &&
       authority.every(s=>attrs(s.e)===s.attributes && style(s.e)===s.style) &&
       positions.every(s=>geometry(s.e)===s.geometry) &&
+      Array.from(slots,([e,s])=>e.isConnected && equal(chain(e),s.path) &&
+        s.image===e.firstElementChild && s.source===s.image.currentSrc && s.imageAttrs===attrs(s.image) &&
+        s.attributes===JSON.stringify(Array.from(e.attributes,a=>[a.name,a.value]).filter(a=>a[0]!=='style')) &&
+        slotInline(e.getAttribute('style')) && slotBox(e,s.input,s.image)===s.box).every(Boolean) &&
       Array.from(hosts,([h,s])=>h.isConnected && equal(chain(h),s.path) && attrs(h)===s.attributes &&
         fullStyle(h)===s.style && geometry(h)===s.geometry).every(Boolean) &&
       Array.from(icons,([e,s])=>e.parentElement===s.host && boundedIcon(e,s.host)).every(Boolean) &&

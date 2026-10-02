@@ -1,11 +1,13 @@
-"""0.7.4 registered protected dynamic/resumed iframe fill, isolated Chromium + native queue.
+"""0.7.5 registered protected empty/dynamic/resumed iframe fill, isolated Chromium + native queue.
 
 Synthetic routed HTTPS documents only; Stripe-documented test card. No live
 Vault, authenticated profile clone, external site, submit, charge or installation.
 Supports checkout source or extracted-wheel package via PYTHONPATH.
 """
+import hashlib
 import json
 import os
+import sys
 from pathlib import Path
 import tempfile
 import urllib.request
@@ -16,6 +18,7 @@ from generic_helpers import registered
 from test_runtime_e2e import make_runtime
 from payment_consent_helpers import payment_consent
 from payment_fixture_helpers import HOST
+from computop_fixture import MANIFEST, ROOT, markup, ready
 
 
 SEPARATE = ['cc-number', 'cc-name', 'cc-exp-month', 'cc-exp-year', 'cc-csc', 'postal-code']
@@ -61,17 +64,26 @@ def main():
                 state = {'origin': 'https://pay.test', 'tokens': SEPARATE, 'siblings': 1, 'forms': 1, 'select': False}
                 def route(r):
                     url = r.request.url
+                    asset=next((a for a in MANIFEST if url.endswith('/'+a['name'])),None)
+                    if asset:
+                        r.fulfill(body=(ROOT/asset['name']).read_bytes(), content_type='text/css' if asset['name'].endswith('.css') else 'image/svg+xml' if asset['name'].endswith('.svg') else 'font/woff2')
+                        return
                     if '/parent' in url:
-                        body = '<div id="move"></div>' + ''.join(f'<iframe id="frame{i}" src="{state["origin"]}/fields?slot={i}"></iframe>' for i in range(state['siblings']))
+                        size=' width="576" height="334"' if state.get('captured') else ''
+                        body = '<div id="move"></div>' + ''.join(f'<iframe{size} id="frame{i}" src="{state["origin"]}/fields?slot={i}"></iframe>' for i in range(state['siblings']))
+                    elif state.get('captured'):
+                        body = markup(state['origin'])
                     else:
                         body = '<script>window.submissions=0</script>' + form(state['tokens'], state['select']) * state['forms']
                     r.fulfill(status=200, content_type='text/html', body=body)
                 context.route('**/*', route)
                 def reset(**kwargs):
-                    state.update(dict(origin='https://pay.test', tokens=SEPARATE, siblings=1, forms=1, select=False))
+                    state.update(dict(origin='https://pay.test', tokens=SEPARATE, siblings=1, forms=1, select=False, captured=False))
                     state.update(kwargs)
                     page.goto('https://merchant.test/parent', timeout=15000)
                     page.frame_locator('iframe').first.locator('input').first.wait_for()
+                    if state['captured']:
+                        ready(page.frames[1])
                 reset()
                 foreign.goto('https://other.test/parent')
                 pc = context.new_cdp_session(page)
@@ -118,7 +130,94 @@ def main():
                         return result, seen
                     def empty():
                         return all(f.locator('input,select').evaluate_all('(es)=>es.every(e=>!e.value)') for f in page.frames[1:])
-                    # Captured public Computop semantics, synthetic values only.
+                    # Byte-exact captured public CSS/SVG + sanitized real wrapper
+                    # topology, all FOUR fields initially empty. Protected write
+                    # boundary counters, not a patched main-world setter, prove
+                    # each field was filled through the registered adapter.
+                    from computop_fixture import overlay_attack
+                    for captured_origin, captured_handle in [('https://pay.test', handle), ('https://merchant.test', same)]:
+                        reset(origin=captured_origin, captured=True)
+                        assert page.frames[1].evaluate('[creditCardHolder,_KKnr,expiry_date,cccvc].every(e=>e.value===\'\')')
+                        result, seen=invoke(handle=captured_handle)
+                        assert result['success'] and result['filled_fields']==4 and len(seen)==1, result
+                        assert protected_writes==[0,1,2,3]
+                        assert page.frames[1].evaluate("creditCardHolder.value==='Synthetic Holder' && _KKnr.value==='4242 4242 4242 4242' && expiry_date.value==='12/31' && cccvc.value==='123' && document.SSLForm.KKName.value==='VISA' && getComputedStyle(brand_visa).display==='flex' && !check_agb.checked && submissions===0")
+                        assert page.frames[1].evaluate('Object.values(fieldEvents).every(e=>e.focus===1 && e.input===1 && e.change===1)')
+                        for choice in ['deny','unresolved','missing']:
+                            reset(origin=captured_origin, captured=True)
+                            result,_=invoke(choice,handle=captured_handle)
+                            assert result['status']=='payment_declined' and protected_writes==[]
+                            assert page.frames[1].evaluate('[creditCardHolder,_KKnr,expiry_date,cccvc].every(e=>e.value===\'\') && Object.values(fieldEvents).every(e=>!e.focus && !e.input && !e.change) && !check_agb.checked')
+                        reset(origin=captured_origin, captured=True)
+                        page.frames[1].evaluate("creditCardHolder.addEventListener('input',()=>{brand_visa.style.right='200px';brand_visa.getBoundingClientRect();brand_visa.removeAttribute('style');brand_visa.style.display='flex'},{once:true})")
+                        result,_=invoke(handle=captured_handle)
+                        assert result['status']=='unknown' and protected_writes==[0]
+                        assert page.frames[1].evaluate("_KKnr.value==='' && expiry_date.value==='' && cccvc.value==='' && !check_agb.checked")
+                        for attack in ['reverted_semantics','reverted_overlay','image_source','late_value']:
+                            reset(origin=captured_origin, captured=True)
+                            page.frames[1].evaluate("""attack=>{
+                              const target=attack==='late_value' ? expiry_date : _KKnr;
+                              target.addEventListener(attack==='late_value' ? 'focus' : 'input',()=>{
+                                if(attack==='reverted_semantics'){expiry_date.readOnly=true;expiry_date.readOnly=false;}
+                                else if(attack==='reverted_overlay'){const old=brand_visa.getAttribute('style');brand_visa.style.cssText='display:flex;position:fixed;inset:0';brand_visa.getBoundingClientRect();brand_visa.setAttribute('style',old);}
+                                else if(attack==='image_source'){const im=brand_visa.firstElementChild,old=im.src;im.src='data:,';im.src=old;}
+                                else {_KKnr.value='changed';}
+                              },{once:true});
+                            }""",attack)
+                            result,_=invoke(handle=captured_handle)
+                            assert result['status']=='unknown' and protected_writes==[0,1], (attack,result)
+                            assert page.frames[1].evaluate("expiry_date.value==='' && cccvc.value==='' && !check_agb.checked && submissions===0")
+                        for css in ['.brand:hover {min-width:1000px}', '.custom-input-wrapper:hover {width:1000px}', 'form:has(input[value]) {opacity:0}', '@scope (form) {input {opacity:0}}', '@container (min-width:1px) {input {opacity:0}}']:
+                            reset(origin=captured_origin, captured=True)
+                            page.frames[1].add_style_tag(content=css)
+                            result,_=invoke(handle=captured_handle)
+                            assert result['status']=='unknown' and protected_writes==[0,1], (css,result)
+                            assert page.frames[1].evaluate("expiry_date.value==='' && cccvc.value==='' && !check_agb.checked")
+                        for attack in ['border_inline','reflection_inline','border_latent','reflection_latent','sibling','sibling_imported','sibling_adopted']:
+                            reset(origin=captured_origin, captured=True)
+                            frame=page.frames[1]
+                            paint='border-image-source:linear-gradient(black,black);border-image-slice:1;border-image-width:1000px;border-image-outset:1000px' if attack.startswith('border') else '-webkit-box-reflect:below 100px'
+                            overlay='.custom-input-info {width:24px;height:24px;background:black} #cccvc:focus ~ .custom-input-info {transform:scale(100)}'
+                            if attack.endswith('_inline'):
+                                frame.evaluate('(css)=>brand_visa.firstElementChild.style.cssText=css',paint)
+                            elif attack.endswith('_latent'):
+                                frame.add_style_tag(content='.brand:hover img {'+paint+'}')
+                            elif attack=='sibling_imported':
+                                context.route(captured_origin+'/overlay.css', lambda r: r.fulfill(body=overlay,content_type='text/css'))
+                                frame.add_style_tag(content='@import url("/overlay.css");')
+                                frame.wait_for_function("Array.from(document.styleSheets).some(s=>Array.from(s.cssRules).some(r=>r.styleSheet && r.styleSheet.cssRules.length===2))")
+                            elif attack=='sibling_adopted':
+                                frame.evaluate('(css)=>{const s=new CSSStyleSheet();s.replaceSync(css);document.adoptedStyleSheets=[s]}',overlay)
+                            else:
+                                frame.add_style_tag(content=overlay)
+                            result,_=invoke(handle=captured_handle)
+                            assert result['status']=='unknown' and protected_writes==[0,1], (attack,result)
+                            assert frame.evaluate("expiry_date.value==='' && cccvc.value==='' && !check_agb.checked && submissions===0")
+                        for kind in ['mixed','custom_property','opacity','visibility']:
+                            for delivery in ['stylesheet','imported','adopted']:
+                                reset(origin=captured_origin, captured=True)
+                                frame=page.frames[1]
+                                css=overlay_attack(kind)
+                                if delivery=='imported':
+                                    context.route(captured_origin+'/activation.css', lambda r: r.fulfill(body=css,content_type='text/css'))
+                                    frame.add_style_tag(content='@import url("/activation.css");')
+                                    frame.wait_for_function("Array.from(document.styleSheets).some(s=>Array.from(s.cssRules).some(r=>r.styleSheet && r.styleSheet.cssRules.length===2))")
+                                elif delivery=='adopted':
+                                    frame.evaluate('(css)=>{const s=new CSSStyleSheet();s.replaceSync(css);document.adoptedStyleSheets=[s]}',css)
+                                else:
+                                    frame.add_style_tag(content=css)
+                                result,_=invoke(handle=captured_handle)
+                                assert result['status']=='unknown' and protected_writes==[0,1], (kind,delivery,result)
+                                assert frame.evaluate("expiry_date.value==='' && cccvc.value==='' && !check_agb.checked && submissions===0 && fieldEvents.cccvc.focus===0")
+                    results['astra_B2_mixed_all_subjects_custom_property_opacity_visibility_all_sheets_both_process_paths']=True
+                    results['astra_B1_out_of_slot_paint_B2_control_state_sibling_all_sheet_paths_both_process_paths']=True
+                    results['empty_captured_css_div_img_four_fields_both_process_paths_native_consent_and_attacks']=True
+                    if '--empty-only' in sys.argv:
+                        assert errors==[]
+                        print(json.dumps({'protected_iframe_browser':'PASS','checks':results,'page_errors':0,'runtime_package':str(Path(payment_adapter.__file__).parent),'runtime_guard_sha256':hashlib.sha256(payment_adapter._GUARD.encode()).hexdigest()}),flush=True)
+                        return
+                    # Captured public Computop semantics on the original minimal
+                    # 0.7.4 fixture remain fail-closed without a reserved slot.
                     def computop(number=SECRET['card_number']):
                         page.frames[1].evaluate("""number => {
                           document.body.innerHTML='<form onsubmit="window.submissions++;return false">'+
@@ -582,7 +681,9 @@ def main():
                     assert foreign.frames[1].locator('input').evaluate_all('(es)=>es.every(e=>!e.value)')
                     results['closed_parent_no_fallback'] = True
                 assert errors == []
-                print(json.dumps({'protected_iframe_browser': 'PASS', 'checks': results, 'page_errors': 0}), flush=True)
+                print(json.dumps({'protected_iframe_browser': 'PASS', 'checks': results, 'page_errors': 0,
+                                  'runtime_package': str(Path(payment_adapter.__file__).parent),
+                                  'runtime_guard_sha256': hashlib.sha256(payment_adapter._GUARD.encode()).hexdigest()}), flush=True)
             finally:
                 if supervisor is not None:
                     SUPERVISOR_REGISTRY.stop(task)

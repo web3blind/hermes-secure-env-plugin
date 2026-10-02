@@ -1,0 +1,47 @@
+[
+  {
+    "name": "bootstrap.min.css",
+    "url": "https://www.computop-paygate.com/Templates/imagesHetzner_AG/css/bootstrap.min.css",
+    "sha256": "f886516f3d41e9e7bd994c7f7a39a89cafae9483f90396cb0ddeafe8d1ea5e72"
+  },
+  {
+    "name": "font-awesome.min.css",
+    "url": "https://www.computop-paygate.com/Templates/imagesHetzner_AG/css/font-awesome.min.css",
+    "sha256": "799aeb25cc0373fdee0e1b1db7ad6c2f6a0e058dfadaa3379689f583213190bd"
+  },
+  {
+    "name": "fonts.css",
+    "url": "https://www.computop-paygate.com/Templates/imagesHetzner_AG/css/fonts.css",
+    "sha256": "e99f2addef5fddde93dafdca9096d8d00e7326bfbd3722075fde3ef0be4d594f"
+  },
+  {
+    "name": "accounts-unified.css",
+    "url": "https://www.computop-paygate.com/Templates/imagesHetzner_AG/css/accounts-unified.css",
+    "sha256": "1526e0490a02a482f568dcb19a7289c7d4b1e481660d78f5febf1f5ea6a49ced"
+  },
+  {
+    "name": "visa.svg",
+    "url": "https://www.computop-paygate.com/Templates/imagesHetzner_AG/visa.svg",
+    "sha256": "3bf2a55edcc31b97d2e996cc78057e498ab0689ebd627bab987b6b8ccc45f91b"
+  },
+  {
+    "name": "mastercard.svg",
+    "url": "https://www.computop-paygate.com/Templates/imagesHetzner_AG/mastercard.svg",
+    "sha256": "cc40f9c4a88fc2d88b53f2567d0dba1a6a41b243363c100d066af3eecd938543"
+  },
+  {
+    "name": "amex.svg",
+    "url": "https://www.computop-paygate.com/Templates/imagesHetzner_AG/amex.svg",
+    "sha256": "9accac971ae5750aae16ddfd72aad2b51fe95b47c3ab2a88d9c7bd086a7e6f66"
+  },
+  {
+    "name": "Inter-Regular.woff2",
+    "url": "https://www.computop-paygate.com/Templates/imagesHetzner_AG/fonts/Inter-Regular.woff2",
+    "sha256": "b6f9db9e45be20f3c1312c97fbee7ec36b7d8280f8caa4d53c9ba0408cc9997a"
+  },
+  {
+    "name": "montserrat-v10-latin-500.woff2",
+    "url": "https://www.computop-paygate.com/Templates/imagesHetzner_AG/fonts/montserrat-v10-latin-500.woff2",
+    "sha256": "b1a88ca7bcf7524692f5d2295db6727685c5d8f444a21fd30fea6a6e49ae3011"
+  }
+]
