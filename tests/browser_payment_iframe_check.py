@@ -1,4 +1,4 @@
-"""0.7.1 registered protected iframe fill, isolated real Chromium + native queue.
+"""0.7.3 registered protected dynamic iframe fill, isolated real Chromium + native queue.
 
 Synthetic routed HTTPS documents only; Stripe-documented test card. No live
 Vault, authenticated profile clone, external site, submit, charge or installation.
@@ -15,6 +15,7 @@ from playwright.sync_api import sync_playwright
 from generic_helpers import registered
 from test_runtime_e2e import make_runtime
 from payment_consent_helpers import payment_consent
+from payment_fixture_helpers import HOST
 
 
 SEPARATE = ['cc-number', 'cc-name', 'cc-exp-month', 'cc-exp-year', 'cc-csc', 'postal-code']
@@ -140,6 +141,73 @@ def main():
                     assert result['success'] and result['filled_fields'] == 6
                     assert page.frames[1].locator('input,select').evaluate_all('(es,x)=>es.every((e,i)=>e.value===x[i])', values)
                     results['same_process_separate_year_select_four_digits'] = True
+                    # Dynamic hosted forms format number and update unrelated UI.
+                    for dynamic_origin, dynamic_handle in [('https://pay.test', handle), ('https://merchant.test', same)]:
+                        reset(origin=dynamic_origin)
+                        page.frames[1].evaluate("""() => {
+                          const icon=document.createElement('span'); icon.id='brand';
+                          icon.style.cssText='display:none;width:24px;height:16px;pointer-events:none;overflow:hidden;contain:paint';
+                          const hidden=document.createElement('input'); hidden.type='hidden'; hidden.id='cardtype';
+                          document.querySelector('form').append(icon,hidden);
+                          document.querySelector('input').addEventListener('input',e=>{
+                            e.target.value=e.target.value.replace(/([0-9]{4})(?=[0-9])/g,'$1 ');
+                            icon.style.display='block'; hidden.setAttribute('value','visa');
+                          });
+                        }""")
+                        page.frames[1].evaluate(HOST)
+                        result, _ = invoke(handle=dynamic_handle)
+                        assert result['success'] and result['filled_fields'] == 6, 'dynamic hosted form must complete'
+                        assert page.frames[1].locator('input:not([type=hidden])').evaluate_all(
+                            '(es,x)=>es.every((e,i)=>i===0 ? e.value.replace(/ /g,"")===x[i] : e.value===x[i])', values)
+                    results['dynamic_oopif_and_same_process_format_icon_hidden'] = True
+                    for overlay_origin, overlay_handle in [('https://pay.test', handle), ('https://merchant.test', same)]:
+                        for event in ['focus', 'input', 'change']:
+                            for revert in [False, True]:
+                                reset(origin=overlay_origin)
+                                page.frames[1].evaluate("""([event,revert]) => {
+                                  const icon=document.createElement('span');
+                                  icon.style.cssText='display:none;width:24px;height:16px;pointer-events:none;overflow:hidden;contain:paint';
+                                  document.querySelector('form').append(icon);
+                                  document.querySelector('input').addEventListener(event,()=>{
+                                    const old=icon.getAttribute('style');
+                                    icon.style.cssText='display:block;position:fixed;inset:0;z-index:99999;background:white';
+                                    icon.getBoundingClientRect();
+                                    if(revert) icon.setAttribute('style',old);
+                                  },{once:true});
+                                }""", [event, revert])
+                                result, _ = invoke(handle=overlay_handle)
+                                assert not result['success'] and result['status'] == ('target_refused' if event == 'focus' else 'unknown'), (event, revert)
+                                assert page.frames[1].evaluate("Array.from(document.querySelectorAll('input')).slice(1).every(e=>e.value==='') && window.submissions===0")
+                    results['bounded_icon_overlay_callbacks_refuse_before_later_writes'] = True
+                    # Separate layout attacks: only the old display toggle changes.
+                    layouts = {
+                        'negative_margin_overlay': '#brand {margin-left:-24px;background:black} #f4 {width:24px}',
+                        'normal_wrapping_clipping': 'form {width:420px;height:24px;overflow:hidden}',
+                        'flex_contribution': 'form {display:flex}',
+                        'grid_contribution': 'form {display:grid;grid-template-columns:repeat(3,110px)} form input {width:90px}',
+                        'latent_min_width': '#brand {min-width:400px}',
+                        'latent_min_height': '#brand {min-height:400px}',
+                    }
+                    for layout_origin, layout_handle in [('https://pay.test', handle), ('https://merchant.test', same)]:
+                        for name, css in layouts.items():
+                            for event in ['focus', 'input', 'change']:
+                                for revert in [False, True]:
+                                    reset(origin=layout_origin)
+                                    page.frames[1].evaluate("""([css,event,revert]) => {
+                                      const icon=document.createElement('span');icon.id='brand';
+                                      icon.style.cssText='display:none;width:24px;height:16px;pointer-events:none;overflow:hidden;contain:paint';
+                                      document.querySelector('#f4').after(icon);
+                                      const s=document.createElement('style');s.textContent=css;document.head.append(s);
+                                      document.querySelector('input').addEventListener(event,()=>{
+                                        icon.style.display='inline-block';icon.getBoundingClientRect();
+                                        if(revert) {icon.style.display='none';icon.getBoundingClientRect();}
+                                      },{once:true});
+                                    }""", [css, event, revert])
+                                    result, _ = invoke(handle=layout_handle)
+                                    assert result['status'] == ('target_refused' if event == 'focus' else 'unknown'), (name,event,revert)
+                                    assert page.frames[1].locator('input').evaluate_all('(es,focus)=>es.slice(focus ? 0 : 1).every(e=>!e.value)', event == 'focus')
+                                    assert page.frames[1].evaluate('window.submissions===0')
+                    results['normal_flow_layout_persistent_and_reverted_both_process_paths'] = True
                     reset(siblings=2)
                     result, seen = invoke()
                     assert result['status'] == 'selection_required' and len(result['candidates']) == 2 and not seen
@@ -218,6 +286,144 @@ def main():
                     assert result['status'] == 'unknown'
                     assert page.frames[1].locator('input').evaluate_all('(es,x)=>es[0].value===x && es.slice(1).every(e=>!e.value)', SECRET['card_number'])
                     results['input_mutation_partial_unknown'] = True
+                    # Hostile normalization never becomes a successful readback.
+                    hostile = {
+                        'changed_digit': "e.value=e.value.slice(0,-1)+'3'",
+                        'unicode_digit': "e.value='４'+e.value.slice(1)",
+                        'nbsp': "e.value=e.value.slice(0,4)+'\\u00a0'+e.value.slice(4)",
+                        'hyphen': "e.value=e.value.slice(0,4)+'-'+e.value.slice(4)",
+                        'letter': "e.value+='x'",
+                        'leading_space': "e.value=' '+e.value",
+                        'trailing_space': "e.value+=' '",
+                        'tab': "e.value+='\\t'",
+                    }
+                    for name, mutation in hostile.items():
+                        reset()
+                        page.frames[1].evaluate("document.querySelector('input').addEventListener('input',({target:e})=>{" + mutation + "},{once:true})")
+                        result, _ = invoke()
+                        assert result['status'] == 'unknown', name
+                        assert page.frames[1].locator('input').evaluate_all('(es)=>es.slice(1).every(e=>!e.value)')
+                    results['hostile_number_normalization_refused'] = True
+                    attacks = {
+                        'replace': "let e=document.querySelectorAll('input')[1];e.replaceWith(e.cloneNode())",
+                        'reparent_revert': "let e=document.querySelectorAll('input')[1],p=e.parentNode,n=e.nextSibling;document.body.append(e);p.insertBefore(e,n)",
+                        'action_revert': "let e=document.querySelector('form');e.setAttribute('action','/evil');e.removeAttribute('action')",
+                        'ancestor_style_revert': "let e=document.querySelector('form');e.style.display='none';e.removeAttribute('style')",
+                        'disabled_revert': "let e=document.querySelectorAll('input')[1];e.disabled=true;e.disabled=false",
+                        'visibility': "document.querySelectorAll('input')[1].style.visibility='hidden'",
+                        'ancestor_class': "document.body.className='other'",
+                        'label_text': "document.querySelector('label').textContent='Changed purpose'",
+                        'label_style_revert': "let e=document.querySelector('label');e.style.visibility='hidden';e.removeAttribute('style')",
+                    }
+                    for event in ('focus', 'input', 'change'):
+                        for name, attack in attacks.items():
+                            reset()
+                            page.frames[1].evaluate("document.querySelector('input').addEventListener('" + event + "',()=>{" + attack + "},{once:true})")
+                            result, _ = invoke()
+                            assert result['status'] == ('target_refused' if event == 'focus' else 'unknown'), event + ':' + name
+                            if event == 'focus':
+                                assert empty()
+                    results['event_topology_state_and_reverted_attacks_refused'] = True
+                    # @scope roots/limits are selector-bearing CSS authority too.
+                    for event in ('focus', 'input', 'change'):
+                        reset()
+                        page.frames[1].evaluate("""event => {
+                          const hidden=document.createElement('input');hidden.type='hidden';hidden.id='type';
+                          document.querySelector('form').append(hidden);
+                          const style=document.createElement('style');
+                          style.textContent='@scope (form:has(#type[value="visa"])) {input {opacity:0}}';
+                          document.head.append(style);
+                          document.querySelector('input').addEventListener(event,()=>{
+                            hidden.setAttribute('value','visa');
+                            getComputedStyle(document.querySelector('input')).opacity;
+                            hidden.removeAttribute('value');
+                          },{once:true});
+                        }""", event)
+                        result, _ = invoke()
+                        assert result['status'] == ('target_refused' if event == 'focus' else 'unknown'), event
+                        if event == 'focus':
+                            assert empty()
+                        else:
+                            assert page.frames[1].locator('input').evaluate_all('(es)=>es.slice(1).every(e=>!e.value)')
+                    results['scope_css_reverted_focus_input_change_refused'] = True
+                    for event in ('focus', 'input', 'change'):
+                        reset()
+                        page.frames[1].evaluate("""event => {
+                          const f=document.querySelector('form');f.style.containerType='inline-size';
+                          const hidden=document.createElement('input');hidden.type='hidden';f.append(hidden);
+                          const s=document.createElement('style');s.textContent='@container (max-width:200px) {input {opacity:0}}';document.head.append(s);
+                          document.querySelector('input').addEventListener(event,()=>{
+                            hidden.setAttribute('value','visa');getComputedStyle(document.querySelector('input')).opacity;
+                            hidden.removeAttribute('value');
+                          },{once:true});
+                        }""", event)
+                        result, _ = invoke()
+                        assert result['status'] == ('target_refused' if event == 'focus' else 'unknown'), event
+                        if event == 'focus':
+                            assert empty()
+                        else:
+                            assert page.frames[1].locator('input').evaluate_all('(es)=>es.slice(1).every(e=>!e.value)')
+                    results['container_css_reverted_focus_input_change_refused'] = True
+                    for name, attack in attacks.items():
+                        reset()
+                        result, _ = invoke(before=lambda expr=attack: mutate_frame('(()=>{' + expr + '})()'))
+                        assert result['status'] == 'target_refused' and empty(), name
+                    results['approval_reverted_and_semantic_attacks_zero_writes'] = True
+                    for event in ('focus', 'input', 'change'):
+                        reset()
+                        # Last-field callbacks must not silently change earlier fields.
+                        page.frames[1].evaluate("document.querySelectorAll('input')[5].addEventListener('" + event + "',()=>{document.querySelector('input').value='changed'},{once:true})")
+                        result, _ = invoke()
+                        assert result['status'] == 'unknown', event
+                    reset()
+                    page.frames[1].evaluate("document.querySelectorAll('input')[1].addEventListener('input',({target:e})=>{e.value+=' '},{once:true})")
+                    result, _ = invoke()
+                    assert result['status'] == 'unknown'
+                    results['earlier_readback_and_nonnumber_exact'] = True
+                    reset()
+                    page.frames[1].evaluate("""() => {
+                      const f=document.querySelector('form');
+                      f.replaceWith(...f.childNodes);
+                      const icon=document.createElement('span');icon.id='brand';document.body.append(icon);
+                      document.querySelector('input').addEventListener('input',({target:e})=>{
+                        e.value=e.value.replace(/([0-9]{4})(?=[0-9])/g,'$1 ');icon.style.display='block';
+                      });
+                    }""")
+                    page.frames[1].evaluate(HOST)
+                    result, _ = invoke()
+                    assert result['success'] and result['filled_fields'] == 6
+                    results['formless_dynamic_success'] = True
+                    reset()
+                    page.frames[1].evaluate("() => {const f=document.querySelector('form');f.replaceWith(...f.childNodes)}")
+                    result, _ = invoke(before=lambda: mutate_frame("document.body.style.display='none';document.body.removeAttribute('style')"))
+                    assert result['status'] == 'target_refused' and empty()
+                    results['formless_ancestor_reverted_refused'] = True
+                    for event in ('focus', 'input', 'change'):
+                        reset(origin='https://merchant.test')
+                        page.evaluate("""() => {
+                          const frame=document.querySelector('iframe'), brand=document.createElement('span');brand.id='brand';
+                          const wrapper=document.createElement('div');wrapper.style.cssText='display:flex;width:400px';
+                          frame.before(wrapper);wrapper.append(brand,frame);
+                          brand.style.cssText='width:0px;flex-shrink:0';
+                          frame.style.cssText='flex:1;min-width:0;width:400px';
+                        }""")
+                        page.frames[1].evaluate("""event => {
+                          const s=document.createElement('style');s.textContent='@media (max-width:200px) {input {opacity:0}}';document.head.append(s);
+                          document.querySelector('input').addEventListener(event,()=>{
+                            const brand=parent.document.querySelector('#brand'), old=brand.getAttribute('style');
+                            brand.style.width='300px';parent.document.querySelector('iframe').getBoundingClientRect();
+                            const during=getComputedStyle(document.querySelector('input')).opacity;
+                            brand.setAttribute('style',old);parent.document.querySelector('iframe').getBoundingClientRect();
+                            if(during!=='0' || getComputedStyle(document.querySelector('input')).opacity!=='1') throw Error('parent viewport fixture failed');
+                          },{once:true});
+                        }""", event)
+                        result, _ = invoke(handle=same)
+                        assert result['status'] == ('target_refused' if event == 'focus' else 'unknown'), event
+                        if event == 'focus':
+                            assert empty()
+                        else:
+                            assert page.frames[1].locator('input').evaluate_all('(es)=>es.slice(1).every(e=>!e.value)')
+                    results['parent_viewport_reverted_mutation_refused'] = True
                     reset()
                     result, seen = invoke(choice='missing')
                     assert result['status'] == 'payment_declined' and empty()

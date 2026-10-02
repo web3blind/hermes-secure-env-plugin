@@ -68,28 +68,165 @@ def _invoke(sup, sid, obj, function, args=()):
         'arguments': [{'value': v} for v in args], 'returnByValue': True}, sid)).get('value')
 
 
-# MutationObserver.takeRecords closes the observer-microtask gap. Conservatively
-# any DOM mutation invalidates this document capability, even if later reverted.
-# References, all attributes, ancestor topology, form identity/action and URL are
-# retained in closures in an isolated world, inaccessible to ordinary page JS.
-_GUARD = r'''function(nodes, inspection=false) {
+# takeRecords closes the observer-microtask gap; sticky mutation classification
+# rejects protected changes even if reverted. Only prebound bounded icon display
+# and unrelated hidden-value attributes are allowed. Inspection stays strict.
+# Exact identities, ancestry, attributes and relevant computed styles are kept
+# in isolated-world closures; filled values never cross back into Python/model.
+_GUARD = r'''function(nodes, inspection=false, strictMutations=inspection) {
   const doc=document, href=location.href, origin=self.origin;
   const chain=e => { const a=[]; for(;e;e=e.parentNode) a.push(e); return a; };
   const attrs=e => e.attributes ? JSON.stringify(Array.from(e.attributes,a=>[a.name,a.value])) : '';
   const snapshots=nodes.map(e=>({e, path:chain(e), form:e.form,
     formPath:e.form ? chain(e.form) : [], attributes:attrs(e),
     formAttrs:e.form ? attrs(e.form) : ''}));
+  const protectedNodes=new Set();
+  for(const s of snapshots) {
+    for(const e of [...s.path,...s.formPath]) protectedNodes.add(e);
+    // Labels/ARIA references are classifier authority, including descendants.
+    const labels=[...Array.from(s.e.labels || []), ...(s.e.getAttribute('aria-labelledby') || '')
+      .split(/\s+/).filter(Boolean).map(id=>doc.getElementById(id)).filter(Boolean)];
+    for(const label of labels) {
+      for(const e of chain(label)) protectedNodes.add(e);
+      protectedNodes.add(label);
+      for(const e of label.querySelectorAll('*')) protectedNodes.add(e);
+    }
+  }
+  const style=e=> {
+    if(e.nodeType!==1) return '';
+    const s=getComputedStyle(e);
+    return JSON.stringify([s.display,s.visibility,s.opacity,s.pointerEvents,s.contentVisibility]);
+  };
+  // Host authority must be added before taking immutable snapshots below.
+  const presentation=new Set(nodes);
+  for(const n of nodes) {
+    for(const label of [...Array.from(n.labels || []), ...(n.getAttribute('aria-labelledby') || '')
+      .split(/\s+/).filter(Boolean).map(id=>doc.getElementById(id)).filter(Boolean)]) {
+      presentation.add(label);
+      for(const e of label.querySelectorAll('*')) presentation.add(e);
+    }
+  }
+  const filled=new Map();
+  const matches=(e,v,token)=> token==='cc-number' ?
+    /^[0-9]+$/.test(v) && /^[0-9]+(?: [0-9]+)*$/.test(e.value) && e.value.replace(/ /g,'')===v : e.value===v;
+  // Sibling attributes can influence protected controls through relational CSS.
+  // Refuse the exception if styles are opaque or contain attribute-sensitive
+  // selectors; checking only final computed style would miss reverted attacks.
+  const decorationSafe=()=> {
+    const decoded=selector=>selector.replace(/\/\*[\s\S]*?\*\//g,'')
+      .replace(/\\([0-9a-f]{1,6})\s?|\\([^\r\n])/gi,(_,hex,char)=>hex ? String.fromCodePoint(parseInt(hex,16) || 0xfffd) : char);
+    // Effects on display:none icons may compute as none until briefly shown.
+    // Deny stylesheet motion/paint effects rather than trusting final geometry.
+    const effectsSafe=s=>!s || ['transform','translate','rotate','scale','filter','backdrop-filter','box-shadow','animation-name','offset-path']
+      .every(k=>!s.getPropertyValue(k) || s.getPropertyValue(k)==='none') &&
+      (!s.getPropertyValue('zoom') || ['1','normal'].includes(s.getPropertyValue('zoom'))) &&
+      (!s.getPropertyValue('transition-duration') || /^0s(?:,\s*0s)*$/.test(s.getPropertyValue('transition-duration')));
+    const safe=rules=>Array.from(rules).every(r=> effectsSafe(r.style) &&
+      // Scope root/limit selectors live in start/end, not selectorText.
+      // Conservatively deny scope rules rather than guessing selector effects.
+      (!('start' in r) && !('end' in r) && !('containerName' in r) &&
+        !/^@container\b/i.test(r.cssText || '')) &&
+      (!r.selectorText || !/:has\s*\(|\[[^\]]*\b(?:style|value)\b/i.test(decoded(r.selectorText))) &&
+      (!r.cssRules || safe(r.cssRules)) && (!r.styleSheet || safe(r.styleSheet.cssRules)));
+    try {return [...Array.from(doc.styleSheets),...Array.from(doc.adoptedStyleSheets || [])].every(s=>safe(s.cssRules));}
+    catch {return false;}
+  };
+  // Discover pre-existing dedicated hosts only; never modify the site to create
+  // compatibility. The host occupies immutable fixed space even when its sole
+  // absolutely positioned empty icon is hidden. Hidden rects are NOT evidence:
+  // min/max dimensions, offsets and margins are checked independent of display.
+  const displays=new Set(['none','block']);
+  const inlineIconStyle=text=> {
+    const s=doc.createElement('span').style;s.cssText=text || '';
+    const allowed=new Set(['display','position','box-sizing','left','top','width','height',
+      'min-width','max-width','min-height','max-height','margin','margin-top','margin-right','margin-bottom','margin-left',
+      'padding','padding-top','padding-right','padding-bottom','padding-left','border','border-width','border-style','border-color',
+      'border-image-source','border-image-slice','border-image-width','border-image-outset','border-image-repeat',
+      'pointer-events','overflow','overflow-x','overflow-y','contain',
+      'background','background-image','background-position','background-size','background-repeat','background-color']);
+    if(!displays.has(s.display) || s.getPropertyPriority('display') || Array.from(s).some(k=>
+      !allowed.has(k) && !/^border-(?:top|right|bottom|left)-(?:width|style|color)$/.test(k))) return null;
+    s.removeProperty('display');
+    return JSON.stringify(Array.from(s).sort().map(k=>[k,s.getPropertyValue(k),s.getPropertyPriority(k)]));
+  };
+  const geometry=e=>JSON.stringify(Array.from(e.getClientRects(),r=>[r.x,r.y,r.width,r.height]));
+  const fullStyle=e=> {const s=getComputedStyle(e);return JSON.stringify(Array.from(s,k=>[k,s.getPropertyValue(k)]));};
+  const noEffects=s=>s.transform==='none' && s.translate==='none' && s.rotate==='none' && s.scale==='none' &&
+    s.filter==='none' && s.backdropFilter==='none' && s.boxShadow==='none' && s.outlineStyle==='none' &&
+    s.animationName==='none' && /^0s(?:,\s*0s)*$/.test(s.transitionDuration) && s.offsetPath==='none' &&
+    ['1','normal'].includes(s.zoom) && s.mixBlendMode==='normal';
+  const fixedBox=s=> {
+    const px=v=>/^[0-9]+(?:\.[0-9]+)?px$/.test(v) && parseFloat(v)>0 && parseFloat(v)<=64;
+    return px(s.width) && px(s.height) && s.minWidth===s.width && s.maxWidth===s.width &&
+      s.minHeight===s.height && s.maxHeight===s.height && s.boxSizing==='border-box' &&
+      ['marginTop','marginRight','marginBottom','marginLeft','paddingTop','paddingRight','paddingBottom','paddingLeft',
+       'borderTopWidth','borderRightWidth','borderBottomWidth','borderLeftWidth'].every(k=>s[k]==='0px') &&
+      s.pointerEvents==='none' && s.overflowX==='hidden' && s.overflowY==='hidden' && s.contain==='strict' &&
+      s.cssFloat==='none' && s.writingMode==='horizontal-tb' && s.zIndex==='auto' && noEffects(s);
+  };
+  const noninteractive=e=>e.tagName==='SPAN' && !e.hasAttribute('tabindex') &&
+    !e.hasAttribute('contenteditable') && !e.hasAttribute('role');
+  const boundedIcon=(e,h)=> {
+    const s=getComputedStyle(e), hs=getComputedStyle(h), r=h.getBoundingClientRect();
+    if(!noninteractive(e) || e.childNodes.length || !noninteractive(h) || h.childNodes.length!==1 ||
+       h.firstChild!==e || !displays.has(s.display) || s.position!=='absolute' || !fixedBox(s) ||
+       s.left!=='0px' || s.top!=='0px' || !['auto','0px'].includes(s.right) || !['auto','0px'].includes(s.bottom) ||
+       !fixedBox(hs) || hs.display!=='inline-block' && hs.display!=='block' || hs.position!=='relative' ||
+       hs.visibility!=='visible' || hs.contentVisibility!=='visible' || hs.opacity!=='1' ||
+       parseFloat(s.width)>parseFloat(hs.width) || parseFloat(s.height)>parseFloat(hs.height) ||
+       r.width!==parseFloat(hs.width) || r.height!==parseFloat(hs.height)) return false;
+    // Fixed flex contribution; grid tracks cannot resize a strict fixed min/max
+    // border box. Reject motion/effects anywhere in its containing ancestry.
+    if(hs.flexGrow!=='0' || hs.flexShrink!=='0' || hs.flexBasis!==hs.width) return false;
+    if(chain(h).some(a=>a.nodeType===1 && !noEffects(getComputedStyle(a)))) return false;
+    return Array.from(presentation).every(p=>Array.from(p.getClientRects()).every(q=>
+      q.width===0 || q.height===0 || r.right<=q.left || r.left>=q.right || r.bottom<=q.top || r.top>=q.bottom));
+  };
+  const icons=new Map(), hosts=new Map();
+  if(!strictMutations) for(const n of nodes) for(const h of n.parentElement?.children || []) {
+    const e=h.firstElementChild;
+    if(e && !protectedNodes.has(h) && !protectedNodes.has(e) && boundedIcon(e,h)) {
+      const baseline=inlineIconStyle(e.getAttribute('style'));
+      if(baseline!==null) {
+        icons.set(e,{baseline,host:h});
+        hosts.set(h,{path:chain(h),attributes:attrs(h),style:fullStyle(h),geometry:geometry(h)});
+        for(const a of chain(h)) protectedNodes.add(a);
+      }
+    }
+  }
+  const authority=Array.from(protectedNodes,e=>({e,attributes:attrs(e),style:style(e)}));
+  const positions=hosts.size ? Array.from(presentation,e=>({e,geometry:geometry(e)})) : [];
   let changed=false;
-  const observer=new MutationObserver(() => {changed=true;});
-  observer.observe(doc,{subtree:true,childList:true,attributes:true,characterData:true});
+  const observe=records=> {
+    for(const r of records) {
+      // No child-list draining/bypass: even remove+reattach fails permanently.
+      // Style sheets, labels, control semantics and all topology stay strict.
+      const unrelated=r.type==='attributes' && !protectedNodes.has(r.target);
+      const safeStyle=unrelated && r.attributeName==='style' && icons.has(r.target) &&
+        inlineIconStyle(r.oldValue)===icons.get(r.target).baseline &&
+        inlineIconStyle(r.target.getAttribute('style'))===icons.get(r.target).baseline &&
+        boundedIcon(r.target,icons.get(r.target).host);
+      const safeHidden=unrelated && r.attributeName==='value' &&
+        r.target.tagName==='INPUT' && r.target.type==='hidden';
+      if(strictMutations || (!safeStyle && !safeHidden) || !decorationSafe()) changed=true;
+    }
+  };
+  const observer=new MutationObserver(observe);
+  observer.observe(doc,{subtree:true,childList:true,attributes:true,attributeOldValue:true,characterData:true});
   const equal=(a,b)=>a.length===b.length && a.every((e,i)=>e===b[i]);
   const valid=()=> {
-    if(observer.takeRecords().length) changed=true;
+    observe(observer.takeRecords());
     return !changed && document===doc && location.href===href && self.origin===origin &&
+      authority.every(s=>attrs(s.e)===s.attributes && style(s.e)===s.style) &&
+      positions.every(s=>geometry(s.e)===s.geometry) &&
+      Array.from(hosts,([h,s])=>h.isConnected && equal(chain(h),s.path) && attrs(h)===s.attributes &&
+        fullStyle(h)===s.style && geometry(h)===s.geometry).every(Boolean) &&
+      Array.from(icons,([e,s])=>e.parentElement===s.host && boundedIcon(e,s.host)).every(Boolean) &&
+      Array.from(filled,([i,f])=>matches(nodes[i],f.value,f.token)).every(Boolean) &&
       snapshots.every(s => s.e.isConnected && equal(chain(s.e),s.path) &&
         attrs(s.e)===s.attributes && s.e.form===s.form &&
         (!s.form || (s.form.isConnected && attrs(s.form)===s.formAttrs && equal(chain(s.form),s.formPath))) &&
-        (inspection || (!s.e.disabled && !s.e.readOnly && s.e.getClientRects().length &&
+        (inspection || (!s.e.disabled && !s.e.matches(':disabled') && !s.e.readOnly && s.e.getClientRects().length &&
         getComputedStyle(s.e).visibility==='visible' && getComputedStyle(s.e).display!=='none')));
   };
   const inputSetter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
@@ -101,13 +238,14 @@ _GUARD = r'''function(nodes, inspection=false) {
       (e.tagName==='SELECT' ? Array.from(e.options).filter(o=>o.value===v && !o.disabled && (!o.parentElement || !o.parentElement.disabled)).length===1 :
       (['text','tel','password','number'].includes(e.type) && (e.maxLength<0 || v.length<=e.maxLength) &&
        (!e.pattern || new RegExp('^(?:'+e.pattern+')$','u').test(v))));},
-    write:(i,v)=>{if(!valid() || !doc.hasFocus() || doc.activeElement!==nodes[i]) return {written:false,valid:false}; const e=nodes[i];
+    write:(i,v,token)=>{if(!valid() || !doc.hasFocus() || doc.activeElement!==nodes[i]) return {written:false,valid:false}; const e=nodes[i];
       (e.tagName==='SELECT' ? selectSetter : inputSetter).call(e,v);
-      const exact=e.value===v;
+      if(!matches(e,v,token)) return {written:true,valid:false};
+      filled.set(i,{value:v,token});
       e.dispatchEvent(new Event('input',{bubbles:true}));
       if(!valid()) return {written:true,valid:false};
       e.dispatchEvent(new Event('change',{bubbles:true}));
-      return {written:true,valid:valid() && exact && e.value===v};}
+      return {written:true,valid:valid()};}
   });
 }'''
 
@@ -118,7 +256,7 @@ def _remote_guard(sup, sid, frame, indices=None, owner=None):
     if owner is not None:
         obj = _call(sup, 'DOM.resolveNode', {'backendNodeId': owner, 'executionContextId': context}, sid)['result']['object']['objectId']
         result = _result(_call(sup, 'Runtime.callFunctionOn', {'objectId': obj,
-            'functionDeclaration': 'function(){return (' + _GUARD + ')([this]);}'}, sid))
+            'functionDeclaration': 'function(){return (' + _GUARD + ')([this],false,true);}'}, sid))
         _call(sup, 'Runtime.releaseObject', {'objectId': obj}, sid)
     else:
         expression = '(' + _GUARD + ')(' + json.dumps(indices) + '.map(i=>document.querySelectorAll("input,select")[i]))'
@@ -330,7 +468,7 @@ def approved_fill(target, handle, scope_guard):
                 from tools.bot_desktop import lease
                 lease.assert_agent_may_act()
             started = True
-            result = _invoke(sup, sid, obj, 'function(i,v){return this.write(i,v);}', (i, f['value']))
+            result = _invoke(sup, sid, obj, 'function(i,v,token){return this.write(i,v,token);}', (i, f['value'], f['token']))
             if not isinstance(result, dict) or not result.get('written') or not result.get('valid'):
                 raise ValueError('write not confirmed')
             filled += 1
