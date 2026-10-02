@@ -585,8 +585,9 @@ def register(ctx):
             guard()
             vault_binding = bind_vault_home(home)
             if (not isinstance(args, dict) or not {'handle', 'parent', 'origin'} <= set(args)
-                    or set(args) - {'handle', 'parent', 'origin', 'selection'}
-                    or any(not isinstance(v, str) or not 1 <= len(v) <= 200 for v in args.values())):
+                    or set(args) - {'handle', 'parent', 'origin', 'selection', 'resume_existing'}
+                    or type(args.get('resume_existing', False)) is not bool
+                    or any(not isinstance(v, str) or not 1 <= len(v) <= 200 for k, v in args.items() if k != 'resume_existing')):
                 raise ValueError('invalid request')
         except Exception:
             return json.dumps({'success': False, 'status': 'session_binding'})
@@ -596,16 +597,18 @@ def register(ctx):
             if not payment_lock.acquire(blocking=False):
                 return {'success': False, 'status': 'payment_busy'}
             target = None
+            stage = 'preflight'
             try:
                 guard()
                 payment_backend(args['handle'], args['origin'])
+                stage = 'selection'
                 target, response = payment_selection.choose(scope, task_id, args['parent'],
                     args['origin'], args['handle'], args.get('selection'))
                 if response is not None:
                     return response
-                return approved_fill(target, args['handle'], guard)
+                return approved_fill(target, args['handle'], guard, resume_existing=True) if args.get('resume_existing', False) else approved_fill(target, args['handle'], guard)
             except Exception:
-                return {'success': False, 'status': 'target_refused'}
+                return {'success': False, 'status': 'target_refused', 'stage': stage}
             finally:
                 if target is not None:
                     release(target)
@@ -619,11 +622,12 @@ def register(ctx):
             raise
 
     ctx.register_tool(name='secure_payment_fill', toolset='browser',
-        schema={'name': 'secure_payment_fill', 'description': 'Secure ENV: protected payment iframe fill from a saved native Vault handle. Additive tool, not a replacement for browser_vault_fill. Requires an explicitly task-selected supervisor parent target, exact HTTPS frame origin matching the saved card, and separate native human confirmation identifying card label/origin. No card values, arbitrary selectors, endpoints or JS arguments. Multiple direct child frames/forms return bounded opaque selections; Hermes chooses using task context. No Pay click, registration or form submission; sites may act on input. Never retry payment_declined or unknown automatically. Native local payment entries only; no manager unlocking. Load secure-env-ingress:usage for supported field formats and refusal boundaries.',
+        schema={'name': 'secure_payment_fill', 'description': 'Secure ENV: protected payment iframe fill from a saved native Vault handle. Additive tool, not a replacement for browser_vault_fill. Requires an explicitly task-selected supervisor parent target, exact HTTPS frame origin matching the saved card, and separate native human confirmation identifying card label/origin. No card values, arbitrary selectors, endpoints or JS arguments. Multiple direct child frames/forms return bounded opaque selections; Hermes chooses using task context. No Pay click, registration or form submission; sites may act on input. Never retry payment_declined or unknown automatically. Native local payment entries only; no manager unlocking. Optional resume_existing preserves all matching nonempty selected fields only after fresh confirmation; mismatched/masked fields refuse before writes. No value matching details before consent. Load secure-env-ingress:usage for supported field formats and refusal boundaries.',
             'parameters': {'type': 'object', 'properties': {
                 'handle': {'type': 'string', 'description': 'Native vault_ payment handle from Vault listing, never card values'},
                 'parent': {'type': 'string', 'description': 'Exact task-selected supervisor parent page target ID; never globally auto-picked'},
                 'origin': {'type': 'string', 'description': 'Exact HTTPS origin of payment child frame, matching native Vault binding'},
+                'resume_existing': {'type': 'boolean', 'default': False, 'description': 'Explicit opt-in to preserve existing fields only if all match the saved card internally after fresh native consent; mismatched/masked fields refuse before any write. No submit.'},
                 'selection': {'type': 'string', 'description': 'Opaque selection returned for this task, parent, origin and handle; consumed within 120 seconds'}},
                 'required': ['handle', 'parent', 'origin'], 'additionalProperties': False}},
         handler=payment_tool, is_async=True)

@@ -1,4 +1,4 @@
-"""0.7.3 registered protected dynamic iframe fill, isolated real Chromium + native queue.
+"""0.7.4 registered protected dynamic/resumed iframe fill, isolated Chromium + native queue.
 
 Synthetic routed HTTPS documents only; Stripe-documented test card. No live
 Vault, authenticated profile clone, external site, submit, charge or installation.
@@ -95,8 +95,17 @@ def main():
                 same = store.add_item('payment', 'Synthetic same-process', SECRET, origin='https://merchant.test').id
                 login = store.add_item('login', 'Synthetic login', {'identifier': 'synthetic', 'identifier_type': 'username', 'password': 'synthetic-password'}, origin='https://pay.test').id
                 results = {}
+                from secure_env_ingress import payment_fill as payment_adapter
+                original_invoke = payment_adapter._invoke
+                protected_writes = []
+                def record_protected_write(sup, sid, obj, function, args=()):
+                    if function == 'function(i,v,token){return this.write(i,v,token);}':
+                        protected_writes.append(args[0])  # Synthetic index only; never values.
+                    return original_invoke(sup, sid, obj, function, args)
+                monkeypatch.setattr(payment_adapter, '_invoke', record_protected_write)
                 with registered(monkeypatch, home, settings=settings), _profile_runtime_scope(home, {}):
                     def invoke(choice='once', before=None, **kwargs):
+                        protected_writes.clear()
                         page.bring_to_front()
                         args = dict(handle=handle, parent=parent, origin=state['origin'])
                         args.update(kwargs)
@@ -109,6 +118,106 @@ def main():
                         return result, seen
                     def empty():
                         return all(f.locator('input,select').evaluate_all('(es)=>es.every(e=>!e.value)') for f in page.frames[1:])
+                    # Captured public Computop semantics, synthetic values only.
+                    def computop(number=SECRET['card_number']):
+                        page.frames[1].evaluate("""number => {
+                          document.body.innerHTML='<form onsubmit="window.submissions++;return false">'+
+                            '<label for="creditCardHolder">Card holder*</label><input id="creditCardHolder" name="creditCardHolder" autocomplete="off">'+
+                            '<label for="_KKnr">Card number*</label><input id="_KKnr" name="_KKnr">'+
+                            '<input type="hidden" id="cardtype"><input type="hidden" name="other"><div id="brand_visa" class="brand" style="display:flex"><img alt="" src="data:,"></div><div id="brand_mastercard" class="brand" style="display:none"><img alt="" src="data:,"></div>'+
+                            '<label for="expiry_date">Expires (MM/YY)*</label><input id="expiry_date" name="expiry_date" autocomplete="off">'+
+                            '<input type="hidden" name="KKMonth"><input type="hidden" name="KKYear">'+
+                            '<label for="cccvc">CVC code*</label><input id="cccvc" name="cccvc" autocomplete="off">'+
+                            '<label><input type="checkbox">Accept card storage and open invoice payments</label><button>Pay</button></form>';
+                          const pan=document.querySelector('#_KKnr');pan.value=number;
+                          window.panEvents={focus:0,input:0,change:0,writes:0};
+                          const descriptor=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');
+                          Object.defineProperty(HTMLInputElement.prototype,'value',{...descriptor,set(v){if(this===pan)window.panEvents.writes++;descriptor.set.call(this,v);}});
+                          for(const event of ['focus','input','change'])pan.addEventListener(event,()=>window.panEvents[event]++);
+                          function se(){document.querySelectorAll('.brand').forEach(e=>e.style.display='none');}
+                          function ae(){se();document.querySelector('#brand_visa').style.display='flex';}
+                          pan.addEventListener('input',()=>{ae();document.querySelector('#cardtype').setAttribute('value','visa');});
+                          pan.addEventListener('focus',()=>{if(pan.hasAttribute('data-pkn')){pan.value='';se();}});
+                          pan.addEventListener('blur',()=>{if(pan.hasAttribute('data-pkn')){pan.value=pan.getAttribute('data-pkn-masked');ae();}});
+                        }""", number)
+                        assert page.frames[1].evaluate("['creditCardHolder','_KKnr','expiry_date','cccvc'].map(id=>Array.from(document.querySelectorAll('input,select')).findIndex(e=>e.id===id))") == [0, 1, 4, 7]
+                    for resume_origin, resume_handle in [('https://pay.test', handle), ('https://merchant.test', same)]:
+                        reset(origin=resume_origin)
+                        computop()
+                        result, seen = invoke(handle=resume_handle, resume_existing=True)
+                        assert result['success'] and result['filled_fields'] == 4 and result['resumed_fields'] == 1, result
+                        assert len(seen) == 1
+                        assert protected_writes == [0, 2, 3]  # No adopted PAN index 1.
+                        assert page.frames[1].evaluate("JSON.stringify(window.panEvents)===JSON.stringify({focus:0,input:0,change:0,writes:0})")
+                        assert page.frames[1].evaluate("document.querySelector('#creditCardHolder').value==='Synthetic Holder' && document.querySelector('#expiry_date').value==='12/31' && document.querySelector('#cccvc').value==='123' && !document.querySelector('[type=checkbox]').checked")
+                    results['computop_resume_both_paths_zero_pan_events_all_four'] = True
+                    for resume_origin, resume_handle in [('https://pay.test', handle), ('https://merchant.test', same)]:
+                        for role in ['creditCardHolder', 'expiry_date', 'cccvc']:
+                            reset(origin=resume_origin)
+                            computop()
+                            page.frames[1].evaluate("id=>document.getElementById(id).value='different'", role)
+                            result, seen = invoke(handle=resume_handle, resume_existing=True)
+                            assert result['status']=='target_refused' and result['stage']=='existing' and len(seen)==1
+                            assert page.frames[1].evaluate("Object.values(window.panEvents).every(x=>x===0)")
+                        reset(origin=resume_origin)
+                        computop()
+                        page.frames[1].evaluate("document.querySelector('#_KKnr').setAttribute('data-pkn','synthetic-token');document.querySelector('#_KKnr').setAttribute('data-pkn-masked','**** 4242')")
+                        result, _ = invoke(handle=resume_handle, resume_existing=True)
+                        assert result['status']=='target_refused' and result['stage']=='existing'
+                        assert page.frames[1].evaluate("Object.values(window.panEvents).every(x=>x===0) && document.querySelector('#creditCardHolder').value===''")
+                        reset(origin=resume_origin)
+                        computop()
+                        page.frames[1].evaluate("document.querySelector('#creditCardHolder').insertAdjacentHTML('afterend','<input autocomplete=cc-name>')")
+                        result, seen = invoke(handle=resume_handle, resume_existing=True)
+                        assert result['status']=='target_refused' and result['stage']=='selection' and not seen
+                    results['resume_exact_other_roles_data_pkn_and_duplicate_conflicts'] = True
+                    for resume_origin, resume_handle in [('https://pay.test', handle), ('https://merchant.test', same)]:
+                        for existing in ['**** 4242', '4242-4242-4242-4242', '4242  4242 4242 4242', '4242424242424241']:
+                            reset(origin=resume_origin)
+                            computop(existing)
+                            result, seen = invoke(handle=resume_handle, resume_existing=True)
+                            assert result['status'] == 'target_refused' and result['stage'] == 'existing' and len(seen) == 1
+                            assert page.frames[1].evaluate("document.querySelector('#creditCardHolder').value==='' && document.querySelector('#expiry_date').value==='' && document.querySelector('#cccvc').value==='' && Object.values(window.panEvents).every(x=>x===0)")
+                        for choice in ['deny', 'unresolved', 'missing']:
+                            reset(origin=resume_origin)
+                            computop()
+                            result, seen = invoke(choice, handle=resume_handle, resume_existing=True)
+                            assert result['status'] == 'payment_declined'
+                            assert page.frames[1].evaluate("Object.values(window.panEvents).every(x=>x===0) && document.querySelector('#creditCardHolder').value===''")
+                        for attack in ['focus_value', 'input_value', 'reverted_event', 'reverted_attribute']:
+                            reset(origin=resume_origin)
+                            computop()
+                            page.frames[1].evaluate("""attack=> {
+                              const name=document.querySelector('#creditCardHolder'), pan=document.querySelector('#_KKnr');
+                              name.addEventListener(attack==='input_value' ? 'input' : 'focus',()=>{
+                                if(attack==='reverted_attribute'){pan.setAttribute('name','changed');pan.setAttribute('name','_KKnr');return;}
+                                const old=pan.value;pan.value='different';
+                                if(attack==='reverted_event'){pan.dispatchEvent(new Event('change',{bubbles:true}));pan.value=old;}
+                              },{once:true});
+                            }""", attack)
+                            result, _ = invoke(handle=resume_handle, resume_existing=True)
+                            assert result['status'] == ('unknown' if attack=='input_value' else 'target_refused'), (attack,result)
+                            if attack != 'input_value':
+                                assert page.frames[1].evaluate("document.querySelector('#creditCardHolder').value===''")
+                            assert page.frames[1].evaluate("document.querySelector('#expiry_date').value==='' && document.querySelector('#cccvc').value===''")
+                        reset(origin=resume_origin)
+                        computop('4242 4242 4242 4242')
+                        page.frames[1].evaluate("document.querySelector('#creditCardHolder').value='Synthetic Holder';document.querySelector('#expiry_date').value='12/31';document.querySelector('#cccvc').value='123'")
+                        result, _ = invoke(handle=resume_handle, resume_existing=True)
+                        assert result['success'] and result['resumed_fields']==4
+                        assert protected_writes == []  # All adopted: no protected write calls.
+                        assert page.frames[1].evaluate("Object.values(window.panEvents).every(x=>x===0)")
+                        reset(origin=resume_origin)
+                        computop()
+                        result, _ = invoke(handle=resume_handle)
+                        assert result['status']=='unknown' and result['stage']=='write'
+                        reset(origin=resume_origin)
+                        computop('')
+                        result, _ = invoke(handle=resume_handle)
+                        assert result['status']=='unknown' and result['stage']=='write'
+                        assert page.frames[1].evaluate("document.querySelector('#expiry_date').value==='' && document.querySelector('#cccvc').value===''")
+                    results['resume_mismatch_decline_tamper_refill_and_fresh_div_boundary'] = True
+                    reset()
                     for choice in ('deny', 'unresolved', 'missing'):
                         result, seen = invoke(choice)
                         assert result['status'] == 'payment_declined' and empty()
@@ -117,6 +226,7 @@ def main():
                     for invalid in (dict(handle=login), dict(origin='https://merchant.test'), dict(parent=other)):
                         result, seen = invoke(**invalid)
                         assert result['status'] == 'target_refused' and not seen and empty()
+                        assert result['stage'] == ('selection' if 'parent' in invalid else 'preflight')
                     results['wrong_kind_origin_parent_refused'] = True
                     result, seen = invoke()
                     assert result['success'] and result['filled_fields'] == 6 and len(seen) == 1

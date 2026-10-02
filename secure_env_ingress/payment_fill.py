@@ -231,7 +231,28 @@ _GUARD = r'''function(nodes, inspection=false, strictMutations=inspection) {
   };
   const inputSetter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
   const selectSetter=Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set;
-  return Object.freeze({valid, close:()=>observer.disconnect(),
+  // Sticky event-time readback catches a changed adopted value even if a later
+  // callback restores it before CDP returns. No events are emitted by adoption.
+  const valueEvent=()=>{if(!Array.from(filled,([i,f])=>matches(nodes[i],f.value,f.token)).every(Boolean)) changed=true;};
+  for(const event of ['input','change','focus','blur']) doc.addEventListener(event,valueEvent,true);
+  return Object.freeze({valid, close:()=>{
+    observer.disconnect();
+    for(const event of ['input','change','focus','blur']) doc.removeEventListener(event,valueEvent,true);
+  },
+    prepare:(fills,resume)=>{
+      if(!valid() || fills.length!==nodes.length) return false;
+      if(!resume) return [];
+      const adopted=[];
+      for(let i=0;i<nodes.length;i++) {
+        const e=nodes[i], f=fills[i];
+        if(e.value!=='') {
+          if(!resume || !matches(e,f.value,f.token) || (f.token==='cc-number' && e.hasAttribute('data-pkn'))) return false;
+          adopted.push(i);
+        }
+      }
+      for(const i of adopted) filled.set(i,{value:fills[i].value,token:fills[i].token});
+      return valid() ? adopted : false;
+    },
     focus:i=>{if(!valid()) return false; nodes[i].focus(); return valid() && doc.hasFocus() && doc.activeElement===nodes[i];},
     accepts:(i,v,token)=>{const e=nodes[i]; return valid() &&
       (token!=='cc-exp' || (e.type!=='number' && (!e.placeholder || /^mm\/yy$/i.test(e.placeholder.replace(/\s/g,''))))) &&
@@ -264,6 +285,19 @@ def _remote_guard(sup, sid, frame, indices=None, owner=None):
     if not result.get('objectId'):
         raise ValueError('guard unavailable')
     return result['objectId']
+
+
+def classify_payment_control(control):
+    """Keep native authority; recognize only the missing Computop identity."""
+    from agent.vault_login_classifier import classify_checkout_control, ClassifiedLoginControl
+    native = classify_checkout_control(control)
+    if native is not None:
+        return native
+    if (control.form_index is not None and control.type == 'text'
+            and control.name == 'creditCardHolder creditCardHolder' and control.label.strip() == 'Card holder*'
+            and control.autocomplete.strip().lower() in ('', 'off')):
+        return ClassifiedLoginControl(control, 70, 'cc-name')
+    return None
 
 
 def validate_group(controls):
@@ -308,7 +342,7 @@ def _parent(sup, parent):
 
 def discover(task, parent, origin):
     """DOM owners prove lineage: parent's frame tree omits Chromium OOPIFs."""
-    from agent.vault_login_classifier import LoginControl, classify_checkout_control, build_inspection_js
+    from agent.vault_login_classifier import LoginControl, build_inspection_js
     strict_origin(origin)
     sup = _supervisor(task)
     psid = _parent(sup, parent)
@@ -355,7 +389,7 @@ def discover(task, parent, origin):
                     raise ValueError('too many controls')
                 groups = {}
                 for row in rows:
-                    c = classify_checkout_control(LoginControl.from_dict(row))
+                    c = classify_payment_control(LoginControl.from_dict(row))
                     if c and c.token in {'cc-number', 'cc-name', 'cc-exp', 'cc-exp-month', 'cc-exp-year', 'cc-csc', 'postal-code'}:
                         groups.setdefault(c.control.form_index, []).append(c)
                 for form, controls in groups.items():
@@ -422,24 +456,28 @@ def release(target):
         target.attachment.drop(target.child_guard)
 
 
-def approved_fill(target, handle, scope_guard):
+def approved_fill(target, handle, scope_guard, resume_existing=False):
     from tools.browser_vault_tool import _confirm_payment_fill, _bot_desktop_browser_session
     from agent.redact import register_vault_redaction_value
     started = False
     secret = None
+    stage = 'preflight'
     try:
         scope_guard()
         backend = payment_backend(handle, target.origin)
         meta = backend.get_meta(handle)
         assert_target(target)
+        stage = 'consent'
         if not _confirm_payment_fill(meta.label, target.origin):
             return {'success': False, 'status': 'payment_declined'}
+        stage = 'revalidation'
         scope_guard()
         assert_target(target)
         approved_meta = meta
         backend = payment_backend(handle, target.origin)
         if backend.get_meta(handle) != approved_meta:
             raise ValueError('payment metadata changed')
+        stage = 'mapping'
         secret = backend.resolve_secret(handle)
         fills = mapped_fills(target.controls, secret)
         for value in secret.values():
@@ -448,11 +486,19 @@ def approved_fill(target, handle, scope_guard):
         for f in fills:
             register_vault_redaction_value(f['value'])
         sup, sid, obj = target.supervisor, target.child_sid, target.child_guard
+        stage = 'format'
         for i, f in enumerate(fills):
             if _invoke(sup, sid, obj, 'function(i,v,token){return this.accepts(i,v,token);}', (i, f['value'], f['token'])) is not True:
                 raise ValueError('unsupported field format')
-        filled = 0
+        stage = 'existing'
+        adopted = _invoke(sup, sid, obj, 'function(fills,resume){return this.prepare(fills,resume);}', (fills, resume_existing))
+        if not isinstance(adopted, list) or any(type(i) is not int or not 0 <= i < len(fills) for i in adopted):
+            raise ValueError('existing field refused')
+        filled = len(adopted)
         for i, f in enumerate(fills):
+            if i in adopted:
+                continue
+            stage = 'focus'
             scope_guard()
             assert_target(target)
             if _bot_desktop_browser_session(target.task):
@@ -467,6 +513,7 @@ def approved_fill(target, handle, scope_guard):
             if _bot_desktop_browser_session(target.task):
                 from tools.bot_desktop import lease
                 lease.assert_agent_may_act()
+            stage = 'write'
             started = True
             result = _invoke(sup, sid, obj, 'function(i,v,token){return this.write(i,v,token);}', (i, f['value'], f['token']))
             if not isinstance(result, dict) or not result.get('written') or not result.get('valid'):
@@ -474,9 +521,15 @@ def approved_fill(target, handle, scope_guard):
             filled += 1
             scope_guard()
             assert_target(target)
-        return {'success': True, 'status': 'filled', 'filled_fields': filled, 'origin': target.origin, 'kind': 'payment'}
+        stage = 'completion'
+        scope_guard()
+        assert_target(target)
+        result = {'success': True, 'status': 'filled', 'filled_fields': filled, 'origin': target.origin, 'kind': 'payment'}
+        if resume_existing:
+            result['resumed_fields'] = len(adopted)
+        return result
     except Exception:
-        return {'success': False, 'status': 'unknown' if started else 'target_refused'}
+        return {'success': False, 'status': 'unknown' if started else 'target_refused', 'stage': stage}
     finally:
         if secret is not None:
             secret.clear()

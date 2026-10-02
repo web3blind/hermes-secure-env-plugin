@@ -21,6 +21,16 @@ def test_additive_registered_payment_tool(tmp_path, monkeypatch):
         assert set(entry.schema['parameters']['required']) == {'handle', 'parent', 'origin'}
         assert not {'selector', 'code', 'endpoint', 'card_number'} & set(entry.schema['parameters']['properties'])
         assert 'confirmation' in entry.schema['description']
+        from secure_env_ingress import payment_fill as pf
+        monkeypatch.setattr(pf, 'payment_backend', lambda *a: pytest.fail('invalid flag must refuse before backend'))
+        with payment_consent('missing', session='task') as seen:
+            for invalid in ('true', 1, None, []):
+                result = json.loads(registry.dispatch('secure_payment_fill',
+                    dict(handle='vault_fixture', parent='p', origin='https://frame.test', resume_existing=invalid), task_id='task'))
+                assert result == {'success': False, 'status': 'session_binding'}
+            assert not seen
+        assert entry.schema['parameters']['properties']['resume_existing']['type'] == 'boolean'
+        assert entry.schema['parameters']['properties']['resume_existing']['default'] is False
 
 
 def controls(tokens):
@@ -138,7 +148,7 @@ def test_approval_revalidation_precedes_resolution(failure, monkeypatch):
             backend.get_meta = lambda h: SimpleNamespace(kind='payment', origin=meta.origin, label='Other label')
     with payment_consent('once', before_decision=change):
         result = pf.approved_fill(SimpleNamespace(origin=meta.origin), 'vault_fixture', check_scope)
-    assert result == {'success': False, 'status': 'target_refused'}
+    assert result == {'success': False, 'status': 'target_refused', 'stage': 'revalidation'}
 
 
 @pytest.mark.parametrize('handle,origin', [('op:fixture', 'https://frame.test'), ('vault_fixture', 'http://frame.test'),

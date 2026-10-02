@@ -34,6 +34,16 @@ After saving, recheck the intended checkout and its exact origin, use native Vau
 Never put card details in chat/tool arguments, `.env`, logs, or ordinary browser inputs. Use a public nonsensitive label without card numbers. `unknown` means inspect native metadata before retrying, not proof of either success or failure. This release does not unlock third-party managers or resume secret forms after restart.
 
 
+## Partial-form resume (0.7.4)
+
+`secure_payment_fill` accepts optional `resume_existing: true` (boolean, default false). With the flag omitted/false, legacy fresh fill behavior is retained; it does not adopt existing fields. Resume still requires fresh native human consent. Only after approval, all selected nonempty fields are compared internally against the selected saved card before any focus or write. PAN permits only the existing strict single-ASCII-space grouping rule; every other role requires exact equality. Mismatched or masked values fail closed. Verified existing fields are adopted together into continuous readback tracking, then skipped without focus, setter, input or change events. Empty fields fill normally. Later focus/callback/event-time readback and completion recheck adopted fields; detected changes are sticky refusals, including reverted attribute mutations and event-time value mismatches. `filled_fields` counts all completed selected fields; `resumed_fields` counts adopted fields, returned only after approved completion.
+
+A narrow plugin-only fallback recognizes the missing `creditCardHolder` name AND id with exact `Card holder*` label and text type, same explicit form and empty/off autocomplete, only when native classification returns none. Native classifications keep precedence and duplicate roles refuse. No native classifier/core change is needed.
+
+Synthetic registered Chromium checks reproduce captured Computop naming, PAN focus/blur masking hooks and PAN-input DIV/flex brand plus hidden-type updates. Resuming an already unmasked matching PAN completes name, MM/YY expiry (2031 → 31) and CVC without any PAN event/write, in same-process and OOPIF children. This does **not** support a blank Computop form whose fresh PAN input triggers unsupported DIV/flex mutations: that case still refuses after a possible partial write. No CSS, decoration or mutation guards were loosened; no consent checkbox or Pay/submit is touched. Synthetic acceptance is not a live provider guarantee, installed activation or device approval round-trip.
+
+Failure diagnostics use fixed static `stage` values only: preflight, selection, consent, revalidation, mapping, format, existing, focus, write, completion. They never contain exception text, page values or per-field matching details. Before native consent only broad preflight/selection stages are exposed; they are not root causes. Selection-stage refusal may include a task-selected supervisor mismatch. Never retry decline/unknown automatically.
+
 ## Protected payment iframe fill (0.7.1)
 
 For a hosted card form, discover `secure_payment_fill` (`Secure ENV payment iframe fill`). It is an **additive plugin tool**, not a replacement for native `browser_vault_fill`:
