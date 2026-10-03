@@ -34,6 +34,9 @@ def _supervisor(task):
 
 
 def _call(sup, method, params=None, sid=None):
+    from .bound_cdp import BoundCDP
+    if isinstance(sup, BoundCDP):
+        return sup.call(method, params, sid)
     from tools.browser_supervisor import _schedule
     if not sup._active or sup._loop is None:
         raise ValueError('browser unavailable')
@@ -267,7 +270,9 @@ class CodeSelection:
                     raise
                 return target, None
         # Discovery can block in CDP. Shutdown and cancellation must not wait on it.
-        targets = discover(origin, label, task) if parent is None else discover(origin, label, task, parent=parent)
+        from .bound_cdp import acquisition_scope
+        with acquisition_scope(batch):
+            targets = discover(origin, label, task) if parent is None else discover(origin, label, task, parent=parent)
         with self._lock:
             if self._closed or batch.is_set():
                 for target in targets:

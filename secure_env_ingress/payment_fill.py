@@ -15,6 +15,7 @@ import time
 
 from .code_targets import _call, _supervisor
 from .vault_ingress import strict_origin
+from .bound_cdp import BoundCDP
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,7 @@ class PaymentTarget:
     child_guard: str = field(repr=False)
     expires: float
     attachment: object = field(default=None, repr=False, compare=False)
+    parent_session: object = field(default=None, repr=False, compare=False)
 
 
 class _Attachment:
@@ -49,7 +51,10 @@ class _Attachment:
             if not self.objects and not self.closed:
                 self.closed = True
                 try:
-                    _call(self.sup, 'Target.detachFromTarget', {'sessionId': self.sid})
+                    if isinstance(self.sup, BoundCDP):
+                        self.sup.dispose(self.sid, wait=True)
+                    else:
+                        _call(self.sup, 'Target.detachFromTarget', {'sessionId': self.sid})
                 except Exception:
                     pass
 
@@ -566,15 +571,18 @@ def discover(task, parent, origin):
     from agent.vault_login_classifier import LoginControl, build_inspection_js
     strict_origin(origin)
     sup = _supervisor(task)
-    psid = _parent(sup, parent)
-    root_frame = _call(sup, 'Page.getFrameTree', {}, psid)['result']['frameTree']['frame']['id']
-    root = _call(sup, 'DOM.getDocument', {'depth': 0}, psid)['result']['root']['nodeId']
-    owners = _call(sup, 'DOM.querySelectorAll', {'nodeId': root, 'selector': 'iframe,frame'}, psid)['result']['nodeIds']
-    if len(owners) > 20:
-        raise ValueError('too many frames')
+    from .parent_session import ParentSession
+    parent_session = ParentSession(sup, parent)
+    sup = parent_session.transport
+    psid = parent_session.sid
     targets = []
     deadline = time.monotonic() + 120
     try:
+        root_frame = _call(sup, 'Page.getFrameTree', {}, psid)['result']['frameTree']['frame']['id']
+        root = _call(sup, 'DOM.getDocument', {'depth': 0}, psid)['result']['root']['nodeId']
+        owners = _call(sup, 'DOM.querySelectorAll', {'nodeId': root, 'selector': 'iframe,frame'}, psid)['result']['nodeIds']
+        if len(owners) > 20:
+            raise ValueError('too many frames')
         for owner_id in owners:
             node = _call(sup, 'DOM.describeNode', {'nodeId': owner_id, 'depth': 0}, psid)['result']['node']
             frame, owner = node.get('frameId'), node['backendNodeId']
@@ -629,21 +637,17 @@ def discover(task, parent, origin):
                         if attachment:
                             attachment.objects.add(cg)
                         t = PaymentTarget(task, parent, frame, origin, form, tuple(controls), owner,
-                            sup, psid, csid, pg, cg, deadline, attachment)
+                            sup, psid, csid, pg, cg, deadline, attachment, parent_session)
+                        parent_session.keep(pg)
                         targets.append(t)
                         assert_target(t)
                     except BaseException:
                         if pg:
-                            _invoke(sup, psid, pg, 'function(){this.close();return true;}')
-                            _call(sup, 'Runtime.releaseObject', {'objectId': pg}, psid)
+                            _close_object(sup, psid, pg)
                         raise
             finally:
                 if inspector:
-                    try:
-                        _invoke(sup, csid, inspector, 'function(){this.guard.close();return true;}')
-                        _call(sup, 'Runtime.releaseObject', {'objectId': inspector}, csid)
-                    except Exception:
-                        pass
+                    _close_object(sup, csid, inspector, inspection=True)
                 if attachment and not attachment.objects:
                     attachment.drop(None)
         return targets
@@ -651,12 +655,16 @@ def discover(task, parent, origin):
         for t in targets:
             release(t)
         raise
+    finally:
+        parent_session.drop(None)
 
 
 def assert_target(target):
     sup = _supervisor(target.task)
-    if sup is not target.supervisor or time.monotonic() >= target.expires or _parent(sup, target.parent) != target.parent_sid:
+    parent_sid = target.parent_session.check() if target.parent_session is not None else _parent(sup, target.parent)
+    if sup is not getattr(target.supervisor, 'raw', target.supervisor) or time.monotonic() >= target.expires or parent_sid != target.parent_sid:
         raise ValueError('stale target')
+    sup = target.supervisor
     # getFrameOwner resolves only in the selected parent document's session;
     # the exact remote owner/document closures reject detach and reparenting.
     if _call(sup, 'DOM.getFrameOwner', {'frameId': target.frame}, target.parent_sid)['result']['backendNodeId'] != target.owner_node:
@@ -666,15 +674,28 @@ def assert_target(target):
             raise ValueError('document changed')
 
 
+def _close_object(sup, sid, obj, *, inspection=False):
+    if isinstance(sup, BoundCDP):
+        sup.close_object(sid, obj, inspection=inspection)
+        return
+    try:
+        _invoke(sup, sid, obj, 'function(){this.guard.close();return true;}' if inspection else
+                'function(){this.close();return true;}')
+    except Exception:
+        pass
+    try:
+        _call(sup, 'Runtime.releaseObject', {'objectId': obj}, sid)
+    except Exception:
+        pass
+
+
 def release(target):
     for sid, obj in ((target.parent_sid, target.parent_guard), (target.child_sid, target.child_guard)):
-        try:
-            _invoke(target.supervisor, sid, obj, 'function(){this.close(); return true;}')
-            _call(target.supervisor, 'Runtime.releaseObject', {'objectId': obj}, sid)
-        except Exception:
-            pass
+        _close_object(target.supervisor, sid, obj)
     if target.attachment is not None:
         target.attachment.drop(target.child_guard)
+    if target.parent_session is not None:
+        target.parent_session.drop(target.parent_guard)
 
 
 def approved_fill(target, handle, scope_guard, resume_existing=False):
@@ -760,14 +781,33 @@ class PaymentSelection:
     def __init__(self):
         self._entries = {}
         self._lock = threading.RLock()
+        self._timers = {}
+        self._closed = False
 
     def _drop(self, keys):
         for k in list(keys):
-            _, _, _, target = self._entries.pop(k)
-            release(target)
+            entry = self._entries.pop(k)
+            release(entry[3])
+        live = {entry[4] for entry in self._entries.values()}
+        for batch in list(self._timers):
+            if batch not in live:
+                self._timers.pop(batch).cancel()
 
-    def choose(self, scope, task, parent, origin, handle, selection=None):
+    def cancel_batch(self, batch):
+        batch.set()  # Worker sees cancellation even before publication.
         with self._lock:
+            self._drop([k for k, v in self._entries.items() if v[4] is batch])
+
+    def _expire_batch(self, batch):
+        with self._lock:
+            self._drop([k for k, v in self._entries.items() if v[4] is batch])
+
+    def choose(self, scope, task, parent, origin, handle, selection=None, *, batch=None):
+        from .bound_cdp import acquisition_scope
+        batch = batch if batch is not None else threading.Event()
+        with self._lock:
+            if self._closed or batch.is_set():
+                raise ValueError('selection stopped')
             now = time.monotonic()
             self._drop([k for k, v in self._entries.items() if v[0] <= now])
             binding = (task, parent, origin, handle)
@@ -776,6 +816,7 @@ class PaymentSelection:
                 if entry is None or entry[1:3] != (scope, binding):
                     raise ValueError('invalid selection')
                 self._entries.pop(selection)
+                self._drop([])
                 target = entry[3]
                 try:
                     assert_target(target)
@@ -783,24 +824,37 @@ class PaymentSelection:
                     release(target)
                     raise
                 return target, None
-            self._drop([k for k, v in self._entries.items() if v[1] == scope])
+        # Neither shutdown nor cancellation waits behind CDP discovery.
+        with acquisition_scope(batch):
             targets = discover(task, parent, origin)
+        with self._lock:
+            if self._closed or batch.is_set():
+                for t in targets:
+                    release(t)
+                raise ValueError('selection stopped')
             if len(targets) == 1:
                 return targets[0], None
             if not targets:
                 return None, {'success': False, 'status': 'no_payment_frame'}
+            self._drop([k for k, v in self._entries.items() if v[1] == scope])
             if len(self._entries) + len(targets) > 128:
                 for t in targets:
                     release(t)
                 raise ValueError('selection capacity')
             candidates = []
+            deadline = min(time.monotonic() + 120, *(t.expires for t in targets))
             for t in targets:
                 token = secrets.token_urlsafe(24)
-                self._entries[token] = (min(now + 120, t.expires), scope, binding, t)
+                self._entries[token] = (deadline, scope, binding, t, batch)
                 candidates.append({'selection': token, 'parent': t.parent, 'frame': t.frame,
                     'origin': t.origin, 'form_index': t.form_index})
+            timer = threading.Timer(max(0, deadline - time.monotonic()), self._expire_batch, (batch,))
+            timer.daemon = True
+            self._timers[batch] = timer
+            timer.start()
             return None, {'success': False, 'status': 'selection_required', 'candidates': candidates}
 
     def close(self):
         with self._lock:
+            self._closed = True
             self._drop(list(self._entries))

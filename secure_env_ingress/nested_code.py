@@ -10,6 +10,7 @@ import time
 
 from .code_targets import CodeTarget, _call, _classified, _supervisor
 from .vault_ingress import strict_origin
+from .bound_cdp import BoundCDP
 
 
 # Deliberately conservative: any mutation of a captured document is sticky.
@@ -80,12 +81,18 @@ class _Lease:
         self.resources = {}
         self.lock = threading.Lock()
         self.closed = False
+        self.parent_session = None
 
     def keep(self, sid, obj):
         self.objects.append((sid, obj))
         return obj
 
     def discard(self, sid, obj):
+        if isinstance(self.sup, BoundCDP):
+            self.sup.close_object(sid, obj)
+            if (sid, obj) in self.objects:
+                self.objects.remove((sid, obj))
+            return
         try:
             _invoke(self.sup, sid, obj, 'function(){if(this.close)this.close();return true}')
         except Exception:
@@ -106,7 +113,10 @@ class _Lease:
         for sid in list(reversed(self.sessions)):
             if sid not in live_sessions:
                 try:
-                    _call(self.sup, 'Target.detachFromTarget', {'sessionId': sid})
+                    if isinstance(self.sup, BoundCDP):
+                        self.sup.dispose(sid, wait=True)
+                    else:
+                        _call(self.sup, 'Target.detachFromTarget', {'sessionId': sid})
                 except Exception:
                     pass
                 self.sessions.remove(sid)
@@ -117,6 +127,8 @@ class _Lease:
         self.closed = True
         self.resources.clear()
         self.prune()
+        if self.parent_session is not None:
+            self.parent_session.drop(None)
 
 
 @dataclass(frozen=True)
@@ -174,9 +186,12 @@ def _document_capacity(sup, sid, context=None, doc=None):
 def discover(origin, label, task, parent):
     from agent.vault_login_classifier import build_inspection_js
     sup = _supervisor(task)
-    psid = _parent(sup, parent)
-    root = _call(sup, 'Page.getFrameTree', {}, psid)['result']['frameTree']['frame']['id']
+    from .parent_session import ParentSession
+    parent_session = ParentSession(sup, parent)
+    sup = parent_session.transport
+    psid = parent_session.sid
     lease = _Lease(sup)
+    lease.parent_session = parent_session
     targets, visited = [], set()
     deadline = time.monotonic() + 120
 
@@ -236,6 +251,7 @@ def discover(origin, label, task, parent):
             visit(sid, child, ancestry + ((sid, frame, child, owner, guard),), depth + 1)
 
     try:
+        root = _call(sup, 'Page.getFrameTree', {}, psid)['result']['frameTree']['frame']['id']
         visit(psid, root, (), 0)
         lease.refs = len(targets)
         for target in targets:
@@ -254,9 +270,11 @@ def discover(origin, label, task, parent):
 
 def assert_target(target):
     sup = _supervisor(target.task)
-    if (sup is not target.supervisor or target.lease.closed or time.monotonic() >= target.expires
-            or _parent(sup, target.parent) != target.parent_sid):
+    if (sup is not getattr(target.supervisor, 'raw', target.supervisor) or target.lease.closed or time.monotonic() >= target.expires
+            or (target.lease.parent_session.check() if target.lease.parent_session is not None
+                else _parent(sup, target.parent)) != target.parent_sid):
         raise ValueError('stale nested target')
+    sup = target.supervisor
     for sid, frame, child, owner, guard in target.ancestry:
         if _call(sup, 'DOM.getFrameOwner', {'frameId': child}, sid)['result']['backendNodeId'] != owner:
             raise ValueError('frame owner changed')

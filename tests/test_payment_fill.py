@@ -199,7 +199,7 @@ async def test_cancel_during_real_consent_stops_worker_before_resolution(tmp_pat
     released = []
     monkeypatch.setattr(pf, 'payment_backend', lambda *a: backend)
     monkeypatch.setattr(pf, 'assert_target', lambda *a: None)
-    monkeypatch.setattr(pf.PaymentSelection, 'choose', lambda *a: (target, None))
+    monkeypatch.setattr(pf.PaymentSelection, 'choose', lambda *a, **kw: (target, None))
     monkeypatch.setattr(pf, 'release', released.append)
     ready, proceed = threading.Event(), threading.Event()
     def before():

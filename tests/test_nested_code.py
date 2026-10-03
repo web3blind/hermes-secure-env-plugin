@@ -175,7 +175,7 @@ def test_previous_value_tamper_stops_later_write(nested):
 
 @pytest.mark.parametrize('sites', [('parent.test', 'parent.test'), ('middle.test', 'leaf.test'), ('parent.test', 'leaf.test'), ('middle.test', 'middle.test')])
 @pytest.mark.parametrize('split', [False, True])
-def test_registered_nested_https(nested, sites, split, tmp_path, monkeypatch, attack=None, focus_exit=None):
+def test_registered_nested_https(nested, sites, split, tmp_path, monkeypatch, attack=None, focus_exit=None, wrongsite_hook=None):
     import asyncio
     from types import SimpleNamespace
     from urllib.parse import urlsplit
@@ -199,6 +199,8 @@ def test_registered_nested_https(nested, sites, split, tmp_path, monkeypatch, at
     sample, settings, home, root = make_runtime(tmp_path, mini=False)
     sample.close()
     monkeypatch.setenv('HERMES_HOME', str(home))
+    if wrongsite_hook:
+        wrongsite_hook(home)
     factory = runtime_module.IngressRuntime
     monkeypatch.setattr(runtime_module, 'IngressRuntime', lambda cfg, h, token: factory(cfg, h, token, trust_roots=root))
     sent = []

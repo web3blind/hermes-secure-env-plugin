@@ -37,9 +37,13 @@ Never put card details in chat/tool arguments, `.env`, logs, or ordinary browser
 ## Protected nested verification-code frames (0.7.6)
 
 For a code form inside an iframe, call `browser_vault` with `mode="code"`,
-`parent` equal to the exact **task-selected supervisor page target ID**, and
+`parent` equal to the exact **task-selected page target ID**, and
 `origin` equal to the code document's exact HTTPS origin (not necessarily the
 parent origin). No global page guessing or arbitrary selectors/CDP endpoints.
+If the supervisor is attached elsewhere, a private exact-parent session requires
+read-only host creation-ledger proof of the same profile/task owner and immutable
+browser generation. Merely visible or pre-existing unrecorded tabs refuse. This
+does not refocus the supervisor or retarget an already issued capability.
 Omitting `parent` preserves the existing top-level discovery path. The parameter
 is rejected for login/card storage. Multiple candidates return one-use opaque
 selection tokens; repeat the same parent, origin and label when choosing.
@@ -97,7 +101,7 @@ A narrow plugin-only fallback recognizes the missing `creditCardHolder` name AND
 
 Synthetic registered Chromium resume checks preserve captured Computop naming and PAN focus/blur masking hooks. Resuming an already unmasked matching PAN completes name, MM/YY expiry (2031 → 31) and CVC without any PAN event/write in same-process and OOPIF children. The minimal 0.7.4 DIV fixture without a proven reserve remains unsupported for fresh toggles; the actual captured-CSS empty form is supported by the additive 0.7.5 contract above. No consent checkbox or Pay/submit is touched. Synthetic acceptance is not a live provider guarantee, installed activation or device approval round-trip.
 
-Failure diagnostics use fixed static `stage` values only: preflight, selection, consent, revalidation, mapping, format, existing, focus, write, completion. They never contain exception text, page values or per-field matching details. Before native consent only broad preflight/selection stages are exposed; they are not root causes. Selection-stage refusal may include a task-selected supervisor mismatch. Never retry decline/unknown automatically.
+Failure diagnostics use fixed static `stage` values only: preflight, selection, consent, revalidation, mapping, format, existing, focus, write, completion. They never contain exception text, page values or per-field matching details. Before native consent only broad preflight/selection stages are exposed; they are not root causes. Selection-stage refusal may include missing exact-parent ownership authority. No global tab scan, ownership claim or supervisor refocus is used to overcome a mismatch. Private attachments are disposed on cancellation, expiry and completion; issued targets are never reattached after reconnect. Never retry decline/unknown automatically.
 
 ## Protected payment iframe fill (0.7.1)
 
@@ -107,7 +111,9 @@ For a hosted card form, discover `secure_payment_fill` (`Secure ENV payment ifra
 {"handle":"vault_example","parent":"EXACT_TASK_SELECTED_PARENT_TARGET_ID","origin":"https://payments.example.com"}
 ```
 
-Use native Vault listing first. The saved entry must be kind `payment` and bound to the **actual child frame's exact HTTPS origin**, not the merchant/top-page origin. Do not edit/rebind a card to get around a refusal. Select the intended parent page explicitly using the browser task's context and its target ID; that ID must also match the current task supervisor's attached parent. A shared CDP endpoint is not isolation or permission to auto-pick another tab. This plugin does not refocus/switch the supervisor or launch a browser. If the Browser Use selected tab and supervisor disagree, this path fails closed; it does not silently target the first checkout it finds. The intended parent must be foreground/focused for focus callbacks to run before writes; the plugin will not activate a background tab.
+Use native Vault listing first. The saved entry must be kind `payment` and bound to the **actual child frame's exact HTTPS origin**, not the merchant/top-page origin. Do not edit/rebind a card to get around a refusal. Select the intended parent page explicitly using the browser task's context and its target ID; an already-attached parent retains the existing admission path; if the supervisor is attached to a different page, Secure ENV uses a private exact-target session only after read-only host creation-ledger proof of this profile's task owner and immutable browser generation. A shared CDP endpoint is not isolation or permission to auto-pick another tab. This plugin does not refocus/switch the supervisor or launch a browser. A mismatch without that independent ownership proof still fails closed, including pre-existing or other-task tabs merely visible through CDP. A proven explicit parent is attached exactly and rechecked without changing supervisor selection; the plugin never silently targets the first checkout it finds. The intended parent must be foreground/focused for focus callbacks to run before writes; the plugin will not activate a background tab.
+
+A mismatching supervisor requires provenance recorded through host Browser Use capture (`browser.tab_cleanup_enabled: true` in the active profile). Do not enable it or claim an existing page merely to bypass refusal. Unrecorded/pre-existing tabs, missing capture and another profile's proof refuse without private attachment. Commands and late-attachment cleanup are bound to the captured websocket; reconnect never redirects them to the replacement. Payment selection batches expire without another tool call; cancellation releases only its request's candidates and preserves separate live leases.
 
 Only direct child iframe documents of that selected parent are inspected. Cross-origin/OOPIF and same-process children use exact CDP frame owners and isolated-world document/control references, not the parent's default JS context. One complete candidate is automatic; multiple sibling frames or forms return `selection_required` with at most 20 opaque candidates containing only parent/frame IDs, exact origin and form index. Hermes selects using its browser context and repeats the same handle/parent/origin plus `selection`. Do not ask the user to identify tabs. Choices are scoped to profile/owner/task/conversation/chat/thread, consumed, expire in at most 120 seconds, and are capped globally within this plugin instance. No values, page text, label heuristics or URL paths/queries are exposed in candidates.
 

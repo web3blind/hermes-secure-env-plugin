@@ -681,7 +681,7 @@ def register(ctx):
                 payment_backend(args['handle'], args['origin'])
                 stage = 'selection'
                 target, response = payment_selection.choose(scope, task_id, args['parent'],
-                    args['origin'], args['handle'], args.get('selection'))
+                    args['origin'], args['handle'], args.get('selection'), batch=cancelled)
                 if response is not None:
                     return response
                 return approved_fill(target, args['handle'], guard, resume_existing=True) if args.get('resume_existing', False) else approved_fill(target, args['handle'], guard)
@@ -690,20 +690,23 @@ def register(ctx):
             finally:
                 if target is not None:
                     release(target)
+                if cancelled.is_set():
+                    payment_selection.cancel_batch(cancelled)
                 payment_lock.release()
         worker = asyncio.create_task(asyncio.to_thread(work))
         try:
             return json.dumps(await asyncio.shield(worker))
         except asyncio.CancelledError:
             cancelled.set()
+            payment_selection.cancel_batch(cancelled)
             await asyncio.shield(worker)
             raise
 
     ctx.register_tool(name='secure_payment_fill', toolset='browser',
-        schema={'name': 'secure_payment_fill', 'description': 'Secure ENV: protected payment iframe fill from a saved native Vault handle. Additive tool, not a replacement for browser_vault_fill. Requires an explicitly task-selected supervisor parent target, exact HTTPS frame origin matching the saved card, and separate native human confirmation identifying card label/origin. No card values, arbitrary selectors, endpoints or JS arguments. Multiple direct child frames/forms return bounded opaque selections; Hermes chooses using task context. No Pay click, registration or form submission; sites may act on input. Never retry payment_declined or unknown automatically. Native local payment entries only; no manager unlocking. Optional resume_existing preserves all matching nonempty selected fields only after fresh confirmation; mismatched/masked fields refuse before writes. No value matching details before consent. Load secure-env-ingress:usage for supported field formats and refusal boundaries.',
+        schema={'name': 'secure_payment_fill', 'description': 'Secure ENV: protected payment iframe fill from a saved native Vault handle. Additive tool, not a replacement for browser_vault_fill. Requires an explicitly task-selected parent target, with exact task-owner/browser-generation proof for a private attachment when the supervisor is on another page, exact HTTPS frame origin matching the saved card, and separate native human confirmation identifying card label/origin. No card values, arbitrary selectors, endpoints or JS arguments. Multiple direct child frames/forms return bounded opaque selections; Hermes chooses using task context. No Pay click, registration or form submission; sites may act on input. Never retry payment_declined or unknown automatically. Native local payment entries only; no manager unlocking. Optional resume_existing preserves all matching nonempty selected fields only after fresh confirmation; mismatched/masked fields refuse before writes. No value matching details before consent. Load secure-env-ingress:usage for supported field formats and refusal boundaries.',
             'parameters': {'type': 'object', 'properties': {
                 'handle': {'type': 'string', 'description': 'Native vault_ payment handle from Vault listing, never card values'},
-                'parent': {'type': 'string', 'description': 'Exact task-selected supervisor parent page target ID; never globally auto-picked'},
+                'parent': {'type': 'string', 'description': 'Exact task-selected parent page target ID; a different supervisor page requires host creation-owner proof; never globally auto-picked'},
                 'origin': {'type': 'string', 'description': 'Exact HTTPS origin of payment child frame, matching native Vault binding'},
                 'resume_existing': {'type': 'boolean', 'default': False, 'description': 'Explicit opt-in to preserve existing fields only if all match the saved card internally after fresh native consent; mismatched/masked fields refuse before any write. No submit.'},
                 'selection': {'type': 'string', 'description': 'Opaque selection returned for this task, parent, origin and handle; consumed within 120 seconds'}},
@@ -724,7 +727,7 @@ def register(ctx):
                 'parameters': {'type': 'object', 'properties': {'origin': {'type': 'string', 'description': 'Exact HTTPS origin to store credentials for; for code mode, the exact code document origin (may differ from the parent). No path or trailing slash.'},
                     'label': {'type': 'string', 'description': 'Short public site label'},
                     'selection': {'type': 'string', 'description': 'Code mode only: opaque candidate returned by selection_required. Hermes chooses using its login context; repeat the exact parent if supplied; never ask the user to identify a tab.'},
-                    'parent': {'type': 'string', 'description': 'Code mode only: exact task-selected supervisor parent target ID for bounded nested iframe discovery. Origin must be the actual code document HTTPS origin. Omit for unchanged top-level discovery. Input may auto-submit/authorize including 3-D Secure; development approval is not banking authorization.'},
+                    'parent': {'type': 'string', 'description': 'Code mode only: exact task-selected parent target ID for bounded nested iframe discovery. A different supervisor page requires host creation-owner proof for a private exact attachment. Origin must be the actual code document HTTPS origin. Omit for unchanged top-level discovery. Input may auto-submit/authorize including 3-D Secure; development approval is not banking authorization.'},
                     'mode': {'type': 'string', 'enum': ['login', 'code', 'payment'], 'description': 'login (default): save username/password and optional TOTP key without a browser. code: fill an attached verification-code/passcode field, no storage. payment: save a card including CVC, no browser, fill or payment authorization.'}}, 'required': ['origin', 'label'], 'additionalProperties': False}},
         handler=vault_tool, is_async=True)
     ctx.register_skill('setup', Path(__file__).parent / 'setup' / 'SKILL.md',
