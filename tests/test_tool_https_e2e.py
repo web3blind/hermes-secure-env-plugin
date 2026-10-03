@@ -237,7 +237,7 @@ def test_registered_code_tool_https_delivery_and_completion(tmp_path, monkeypatc
     monkeypatch.setattr(runtime_module, 'IngressRuntime',
         lambda cfg, active_home, token: original_runtime(cfg, active_home, token, trust_roots=root))
     target = VaultTarget('https://site.test', 'Fixture', 'sid', 'sid', 123, 'sid', 'key')
-    monkeypatch.setattr(plugin.CodeSelection, 'choose', lambda *args: (target, None))
+    monkeypatch.setattr(plugin.CodeSelection, 'choose', lambda *args, **kwargs: (target, None))
     monkeypatch.setattr(runtime_module, 'assert_browser_target', lambda _: None)
     monkeypatch.setattr(vault_ingress, 'assert_browser_target', lambda _: None)
     observed = []

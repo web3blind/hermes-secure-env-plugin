@@ -147,7 +147,7 @@ These instructions do not change field recognition, origin/form guards or native
 
 When the already-attached browser page asks for an email, SMS or authenticator one-time code without a new username/password, use the same plugin tool with `{"origin":"https://example.com","label":"Example verification","mode":"code"}`. The owner receives a single-use HTTPS form with one masked **Verification code** field. Enter the code there (4–16 printable ASCII characters, including punctuation; no spaces or control characters), never in chat or tool arguments. No saved login or authenticator seed is required. The code is not stored in Vault, `.env`, or on disk; the form submits it to the live HTTPS runtime, which inspects the existing page and fills its unambiguous code control over the captured supervisor's CDP WebSocket. The site form is **not** explicitly submitted; some sites auto-submit on input. The tool reports `filled` only after the supervisor returns an exact fill count; uncertain outcomes require checking the page before retrying. The link expires within 240 seconds and cancellation, supersession, replay, changed page/origin/profile, or missing/ambiguous controls fail closed. Numeric and alphanumeric codes are supported, including standard adjacent one-character boxes.
 
-Code mode discovers forms through the existing task-owned CDP supervisor transport, without using its focused page or a patched `focus_page`. One form is selected automatically. Multiple forms return `selection_required` with expiring opaque candidates; Hermes chooses using its login context and calls again with `selection` and the same origin/label. Do not ask the user to identify remote tabs. No secret is requested before selection. Candidate metadata excludes input values, query/fragment, arbitrary page text and non-allowlisted path segments. Models cannot supply a CDP endpoint or executable. Tokens are profile/owner/conversation/task scoped. Before filling, the plugin rechecks the selected document, exact HTTPS origin and stamped fields; navigation/closure never silently redirects to another candidate. Browser restart requires rediscovery. A shared CDP endpoint can expose tabs from other browser contexts; task-scoped selection tokens do not provide browser-context isolation. Use appropriately isolated endpoints when that boundary is required. This uses existing private supervisor transport APIs, so compatibility testing remains necessary, but no local core patches are required. Isolated Chromium tests cover two tabs with the same URL, two forms on one page, registered-tool HTTPS filling, automatic selection, stale selections, changed origin and replaced fields. These tests are not blanket live-account acceptance.
+Without `parent`, code mode discovers top-level forms through the existing task-owned CDP supervisor transport, without using its focused page or a patched `focus_page`. Explicit `parent` opts into the nested flow below. One form is selected automatically. Multiple forms return `selection_required` with expiring opaque candidates; Hermes chooses using its login context and calls again with `selection` and the same origin/label. Do not ask the user to identify remote tabs. No secret is requested before selection. Candidate metadata excludes input values, query/fragment, arbitrary page text and non-allowlisted path segments. Models cannot supply a CDP endpoint or executable. Tokens are profile/owner/conversation/task scoped. Before filling, the plugin rechecks the selected document, exact HTTPS origin and stamped fields; navigation/closure never silently redirects to another candidate. Browser restart requires rediscovery. A shared CDP endpoint can expose tabs from other browser contexts; task-scoped selection tokens do not provide browser-context isolation. Use appropriately isolated endpoints when that boundary is required. This uses existing private supervisor transport APIs, so compatibility testing remains necessary, but no local core patches are required. Isolated Chromium tests cover two tabs with the same URL, two forms on one page, registered-tool HTTPS filling, automatic selection, stale selections, changed origin and replaced fields. These tests are not blanket live-account acceptance.
 
 ## ENV profile compatibility fix (0.6.4)
 
@@ -167,6 +167,52 @@ See [operation configuration and integration contract](secure_env_ingress/OPERAT
 
 This release also recognizes localized verification inputs such as `name="code"` with the label “Введите код”, retaining ambiguous-field and origin-change refusal.
 
+
+## Protected nested verification-code frames (0.7.6)
+
+For a code form inside an iframe, call `browser_vault` with `mode="code"`,
+`parent` equal to the exact **task-selected supervisor page target ID**, and
+`origin` equal to the code document's exact HTTPS origin (not necessarily the
+parent origin). No global page guessing or arbitrary selectors/CDP endpoints.
+Omitting `parent` preserves the existing top-level discovery path. The parameter
+is rejected for login/card storage. Multiple candidates return one-use opaque
+selection tokens; repeat the same parent, origin and label when choosing.
+
+The plugin traverses same-process, OOPIF and mixed iframe chains, retaining each
+iframe owner, complete DOM ancestry, containing document, origin/navigation and
+exact leaf form/field references in isolated worlds. All ancestor and leaf guards
+are checked after the HTTPS wait, after focus, before every setter and after every
+write. Sticky document mutation/navigation guards reject reverted changes.
+Focus requires the actual leaf document `hasFocus()` and exact active input,
+after focus callbacks and immediately before every setter; post-input focus
+loss stops split-field writes. It never activates a background tab to proceed.
+Cached candidates expire automatically within 120 seconds without another tool
+call. Cancellation retires only its exact discovery batch, including late results
+after repeated cancellation. Completing a candidate closes its private guard and
+value references immediately; only ancestors/sessions actually shared by live
+siblings remain. Plugin unload terminally fences selection, runtime acquisition,
+issuance and not-yet-started delivery; it cannot resurrect an HTTPS listener.
+Failure never retargets, retries an unknown write or explicitly submits a site
+form. Earlier split-field values are compared internally, never returned.
+
+Bounds: 8 iframe edges, 40 documents, 20 owners per document, 20 candidate forms,
+200 controls and 2,000 DOM nodes per document (DOM depth 16), 120-second discovery
+and selection lifetime, 240-second target lifetime. HTTPS is required for every
+ancestor. Opaque sandbox documents, custom open/closed shadow roots, ambiguous
+forms, detached/orphan contexts and unsupported navigation authority refuse.
+Conservative guards refuse any DOM mutation in bound documents; dynamic sites
+that change unrelated UI while waiting may therefore be unsupported. Standard
+single and contiguous split fields retain 4–16 printable ASCII/punctuation
+semantics, with no spaces/control characters or code storage in Vault/ENV.
+Discovery returns only public origin, opaque IDs, form index and field/depth
+counts: never code values, document hrefs or full URLs.
+
+**Input can auto-submit or authorize an operation, including 3-D Secure.** A
+successful fill is not banking/transaction authorization. Approval to develop or
+test this feature is not approval to enter a real bank code or perform a payment.
+No guarantee is made against a compromised right-origin site or browser/OS, and
+cross-process checks are not a browser-wide transaction against concurrent page
+execution. Recheck an unknown outcome without blindly repeating the code.
 
 ## Empty dynamic payment forms (0.7.5)
 

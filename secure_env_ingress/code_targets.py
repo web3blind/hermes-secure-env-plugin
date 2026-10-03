@@ -74,11 +74,14 @@ def _classified(raw):
     return found
 
 
-def discover(origin, label, task):
+def discover(origin, label, task, parent=None):
     from agent.vault_login_classifier import build_inspection_js
     strict_origin(origin)
     if not isinstance(label, str) or not 1 <= len(label) <= 80 or any(ord(c) < 32 for c in label):
         raise ValueError('invalid label')
+    if parent is not None:
+        from .nested_code import discover as nested_discover
+        return nested_discover(origin, label, task, parent)
     sup = _supervisor(task)
     pages = _call(sup, 'Target.getTargets').get('result', {}).get('targetInfos', [])
     result = []
@@ -150,6 +153,9 @@ def _guard(target):
 
 
 def assert_target(target):
+    from .nested_code import NestedCodeTarget, assert_target as nested_assert
+    if isinstance(target, NestedCodeTarget):
+        return nested_assert(target)
     if _supervisor(target.task) is not target.supervisor:
         raise ValueError('browser changed')
     with _page(target.supervisor, target.page) as sid:
@@ -161,6 +167,9 @@ def fill(target, code, expires_at):
     from agent.vault_login_classifier import build_otp_fills
     if not isinstance(code, str) or not re.fullmatch(r'[!-~]{4,16}', code):
         raise ValueError('invalid code')
+    from .nested_code import NestedCodeTarget, fill as nested_fill
+    if isinstance(target, NestedCodeTarget):
+        return nested_fill(target, code, expires_at)
     if _supervisor(target.task) is not target.supervisor:
         raise ValueError('browser changed')
     fills = build_otp_fills(list(target.controls), code)
@@ -199,46 +208,106 @@ def fill(target, code, expires_at):
     return isinstance(result, dict) and result.get('filled') == len(fills) and bool(fills)
 
 
+def release(target):
+    from .nested_code import NestedCodeTarget, release as nested_release
+    if isinstance(target, NestedCodeTarget):
+        nested_release(target)
+
+
 class CodeSelection:
     """Short-lived selection capabilities scoped to home, owner and conversation."""
+    ttl_seconds = 120
+
     def __init__(self):
         self._entries = {}
         self._lock = threading.Lock()
+        self._closed = False
+        self._timers = {}
 
-    def choose(self, scope, origin, label, task, selection=None):
+    def _retire(self, predicate):
+        # Caller holds the lock; retirement is exact, never scope-wide on cancel.
+        for key, entry in list(self._entries.items()):
+            if predicate(entry):
+                del self._entries[key]
+                release(entry[2])
+        live = {entry[3] for entry in self._entries.values()}
+        for batch in list(self._timers):
+            if batch not in live:
+                self._timers.pop(batch).cancel()
+
+    def cancel_batch(self, batch):
+        batch.set()  # Visible to a discovery worker before it acquires the lock.
         with self._lock:
+            self._retire(lambda entry: entry[3] is batch)
+
+    def _expire_batch(self, batch):
+        with self._lock:
+            self._retire(lambda entry: entry[3] is batch)
+
+    def choose(self, scope, origin, label, task, selection=None, parent=None, *, batch=None):
+        batch = batch if batch is not None else threading.Event()
+        with self._lock:
+            if self._closed or batch.is_set():
+                raise ValueError('selection stopped')
             now = time.monotonic()
-            self._entries = {k: v for k, v in self._entries.items() if v[0] > now}
+            self._retire(lambda entry: entry[0] <= now)
             if selection is not None:
                 entry = self._entries.get(selection)
                 if entry is None or entry[1] != scope or entry[2].origin != origin or entry[2].label != label:
                     raise ValueError('invalid selection')
                 target = entry[2]
-                if target.task != task:
+                if target.task != task or getattr(target, 'parent', None) != parent:
                     raise ValueError('invalid selection')
                 self._entries.pop(selection)
-                assert_target(target)
+                self._retire(lambda entry: False)
+                try:
+                    assert_target(target)
+                except BaseException:
+                    release(target)
+                    raise
                 return target, None
-            targets = discover(origin, label, task)
+        # Discovery can block in CDP. Shutdown and cancellation must not wait on it.
+        targets = discover(origin, label, task) if parent is None else discover(origin, label, task, parent=parent)
+        with self._lock:
+            if self._closed or batch.is_set():
+                for target in targets:
+                    release(target)
+                raise ValueError('selection stopped')
             if len(targets) == 1:
                 return targets[0], None
             if not targets:
                 return None, {'success': False, 'status': 'no_code_form',
                     'next': 'Open the requested site verification form, then retry. No secret requested.'}
             candidates = []
-            # Replace prior choices for this scope, cap all cached choices.
-            self._entries = {k: v for k, v in self._entries.items() if v[1] != scope}
+            self._retire(lambda entry: entry[1] == scope)
             if len(self._entries) + len(targets) > 128:
+                for t in targets:
+                    release(t)
                 raise ValueError('selection capacity exceeded')
+            deadline = time.monotonic() + self.ttl_seconds
             for t in targets:
                 token = secrets.token_urlsafe(24)
-                self._entries[token] = (now + 120, scope, t)
+                self._entries[token] = (deadline, scope, t, batch)
                 path = urlsplit(t.href).path
                 # Only allowlisted route words; arbitrary path segments can be secrets too.
                 route = '/' + '/'.join(x if x.lower() in {'login', 'signin', 'auth', 'verify', 'challenge', 'otp', 'mfa', '2fa'}
                                       else '…' for x in path.split('/') if x)
-                candidates.append({'selection': token, 'origin': t.origin,
-                    'page_ref': t.page, 'route_hint': route[:100],
-                    'form_index': t.controls[0].control.form_index, 'code_fields': len(t.controls)})
+                candidate = {'selection': token, 'origin': t.origin,
+                    'page_ref': t.page,
+                    'form_index': t.controls[0].control.form_index, 'code_fields': len(t.controls)}
+                if parent is None:
+                    candidate['route_hint'] = route[:100]
+                else:
+                    candidate.update(parent=parent, frame=t.frame, depth=len(t.ancestry))
+                candidates.append(candidate)
+            timer = threading.Timer(self.ttl_seconds, self._expire_batch, (batch,))
+            timer.daemon = True
+            self._timers[batch] = timer
+            timer.start()
             return None, {'success': False, 'status': 'selection_required', 'candidates': candidates,
                 'next': 'Choose the form for the login you initiated. Call again with its selection and the same origin/label. Do not ask the user to identify browser tabs. No secret requested yet.'}
+
+    def close(self):
+        with self._lock:
+            self._closed = True
+            self._retire(lambda entry: True)

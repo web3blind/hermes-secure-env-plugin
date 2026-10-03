@@ -34,6 +34,51 @@ After saving, recheck the intended checkout and its exact origin, use native Vau
 Never put card details in chat/tool arguments, `.env`, logs, or ordinary browser inputs. Use a public nonsensitive label without card numbers. `unknown` means inspect native metadata before retrying, not proof of either success or failure. This release does not unlock third-party managers or resume secret forms after restart.
 
 
+## Protected nested verification-code frames (0.7.6)
+
+For a code form inside an iframe, call `browser_vault` with `mode="code"`,
+`parent` equal to the exact **task-selected supervisor page target ID**, and
+`origin` equal to the code document's exact HTTPS origin (not necessarily the
+parent origin). No global page guessing or arbitrary selectors/CDP endpoints.
+Omitting `parent` preserves the existing top-level discovery path. The parameter
+is rejected for login/card storage. Multiple candidates return one-use opaque
+selection tokens; repeat the same parent, origin and label when choosing.
+
+The plugin traverses same-process, OOPIF and mixed iframe chains, retaining each
+iframe owner, complete DOM ancestry, containing document, origin/navigation and
+exact leaf form/field references in isolated worlds. All ancestor and leaf guards
+are checked after the HTTPS wait, after focus, before every setter and after every
+write. Sticky document mutation/navigation guards reject reverted changes.
+The leaf document must actually have focus (`hasFocus()`) and the exact active
+input after focus callbacks and immediately before setters. Background tabs are
+not activated; focus loss after input prevents later split-field writes.
+Cached candidates automatically expire without another tool call. Cancellation
+owns only its exact batch, even if discovery finishes after repeated cancellation.
+Completed leaf guards/value references retire immediately; only genuinely shared
+ancestors and sessions stay live for siblings. Unload is terminal and fences new
+runtime acquisition, issuance and not-yet-started delivery.
+Failure never retargets, retries an unknown write or explicitly submits a site
+form. Earlier split-field values are compared internally, never returned.
+
+Bounds: 8 iframe edges, 40 documents, 20 owners per document, 20 candidate forms,
+200 controls and 2,000 DOM nodes per document (DOM depth 16), 120-second discovery
+and selection lifetime, 240-second target lifetime. HTTPS is required for every
+ancestor. Opaque sandbox documents, custom open/closed shadow roots, ambiguous
+forms, detached/orphan contexts and unsupported navigation authority refuse.
+Conservative guards refuse any DOM mutation in bound documents; dynamic sites
+that change unrelated UI while waiting may therefore be unsupported. Standard
+single and contiguous split fields retain 4–16 printable ASCII/punctuation
+semantics, with no spaces/control characters or code storage in Vault/ENV.
+Discovery returns only public origin, opaque IDs, form index and field/depth
+counts: never code values, document hrefs or full URLs.
+
+**Input can auto-submit or authorize an operation, including 3-D Secure.** A
+successful fill is not banking/transaction authorization. Approval to develop or
+test this feature is not approval to enter a real bank code or perform a payment.
+No guarantee is made against a compromised right-origin site or browser/OS, and
+cross-process checks are not a browser-wide transaction against concurrent page
+execution. Recheck an unknown outcome without blindly repeating the code.
+
 ## Empty dynamic payment forms (0.7.5)
 
 Fresh fill now supports a second, additive decoration contract: a pre-existing inert absolute DIV with one immutable IMG, bounded by its loaded intrinsic size (positive, at most 64px per axis), wholly inside an existing selected input's right-padding reserve. It may toggle only inline display none/flex; style-attribute removal/recreation refuses (including Chromium lazy-oldValue cases); image source/identity, all other attributes, ancestry and child-list topology stay bound. Hidden auto sizing is derived from the loaded image without displaying, inserting or restyling anything. The slot must not overlap input text, another control or a protected label, contribute normal-flow space, or carry pseudo-element, transform, motion, filter, shadow, outline or expansion effects. The original isolated SPAN none/block contract remains unchanged.

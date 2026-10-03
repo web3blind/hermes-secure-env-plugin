@@ -41,6 +41,55 @@ class Captured:
             self.used = True
             return True
 
+class _CodeChoice:
+    """Own a thread result until atomic handler handoff or loop-free retirement."""
+    def __init__(self, selection, batch):
+        self.selection, self.batch = selection, batch
+        self.lock = threading.Lock()
+        self.finished = self.cancelled = False
+        self.result = None
+
+    def run(self, *args):
+        # Never return the target through the cancellable asyncio wrapper.
+        result = None
+        try:
+            result = self.selection.choose(*args, batch=self.batch)
+        finally:
+            with self.lock:
+                self.finished = True
+                cancelled = self.cancelled
+                if not cancelled:
+                    self.result = result
+            if cancelled:
+                self._retire(result)
+
+    def take(self):
+        with self.lock:
+            result, self.result = self.result, None
+            return result
+
+    def cancel(self):
+        with self.lock:
+            if self.cancelled:
+                return
+            self.cancelled = True
+            self.batch.set()
+            if not self.finished:
+                # The actual worker retires its result, even with no event loop.
+                return
+            result, self.result = self.result, None
+        # Do not block the loop on CDP/cache locks or depend on its executor.
+        threading.Thread(target=self._retire, args=(result,), daemon=True).start()
+
+    def _retire(self, result):
+        try:
+            self.selection.cancel_batch(self.batch)
+        finally:
+            if result is not None and result[0] is not None:
+                from .code_targets import release
+                release(result[0])
+
+
 class LazyRuntime:
     """Delay filesystem/TLS work until an authenticated command."""
     def __init__(self, settings, home, bot_token=''):
@@ -136,6 +185,8 @@ def register(ctx):
 
     def runtime_for(selected_home):
         with runtime_lock:
+            if closed:
+                raise RuntimeError('ingress stopped')
             if selected_home not in runtimes:
                 runtimes[selected_home] = LazyRuntime({}, selected_home)
             return runtimes[selected_home]
@@ -332,6 +383,7 @@ def register(ctx):
         """Only trusted gateway context + dispatcher identity may issue a form."""
         links = None
         runtime = None
+        target = None
         # Fixed labels only: never return exception text or contextual identifiers.
         reason = 'session_binding'
         try:
@@ -340,11 +392,13 @@ def register(ctx):
                 value = var.get()
                 return None if value is sc._UNSET else value
             if (closed or not isinstance(args, dict) or
-                    (not {'origin', 'label'}.issubset(args) or set(args) - {'origin', 'label', 'mode', 'selection'}) or
+                    (not {'origin', 'label'}.issubset(args) or set(args) - {'origin', 'label', 'mode', 'selection', 'parent'}) or
                     args.get('mode', 'login') not in ('login', 'code', 'payment')):
                 raise ValueError('invalid request')
             code_mode = args.get('mode', 'login') == 'code'
             payment_mode = args.get('mode', 'login') == 'payment'
+            if 'parent' in args and (not code_mode or not isinstance(args['parent'], str) or not 1 <= len(args['parent']) <= 100):
+                raise ValueError('invalid code parent')
             if 'selection' in args and (not code_mode or not isinstance(args['selection'], str) or len(args['selection']) > 100):
                 raise ValueError('invalid selection')
             if bound(sc._SESSION_PLATFORM) != 'telegram' or bound(sc._CRON_SESSION) != '':
@@ -372,7 +426,18 @@ def register(ctx):
             reason = 'browser_binding' if code_mode else 'storage_binding'
             if code_mode:
                 scope = (str(home), sid, skey, owner_text, str(chat), str(thread))
-                target, response = await asyncio.to_thread(code_selection.choose, scope, args['origin'], args['label'], task_id, args.get('selection'))
+                batch = threading.Event()
+                ownership = _CodeChoice(code_selection, batch)
+                choice = asyncio.create_task(asyncio.to_thread(ownership.run, scope, args['origin'], args['label'], task_id, args.get('selection'), args.get('parent')))
+                try:
+                    await asyncio.shield(choice)
+                    target, response = ownership.take()
+                except asyncio.CancelledError:
+                    ownership.cancel()
+                    raise
+                with runtime_lock:
+                    if closed:
+                        raise RuntimeError('ingress stopped')
                 if response is not None:
                     return json.dumps(response)
             else:
@@ -398,9 +463,17 @@ def register(ctx):
                     await asyncio.to_thread(assert_browser_target, target)
                 text = ('One-time HTTPS ' + ('verification code' if code_mode else 'payment card' if payment_mode else 'login') + ' form: ' + links['url'] + ' for ' + target.origin + '. Anyone who can read this message can use the link. '
                         'Do not use a public or untrusted chat. Do not forward it. ' +
-                        ('Submitting fills the current browser code field, not the site form.' if code_mode else 'Saving stores the card including CVC in encrypted Vault; it does not fill or authorize payment.' if payment_mode else 'Saving does not fill or sign in.'))
-                delivery_task = asyncio.create_task(
-                    delivery.send_gateway(gateway, 'telegram', chat, thread, text))
+                        ('Submitting fills the selected code field. Sites may auto-submit or authorize an operation, including 3-D Secure, on input. Verify your intent before entering a code.' if code_mode else 'Saving stores the card including CVC in encrypted Vault; it does not fill or authorize payment.' if payment_mode else 'Saving does not fill or sign in.'))
+                async def send_vault():
+                    # A scheduled coroutine can begin after unload; fence its start too.
+                    with runtime_lock:
+                        if closed:
+                            raise RuntimeError('ingress stopped')
+                    return await delivery.send_gateway(gateway, 'telegram', chat, thread, text)
+                with runtime_lock:
+                    if closed:
+                        raise RuntimeError('ingress stopped')
+                    delivery_task = asyncio.create_task(send_vault())
                 try:
                     await asyncio.wait_for(asyncio.shield(delivery_task),
                                            timeout=min(18, max(0, links['expires_at'] - time.monotonic())))
@@ -462,6 +535,11 @@ def register(ctx):
         except BaseException:
             return json.dumps({'success': False, 'reason': reason,
                 'error': 'Form unavailable. Check the active Telegram session, browser page, delivery and HTTPS setup.'})
+        finally:
+            if target is not None:
+                from .code_targets import CodeTarget, release
+                if isinstance(target, CodeTarget):
+                    await asyncio.to_thread(release, target)
 
     async def operation_tool(args, *, task_id=None, session_id=None, **_kwargs):
         """No browser dependency; allowlist binding precedes capability issuance."""
@@ -642,10 +720,11 @@ def register(ctx):
                     'required': ['operation', 'parameters'], 'additionalProperties': False}},
         handler=operation_tool, is_async=True)
     ctx.register_tool(name='browser_vault', toolset='browser',
-        schema={'name': 'browser_vault', 'description': 'Secure ENV: Telegram HTTPS form for login, username, password, optional TOTP setup key, payment card storage, or verification code/passcode. Use mode=login (default) to SAVE credentials for an HTTPS origin in encrypted profile Vault; no open browser required, no automatic filling or sign-in. Later fill the matching site through native Vault tools. Use mode=code to FILL a recognized code/passcode field in an attached browser, without Vault storage or site submission; accepts 4-16 printable ASCII characters including punctuation, no whitespace. A native secret prompt returning prompt_unavailable does NOT establish that this plugin is unavailable: use the matching mode here in an authorized Telegram session. Payment mode saves card fields including CVC in encrypted native Vault for an exact HTTPS origin; no browser required, no fill, no payment authorization. Later native fill needs explicit human payment-fill confirmation; for supported exact hosted-card iframes discover secure_payment_fill, the additive protected plugin path with the same native human consent. Never retry a decline. No mode needs a site-specific registered operation. Never put secrets in arguments or chat. Links grant access to chat readers. For workflow and failure diagnosis load the plugin usage skill.',
-                'parameters': {'type': 'object', 'properties': {'origin': {'type': 'string', 'description': 'Exact HTTPS origin to store credentials for; for code mode, the current page origin. No path or trailing slash.'},
+        schema={'name': 'browser_vault', 'description': 'Secure ENV: Telegram HTTPS form for login, username, password, optional TOTP setup key, payment card storage, or verification code/passcode. Use mode=login (default) to SAVE credentials for an HTTPS origin in encrypted profile Vault; no open browser required, no automatic filling or sign-in. Later fill the matching site through native Vault tools. Use mode=code to FILL a recognized code/passcode field in an attached browser, without Vault storage or explicit site-form submission. Optional parent enables bounded nested iframe discovery under the task-selected page; input can auto-submit or authorize including 3-D Secure. Accepts 4-16 printable ASCII characters including punctuation, no whitespace. A native secret prompt returning prompt_unavailable does NOT establish that this plugin is unavailable: use the matching mode here in an authorized Telegram session. Payment mode saves card fields including CVC in encrypted native Vault for an exact HTTPS origin; no browser required, no fill, no payment authorization. Later native fill needs explicit human payment-fill confirmation; for supported exact hosted-card iframes discover secure_payment_fill, the additive protected plugin path with the same native human consent. Never retry a decline. No mode needs a site-specific registered operation. Never put secrets in arguments or chat. Links grant access to chat readers. For workflow and failure diagnosis load the plugin usage skill.',
+                'parameters': {'type': 'object', 'properties': {'origin': {'type': 'string', 'description': 'Exact HTTPS origin to store credentials for; for code mode, the exact code document origin (may differ from the parent). No path or trailing slash.'},
                     'label': {'type': 'string', 'description': 'Short public site label'},
-                    'selection': {'type': 'string', 'description': 'Code mode only: opaque candidate returned by selection_required. Hermes chooses using its login context; never ask the user to identify a tab.'},
+                    'selection': {'type': 'string', 'description': 'Code mode only: opaque candidate returned by selection_required. Hermes chooses using its login context; repeat the exact parent if supplied; never ask the user to identify a tab.'},
+                    'parent': {'type': 'string', 'description': 'Code mode only: exact task-selected supervisor parent target ID for bounded nested iframe discovery. Origin must be the actual code document HTTPS origin. Omit for unchanged top-level discovery. Input may auto-submit/authorize including 3-D Secure; development approval is not banking authorization.'},
                     'mode': {'type': 'string', 'enum': ['login', 'code', 'payment'], 'description': 'login (default): save username/password and optional TOTP key without a browser. code: fill an attached verification-code/passcode field, no storage. payment: save a card including CVC, no browser, fill or payment authorization.'}}, 'required': ['origin', 'label'], 'additionalProperties': False}},
         handler=vault_tool, is_async=True)
     ctx.register_skill('setup', Path(__file__).parent / 'setup' / 'SKILL.md',
@@ -657,10 +736,12 @@ def register(ctx):
                          args_hint='<profile> [field1,field2]|setup|status|cancel')
     def close():
         nonlocal closed
-        closed = True
+        with runtime_lock:
+            closed = True
+            for runtime in runtimes.values():
+                runtime.close()
         payment_selection.close()
-        for runtime in runtimes.values():
-            runtime.close()
+        code_selection.close()
         from .operations import clear_consumers
         clear_consumers(home)
     ctx.on_unload(close)
