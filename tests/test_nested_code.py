@@ -175,7 +175,7 @@ def test_previous_value_tamper_stops_later_write(nested):
 
 @pytest.mark.parametrize('sites', [('parent.test', 'parent.test'), ('middle.test', 'leaf.test'), ('parent.test', 'leaf.test'), ('middle.test', 'middle.test')])
 @pytest.mark.parametrize('split', [False, True])
-def test_registered_nested_https(nested, sites, split, tmp_path, monkeypatch, attack=None, focus_exit=None, wrongsite_hook=None):
+def test_registered_nested_https(nested, sites, split, tmp_path, monkeypatch, attack=None, focus_exit=None, wrongsite_hook=None, field_selector=None, markup=None):
     import asyncio
     from types import SimpleNamespace
     from urllib.parse import urlsplit
@@ -192,6 +192,8 @@ def test_registered_nested_https(nested, sites, split, tmp_path, monkeypatch, at
     from tools.registry import registry
 
     origin, leaf = setup_chain(nested, sites, split)
+    if markup is not None:
+        leaf.evaluate('(html)=>document.body.innerHTML=html', markup)
     if focus_exit:
         nested.page.evaluate('document.body.insertAdjacentHTML("beforeend", "<button id=exit>Elsewhere</button>")')
         leaf.evaluate('(event)=>document.querySelector("input").addEventListener(event,()=>top.document.querySelector("#exit").focus(),{once:true})', focus_exit)
@@ -226,7 +228,7 @@ def test_registered_nested_https(nested, sites, split, tmp_path, monkeypatch, at
         invoke_hook('pre_gateway_dispatch', event=event, gateway=gateway)
         tokens = sc.set_session_vars(platform='telegram', user_id='7', chat_id='-600', chat_type='group', session_id=nested.sup.task_id, session_key='key', cron_session='')
         try:
-            raw = registry.dispatch('browser_vault', {'origin': origin, 'label': 'Synthetic', 'mode': 'code', 'parent': nested.parent}, task_id=nested.sup.task_id, session_id=nested.sup.task_id)
+            raw = registry.dispatch('browser_vault', {'origin': origin, 'label': 'Synthetic', 'mode': 'code', 'parent': nested.parent, **({'field_selector': field_selector} if field_selector is not None else {})}, task_id=nested.sup.task_id, session_id=nested.sup.task_id)
             result = json.loads(raw)
             assert result['status'] == ('unknown' if refusal else 'filled') and len(sent) == 1, result
             assert synthetic not in raw and 'https://' not in raw.replace(origin, '')

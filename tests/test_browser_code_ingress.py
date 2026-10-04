@@ -67,7 +67,7 @@ def test_https_code_fill_no_vault_replay_and_no_echo(harness, caplog, code):
 def test_google_style_code_field_length(harness, maximum, expected):
     _, cfg, _, root, _, state, _, _ = harness
     state['controls'][0].update(type='tel', name='code', autocomplete='',
-                                label='Введите код', maxLength=maximum)
+                                label='Введите код подтверждения', maxLength=maximum)
     links, token = issue(harness)
     status, result = post(cfg, root, '/submit', {
         'token': token, 'initData': '', 'values': ['A1B2C3']})
@@ -79,7 +79,8 @@ def test_google_style_code_field_length(harness, maximum, expected):
 
 @pytest.mark.parametrize('name,label,duplicate', [
     ('postal_code', 'Postal code', False), ('promo_code', 'Promo code', False),
-    ('code', 'Unrelated value', False), ('code', 'Введите код', True),
+    ('code', 'Unrelated value', False), ('code', 'Введите код подтверждения', True),
+    ('code', 'Code', False), ('code', 'Введите код', False),
 ])
 def test_localized_code_fallback_does_not_guess(harness, name, label, duplicate):
     _, cfg, _, root, _, state, scripts, _ = harness

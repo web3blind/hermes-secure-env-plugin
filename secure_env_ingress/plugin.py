@@ -392,13 +392,18 @@ def register(ctx):
                 value = var.get()
                 return None if value is sc._UNSET else value
             if (closed or not isinstance(args, dict) or
-                    (not {'origin', 'label'}.issubset(args) or set(args) - {'origin', 'label', 'mode', 'selection', 'parent'}) or
+                    (not {'origin', 'label'}.issubset(args) or set(args) - {'origin', 'label', 'mode', 'selection', 'parent', 'field_selector'}) or
                     args.get('mode', 'login') not in ('login', 'code', 'payment')):
                 raise ValueError('invalid request')
             code_mode = args.get('mode', 'login') == 'code'
             payment_mode = args.get('mode', 'login') == 'payment'
             if 'parent' in args and (not code_mode or not isinstance(args['parent'], str) or not 1 <= len(args['parent']) <= 100):
                 raise ValueError('invalid code parent')
+            if 'field_selector' in args:
+                from .code_targets import validate_field_selector
+                if not code_mode or args['field_selector'] is None:
+                    raise ValueError('invalid selector mode')
+                validate_field_selector(args['field_selector'], args.get('parent'))
             if 'selection' in args and (not code_mode or not isinstance(args['selection'], str) or len(args['selection']) > 100):
                 raise ValueError('invalid selection')
             if bound(sc._SESSION_PLATFORM) != 'telegram' or bound(sc._CRON_SESSION) != '':
@@ -428,7 +433,7 @@ def register(ctx):
                 scope = (str(home), sid, skey, owner_text, str(chat), str(thread))
                 batch = threading.Event()
                 ownership = _CodeChoice(code_selection, batch)
-                choice = asyncio.create_task(asyncio.to_thread(ownership.run, scope, args['origin'], args['label'], task_id, args.get('selection'), args.get('parent')))
+                choice = asyncio.create_task(asyncio.to_thread(ownership.run, scope, args['origin'], args['label'], task_id, args.get('selection'), args.get('parent'), args.get('field_selector')))
                 try:
                     await asyncio.shield(choice)
                     target, response = ownership.take()
@@ -728,6 +733,7 @@ def register(ctx):
                     'label': {'type': 'string', 'description': 'Short public site label'},
                     'selection': {'type': 'string', 'description': 'Code mode only: opaque candidate returned by selection_required. Hermes chooses using its login context; repeat the exact parent if supplied; never ask the user to identify a tab.'},
                     'parent': {'type': 'string', 'description': 'Code mode only: exact task-selected parent target ID for bounded nested iframe discovery. A different supervisor page requires host creation-owner proof for a private exact attachment. Origin must be the actual code document HTTPS origin. Omit for unchanged top-level discovery. Input may auto-submit/authorize including 3-D Secure; development approval is not banking authorization.'},
+                    'field_selector': {'type': 'string', 'minLength': 1, 'maxLength': 256, 'description': 'Code mode only; requires exact task-owned parent. CSS discovery-only hint for one permissible original input across matching-origin documents. Unknown fields require name=code, a form, numeric inputmode and maxlength 4–16. No password/payment/promo controls, shadow traversal or fill-time selector lookup; all protected HTTPS owner/target guards remain. Repeat unchanged when selecting.'},
                     'mode': {'type': 'string', 'enum': ['login', 'code', 'payment'], 'description': 'login (default): save username/password and optional TOTP key without a browser. code: fill an attached verification-code/passcode field, no storage. payment: save a card including CVC, no browser, fill or payment authorization.'}}, 'required': ['origin', 'label'], 'additionalProperties': False}},
         handler=vault_tool, is_async=True)
     ctx.register_skill('setup', Path(__file__).parent / 'setup' / 'SKILL.md',

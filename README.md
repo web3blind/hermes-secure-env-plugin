@@ -143,6 +143,53 @@ On `expired`, reissue only when the user is ready. On `unknown`, inspect the bro
 
 These instructions do not change field recognition, origin/form guards or native login filling, and require no Hermes core patch. Tool descriptions/skill registration take effect when the plugin is reloaded; an already-running conversation can still contain older guidance. This improves discovery, not a guarantee of every model's choice or every site's compatibility.
 
+## Conservative code discovery and explicit field hint
+
+Code discovery recognizes Russian verification/one-time phrases such as
+«Введите код подтверждения», «Одноразовый код» and «Код верификации» from
+associated labels, placeholders, aria-label and aria-labelledby text. Bare
+`Code` / «Код» alone is not verification evidence. Promo/coupon, payment and
+password semantics are excluded before native OTP classification. Existing
+recognized access-passcodes remain supported; password-type controls are never
+permitted by the explicit hint. This is plugin policy, not a core classifier edit.
+Author.Today's historical `name=Code` / confirmation placeholder motivated the
+semantic fix; its actual current DOM was not inspected or cloned.
+
+If automatic discovery cannot recognize an intended OTP-shaped control:
+
+```json
+{"origin":"https://example.com","label":"Example verification","mode":"code","parent":"EXACT_TASK_OWNED_PARENT_TARGET_ID","field_selector":"input[name=Code]"}
+```
+
+`field_selector` is optional, code-only, a 1–256-character CSS **discovery hint**,
+not executable code or permission to enter any secret. It requires the explicit
+owned parent and exactly one match across all matching-origin documents under
+that parent (including the parent document itself). Invalid selectors, multiple
+matches, hidden/disabled/readonly/non-input controls, promo/password/payment
+semantics and non-OTP autocomplete refuse before requesting the secret.
+Otherwise-unrecognized fields additionally require exact input name `code`
+(case-insensitive), an actual form, `inputmode=numeric` and `maxlength=4..16`.
+Unbounded arbitrary text/password/key/PIN inputs are not fallback targets.
+The explicit selector selects one full-code input, not split controls.
+
+The selector is never evaluated again at fill time. Discovery retains the
+original isolated-world document/input/form/attributes and the existing sticky
+mutation/navigation, origin/ownership/generation/captured-wire/ancestor/focus
+fences. Navigation, replacement or form mutation refuses; no alternate control
+is searched or filled. Selection lineage includes the exact hint if supplied.
+The protected HTTPS form still requires separate authorized owner/session,
+trusted delivery and user secret submission; a selector supplies none of these.
+Same-process/OOPIF support uses existing bounded traversal; custom shadow roots
+remain unsupported. No automatic submit, transaction permission or real-site
+compatibility guarantee is added. Input can itself authorize an operation.
+
+Imported local redaction policy is retained: PAN is globally registered;
+OTP and CVC are **context-only** on hosts supporting `kind`, not unconditionally
+masked wherever a short string appears. Cardholder, expiry and postal metadata
+are not registered as secrets. Older host APIs without `kind` use stricter global
+registration for OTP/CVC rather than skipping redaction; this can cause more
+false-positive masking. Incompatible/failed redaction registration refuses.
+
 ### Standalone verification code and plugin-owned selection (0.6.6)
 
 When the already-attached browser page asks for an email, SMS or authenticator one-time code without a new username/password, use the same plugin tool with `{"origin":"https://example.com","label":"Example verification","mode":"code"}`. The owner receives a single-use HTTPS form with one masked **Verification code** field. Enter the code there (4–16 printable ASCII characters, including punctuation; no spaces or control characters), never in chat or tool arguments. No saved login or authenticator seed is required. The code is not stored in Vault, `.env`, or on disk; the form submits it to the live HTTPS runtime, which inspects the existing page and fills its unambiguous code control over the captured supervisor's CDP WebSocket. The site form is **not** explicitly submitted; some sites auto-submit on input. The tool reports `filled` only after the supervisor returns an exact fill count; uncertain outcomes require checking the page before retrying. The link expires within 240 seconds and cancellation, supersession, replay, changed page/origin/profile, or missing/ambiguous controls fail closed. Numeric and alphanumeric codes are supported, including standard adjacent one-character boxes.

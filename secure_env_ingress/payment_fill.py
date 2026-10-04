@@ -722,11 +722,10 @@ def approved_fill(target, handle, scope_guard, resume_existing=False):
         stage = 'mapping'
         secret = backend.resolve_secret(handle)
         fills = mapped_fills(target.controls, secret)
-        for value in secret.values():
-            register_vault_redaction_value(value)
-        # Register derived expiry as well as raw fields before page contact.
-        for f in fills:
-            register_vault_redaction_value(f['value'])
+        # Mirror native Vault policy: payment metadata is not a global secret.
+        register_vault_redaction_value(secret.get('card_number', ''))
+        from .redaction_compat import register_context_secret
+        register_context_secret(secret.get('cvc', ''), kind='cvc')
         sup, sid, obj = target.supervisor, target.child_sid, target.child_guard
         stage = 'format'
         for i, f in enumerate(fills):

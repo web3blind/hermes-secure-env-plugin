@@ -183,8 +183,26 @@ def _document_capacity(sup, sid, context=None, doc=None):
         _call(sup, 'Runtime.releaseObject', {'objectId': doc}, sid)
 
 
-def discover(origin, label, task, parent):
+def _inspection_js(nonce, selector):
     from agent.vault_login_classifier import build_inspection_js
+    return '(() => {const rows=JSON.parse(' + build_inspection_js(nonce) + ');const selector=' + json.dumps(selector) + r''';
+      const nodes=Array.from(document.querySelectorAll("input,select"));
+      const matches=selector===null?[]:Array.from(document.querySelectorAll(selector));
+      for(const row of rows){
+        const e=nodes[row.index];
+        row.selected=matches.includes(e)&&!e.matches(':disabled')&&!e.closest('[inert]')&&
+          e.getAttribute('aria-disabled')!=='true'&&e.getAttribute('aria-readonly')!=='true'&&
+          getComputedStyle(e).visibility==='visible';
+        row.inputMode=e.inputMode;row.fieldName=e.name;
+      }
+      const raw=JSON.stringify(rows);const guard=(''' + _GUARD + r''')(nodes,true);
+      return {raw,nodes,matchCount:matches.length,href:location.href,guard,close(){guard.close()}};
+    })()'''
+
+
+def discover(origin, label, task, parent, field_selector=None):
+    from .code_targets import validate_field_selector
+    validate_field_selector(field_selector, parent)
     sup = _supervisor(task)
     from .parent_session import ParentSession
     parent_session = ParentSession(sup, parent)
@@ -193,6 +211,7 @@ def discover(origin, label, task, parent):
     lease = _Lease(sup)
     lease.parent_session = parent_session
     targets, visited = [], set()
+    selector_matches = []
     deadline = time.monotonic() + 120
 
     def visit(sid, frame, ancestry, depth):
@@ -206,18 +225,21 @@ def discover(origin, label, task, parent):
         if capacity is not True:
             raise ValueError('unsupported document')
         _document_capacity(sup, sid, context)
-        if depth and actual == origin:
+        if actual == origin:
             nonce = secrets.token_hex(12)
             inspector = lease.keep(sid, _eval(sup, sid, context,
-                '(() => {const raw=' + build_inspection_js(nonce) + ';const nodes=Array.from(document.querySelectorAll("input,select"));const guard=(' + _GUARD + ')(nodes,true);return {raw,nodes,href:location.href,guard,close(){guard.close()}}})()')['objectId'])
+                _inspection_js(nonce, field_selector))['objectId'])
             raw = _invoke(sup, sid, inspector, 'function(){return this.raw}').get('value')
             if not isinstance(raw, str) or len(raw) > 100000:
                 raise ValueError('inspection capacity')
             rows = json.loads(raw)
             if not isinstance(rows, list) or len(rows) > 200:
                 raise ValueError('control capacity')
+            if field_selector is not None:
+                selector_matches.append(_invoke(sup, sid, inspector, 'function(){return this.matchCount}').get('value'))
             groups = {}
-            for c in _classified(rows):
+            classified = _classified(rows, explicit=True) if field_selector is not None else _classified(rows)
+            for c in classified:
                 groups.setdefault(c.control.form_index, []).append(c)
             for controls in groups.values():
                 controls.sort(key=lambda c: c.control.index)
@@ -235,7 +257,7 @@ def discover(origin, label, task, parent):
                 href = _invoke(sup, sid, inspector, 'function(){return this.href}').get('value')
                 targets.append(NestedCodeTarget(origin, label, task, parent, nonce, href,
                     tuple(controls), sup, parent, frame, psid, sid, guard, ancestry, lease,
-                    time.monotonic() + 240))
+                    time.monotonic() + 240, field_selector=field_selector))
         owners = lease.keep(sid, _eval(sup, sid, context, 'Array.from(document.querySelectorAll("iframe,frame"))')['objectId'])
         count = _invoke(sup, sid, owners, 'function(){return this.length}').get('value')
         if not isinstance(count, int) or count > 20:
@@ -253,6 +275,8 @@ def discover(origin, label, task, parent):
     try:
         root = _call(sup, 'Page.getFrameTree', {}, psid)['result']['frameTree']['frame']['id']
         visit(psid, root, (), 0)
+        if field_selector is not None and (sum(selector_matches) != 1 or len(targets) != 1):
+            raise ValueError('nonunique or inadmissible code selector')
         lease.refs = len(targets)
         for target in targets:
             assert_target(target)
@@ -290,8 +314,8 @@ def assert_target(target):
 
 def fill(target, code, expires_at):
     from agent.vault_login_classifier import build_otp_fills
-    from agent.redact import register_vault_redaction_value
-    register_vault_redaction_value(code)
+    from .redaction_compat import register_context_secret
+    register_context_secret(code, kind='otp')
     fills = build_otp_fills(list(target.controls), code)
     if not fills or len(fills) != len(target.controls):
         raise ValueError('invalid code fields')

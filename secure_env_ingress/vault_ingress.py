@@ -215,8 +215,8 @@ def fill_verification_code(target: VaultTarget, code: str, *, expires_at: float)
     from .code_targets import CodeTarget, fill
     if isinstance(target, CodeTarget):
         return fill(target, code, expires_at)
-    from agent.vault_login_classifier import (LoginControl, build_fill_js,
-        build_inspection_js, build_otp_fills, classify_otp_controls)
+    from agent.vault_login_classifier import build_fill_js, build_inspection_js, build_otp_fills
+    from .code_targets import _classified
     if not isinstance(code, str) or not re.fullmatch(r'[!-~]{4,16}', code):
         raise ValueError('invalid code')
     assert_browser_target(target)
@@ -232,19 +232,7 @@ def fill_verification_code(target: VaultTarget, code: str, *, expires_at: float)
         raw = json.loads(raw)
     if not isinstance(raw, list):
         raise ValueError('inspection failed')
-    descriptors = [LoginControl.from_dict(item) for item in raw if isinstance(item, dict)]
-    # Some localized verification forms omit autocomplete and use only name=code.
-    # Keep exact-name matching narrow: never select postal/promo/security-code fields
-    # merely because their name contains the word 'code'. Include every candidate
-    # so the ambiguity check still refuses multiple unrelated code fields.
-    from agent.vault_login_classifier import ClassifiedLoginControl
-    controls = classify_otp_controls(descriptors)
-    classified_indices = {item.control.index for item in controls}
-    for control in descriptors:
-        if (control.index not in classified_indices and control.name.split()[:1] == ['code']
-                and control.type in ('text', 'tel', 'number', '')
-                and re.search(r'\b(?:code|код)\b', control.label, re.IGNORECASE)):
-            controls.append(ClassifiedLoginControl(control, 70, 'one-time-code'))
+    controls = _classified(raw)
     controls.sort(key=lambda item: item.control.index)
     if not controls:
         raise ValueError('no code field')

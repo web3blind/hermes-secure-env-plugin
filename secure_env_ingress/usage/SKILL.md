@@ -39,7 +39,8 @@ Never put card details in chat/tool arguments, `.env`, logs, or ordinary browser
 For a code form inside an iframe, call `browser_vault` with `mode="code"`,
 `parent` equal to the exact **task-selected page target ID**, and
 `origin` equal to the code document's exact HTTPS origin (not necessarily the
-parent origin). No global page guessing or arbitrary selectors/CDP endpoints.
+parent origin). No global page guessing or arbitrary CDP endpoints; the optional
+code-only discovery hint below does not bypass admissibility or ownership.
 If the supervisor is attached elsewhere, a private exact-parent session requires
 read-only host creation-ledger proof of the same profile/task owner and immutable
 browser generation. Merely visible or pre-existing unrecorded tabs refuse. This
@@ -122,6 +123,53 @@ Native human consent identifies the public card label and exact frame origin. De
 Supported candidates are one complete native-classified card form (card number + CVC + combined expiry or separate month/year), with unique roles and any optional cardholder/postal controls backed by saved fields. Text/tel/password/number inputs and selects must accept the mapped strings, configured maximum lengths/patterns and exact select option values. Only card-number readback may contain single ASCII spaces between digit groups, with exactly the original ASCII digit sequence; leading/trailing/repeated spaces, changed digits, Unicode, hyphens and foreign characters refuse. Every other field uses exact string readback, without normalization. Combined expiry is **MM/YY**, e.g. stored year **2031 → 31**; separate year preserves **2031**, never silently truncates to two digits. Explicit incompatible combined placeholders such as MM/YYYY, type=month, unsupported option values, duplicate roles, mixed combined/separate expiry and incomplete forms fail closed. Split fields across multiple frames, nested frames, opaque/sandbox origins, shadow-DOM controls, third-party manager unlocking and universal provider compatibility are not supported by this adapter. Do not inject card values with general browser JS/input tools.
 
 `filled` confirms only guarded field setters/readback, not purchase/sign-in/registration. `target_refused` is a pre-write refusal; `unknown` means a write was attempted and may be partial. Verify site state without reading card values before any retry; never auto-retry a decline or unknown result. There is **no submit, Pay click, registration action or payment authorization**. Sites may act on input; consent remains required. Real provider/Computop checkout acceptance and Telegram device/button round-trips are not implied by synthetic Chromium tests. As with native filling, a compromised right-origin site, same-UID/root process, or compromised browser/OS is outside the guarantee; separate CDP processes cannot offer a global atomic transaction against adversarial concurrent scripts. Python memory zeroization is not guaranteed.
+
+## Conservative code discovery and explicit field hint
+
+Code discovery recognizes Russian verification/one-time phrases such as
+«Введите код подтверждения», «Одноразовый код» and «Код верификации» from
+associated labels, placeholders, aria-label and aria-labelledby text. Bare
+`Code` / «Код» alone is not verification evidence. Promo/coupon, payment and
+password semantics are excluded before native OTP classification. Existing
+recognized access-passcodes remain supported; password-type controls are never
+permitted by the explicit hint. This is plugin policy, not a core classifier edit.
+Author.Today's historical `name=Code` / confirmation placeholder motivated the
+semantic fix; its actual current DOM was not inspected or cloned.
+
+If automatic discovery cannot recognize an intended OTP-shaped control:
+
+```json
+{"origin":"https://example.com","label":"Example verification","mode":"code","parent":"EXACT_TASK_OWNED_PARENT_TARGET_ID","field_selector":"input[name=Code]"}
+```
+
+`field_selector` is optional, code-only, a 1–256-character CSS **discovery hint**,
+not executable code or permission to enter any secret. It requires the explicit
+owned parent and exactly one match across all matching-origin documents under
+that parent (including the parent document itself). Invalid selectors, multiple
+matches, hidden/disabled/readonly/non-input controls, promo/password/payment
+semantics and non-OTP autocomplete refuse before requesting the secret.
+Otherwise-unrecognized fields additionally require exact input name `code`
+(case-insensitive), an actual form, `inputmode=numeric` and `maxlength=4..16`.
+Unbounded arbitrary text/password/key/PIN inputs are not fallback targets.
+The explicit selector selects one full-code input, not split controls.
+
+The selector is never evaluated again at fill time. Discovery retains the
+original isolated-world document/input/form/attributes and the existing sticky
+mutation/navigation, origin/ownership/generation/captured-wire/ancestor/focus
+fences. Navigation, replacement or form mutation refuses; no alternate control
+is searched or filled. Selection lineage includes the exact hint if supplied.
+The protected HTTPS form still requires separate authorized owner/session,
+trusted delivery and user secret submission; a selector supplies none of these.
+Same-process/OOPIF support uses existing bounded traversal; custom shadow roots
+remain unsupported. No automatic submit, transaction permission or real-site
+compatibility guarantee is added. Input can itself authorize an operation.
+
+Imported local redaction policy is retained: PAN is globally registered;
+OTP and CVC are **context-only** on hosts supporting `kind`, not unconditionally
+masked wherever a short string appears. Cardholder, expiry and postal metadata
+are not registered as secrets. Older host APIs without `kind` use stricter global
+registration for OTP/CVC rather than skipping redaction; this can cause more
+false-positive masking. Incompatible/failed redaction registration refuses.
 
 ## Standalone code or recognized access-passcode field
 
