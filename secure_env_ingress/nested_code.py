@@ -168,13 +168,15 @@ def _document_capacity(sup, sid, context=None, doc=None):
     if doc is None:
         doc = _eval(sup, sid, context, 'document')['objectId']
     try:
-        root = _call(sup, 'DOM.describeNode', {'objectId': doc, 'depth': 16, 'pierce': True}, sid)['result']['node']
+        root = _call(sup, 'DOM.describeNode', {'objectId': doc, 'depth': 32, 'pierce': True}, sid)['result']['node']
         pending, count = [root], 0
         while pending:
             node = pending.pop()
             count += 1
-            if count > 2000 or any(s.get('shadowRootType') != 'user-agent' for s in node.get('shadowRoots', [])):
-                raise ValueError('unsupported shadow or document capacity')
+            if count > 2000:
+                raise ValueError('unsupported document capacity')
+            if any(s.get('shadowRootType') != 'user-agent' for s in node.get('shadowRoots', [])):
+                raise ValueError('unsupported shadow')
             children = node.get('children', [])
             if node.get('childNodeCount', 0) > len(children):
                 raise ValueError('unsupported document depth')
@@ -221,8 +223,12 @@ def discover(origin, label, task, parent, field_selector=None):
         sid, context = _context(sup, sid, frame, lease)
         actual = _eval(sup, sid, context, 'self.origin', True).get('value')
         strict_origin(actual)  # Opaque/sandbox/non-HTTPS ancestors are unsupported.
-        capacity = _eval(sup, sid, context, '(() => {const all=document.querySelectorAll("*");return all.length<=2000&&!Array.from(all).some(e=>e.shadowRoot)})()', True).get('value')
-        if capacity is not True:
+        capacity = _eval(sup, sid, context, '(() => {const all=document.querySelectorAll("*");if(all.length>2000)return "capacity";if(Array.from(all).some(e=>e.shadowRoot))return "shadow";return "ok"})()', True).get('value')
+        if capacity == 'capacity':
+            raise ValueError('unsupported document capacity')
+        if capacity == 'shadow':
+            raise ValueError('unsupported shadow')
+        if capacity != 'ok':
             raise ValueError('unsupported document')
         _document_capacity(sup, sid, context)
         if actual == origin:
@@ -275,8 +281,11 @@ def discover(origin, label, task, parent, field_selector=None):
     try:
         root = _call(sup, 'Page.getFrameTree', {}, psid)['result']['frameTree']['frame']['id']
         visit(psid, root, (), 0)
-        if field_selector is not None and (sum(selector_matches) != 1 or len(targets) != 1):
-            raise ValueError('nonunique or inadmissible code selector')
+        if field_selector is not None:
+            if sum(selector_matches) > 1:
+                raise ValueError('ambiguous code selector')
+            if sum(selector_matches) != 1 or len(targets) != 1:
+                raise ValueError('inadmissible code selector')
         lease.refs = len(targets)
         for target in targets:
             assert_target(target)

@@ -66,7 +66,7 @@ Failure never retargets, retries an unknown write or explicitly submits a site
 form. Earlier split-field values are compared internally, never returned.
 
 Bounds: 8 iframe edges, 40 documents, 20 owners per document, 20 candidate forms,
-200 controls and 2,000 DOM nodes per document (DOM depth 16), 120-second discovery
+200 controls and 2,000 DOM nodes per document (DOM depth 32; truncated trees refuse), 120-second discovery
 and selection lifetime, 240-second target lifetime. HTTPS is required for every
 ancestor. Opaque sandbox documents, custom open/closed shadow roots, ambiguous
 forms, detached/orphan contexts and unsupported navigation authority refuse.
@@ -152,6 +152,21 @@ Otherwise-unrecognized fields additionally require exact input name `code`
 (case-insensitive), an actual form, `inputmode=numeric` and `maxlength=4..16`.
 Unbounded arbitrary text/password/key/PIN inputs are not fallback targets.
 The explicit selector selects one full-code input, not split controls.
+Recognized verification fields do **not** require `inputmode` or `maxlength`;
+those extra requirements apply only to otherwise-unrecognized fallback inputs.
+Hidden duplicate matches still make a selector ambiguous. Inspect nonsensitive
+structure, then qualify by a unique container, for example
+`#active-challenge input[name=Code]`; never add attributes or pick the first match.
+Changing the selector requires fresh discovery, never retargeting an issued form.
+
+Code discovery refusals retain `reason=browser_binding` and add a fixed `detail`:
+`document_depth`, `document_capacity`, `document_shadow`, `document_unsupported`,
+`selector_ambiguous`, `selector_inadmissible`, `parent_ownership`, `parent_binding`,
+`browser_unavailable`, `browser_changed`, `selection_invalid`, `form_ambiguous`,
+`target_changed` or generic `binding_refused`. Depth/size/shadow refusals do not
+permit bypassing limits; selector ambiguity requires a unique selector, not a retry
+of the same hint. Unknown failures remain generic. No raw exceptions, URLs,
+selectors, arbitrary page text or secrets are included in these diagnostics.
 
 The selector is never evaluated again at fill time. Discovery retains the
 original isolated-world document/input/form/attributes and the existing sticky

@@ -1,5 +1,5 @@
 name: secure-env-ingress
-version: 0.7.8
+version: 0.7.9
 description: "Secure ENV: Telegram HTTPS forms for login/password, TOTP keys, payment card storage/protected iframe fill, verification codes/passcodes, .env secrets and trusted operations."
 author: web3blind
 python_dependencies:

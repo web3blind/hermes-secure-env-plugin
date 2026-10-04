@@ -537,9 +537,13 @@ def register(ctx):
                 raise
         except asyncio.CancelledError:
             raise
-        except BaseException:
-            return json.dumps({'success': False, 'reason': reason,
-                'error': 'Form unavailable. Check the active Telegram session, browser page, delivery and HTTPS setup.'})
+        except BaseException as binding_error:
+            response = {'success': False, 'reason': reason,
+                'error': 'Form unavailable. Check the active Telegram session, browser page, delivery and HTTPS setup.'}
+            if reason == 'browser_binding':
+                from .code_targets import binding_failure_detail
+                response['detail'] = binding_failure_detail(binding_error)
+            return json.dumps(response)
         finally:
             if target is not None:
                 from .code_targets import CodeTarget, release

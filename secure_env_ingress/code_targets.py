@@ -80,6 +80,41 @@ def validate_field_selector(selector, parent):
         raise ValueError('invalid code field selector')
 
 
+def binding_failure_detail(error):
+    """Fixed diagnostic codes only; never stringify or return CDP/page errors."""
+    if type(error) is not ValueError or len(error.args) != 1 or not isinstance(error.args[0], str):
+        return 'binding_refused'
+    return {
+        'unsupported document depth': 'document_depth',
+        'unsupported document capacity': 'document_capacity',
+        'unsupported shadow': 'document_shadow',
+        'unsupported document': 'document_unsupported',
+        'ambiguous code selector': 'selector_ambiguous',
+        'inadmissible code selector': 'selector_inadmissible',
+        'parent ownership unavailable': 'parent_ownership',
+        'explicit parent not owned by task': 'parent_ownership',
+        'parent ownership changed': 'parent_ownership',
+        'task-selected parent mismatch': 'parent_binding',
+        'invalid parent': 'parent_binding',
+        'parent unavailable': 'parent_binding',
+        'parent attachment changed': 'parent_binding',
+        'parent session changed': 'parent_binding',
+        'parent session closed': 'parent_binding',
+        'parent connection changed': 'browser_changed',
+        'browser generation unavailable': 'browser_changed',
+        'browser unavailable': 'browser_unavailable',
+        'browser changed': 'browser_changed',
+        'invalid selection': 'selection_invalid',
+        'ambiguous code form': 'form_ambiguous',
+        'stale nested target': 'target_changed',
+        'code document changed': 'target_changed',
+        'inspection changed': 'target_changed',
+        'page changed': 'target_changed',
+        'ancestor changed': 'target_changed',
+        'frame owner changed': 'target_changed',
+    }.get(error.args[0], 'binding_refused')
+
+
 def _classified(raw, explicit=False):
     """Shared plugin-only OTP policy; selector evidence cannot override exclusions.
 
