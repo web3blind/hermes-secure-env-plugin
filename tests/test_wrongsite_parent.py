@@ -11,8 +11,8 @@ nested = chromium_fixture
 
 def authorize(tmp_path, monkeypatch, sup, parent, owner_task=None, home=None):
     from hermes_state import SessionDB
-    from tools.browser_tab_lifecycle import Authority
-    from tools.browser_tab_ownership import OwnershipRegistry
+    from ownership_helpers import OwnershipFixture
+    from secure_env_ingress import parent_session
     home = home or tmp_path / 'home'
     home.mkdir(exist_ok=True)
     monkeypatch.setenv('HERMES_HOME', str(home))
@@ -20,13 +20,9 @@ def authorize(tmp_path, monkeypatch, sup, parent, owner_task=None, home=None):
     db = SessionDB(db_path=home / 'state.db')
     db.create_session(task, 'telegram')
     db.close()
-    owner = Authority(home).owner(task, task)
-    assert not owner[0].startswith('unknown:')
-    ledger = OwnershipRegistry(home / 'browser_tabs.sqlite')
-    token = ledger.admit(*owner, sup.cdp_url, 'synthetic-daemon')
-    ledger.record_created(token, parent)
-    ledger.finish(token)
-    return ledger, token
+    ledger = OwnershipFixture(home, task, sup.cdp_url, parent)
+    monkeypatch.setattr(parent_session, '_proof', ledger.proof)
+    return ledger, ledger.token
 
 
 def wrongsite(nested):

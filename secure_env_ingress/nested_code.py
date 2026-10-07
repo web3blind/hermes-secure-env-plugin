@@ -10,7 +10,7 @@ import time
 
 from .code_targets import CodeTarget, _call, _classified, _supervisor
 from .vault_ingress import strict_origin
-from .bound_cdp import BoundCDP
+from .bound_cdp import BoundCDP, FrameUnavailable
 
 
 # Deliberately conservative: any mutation of a captured document is sticky.
@@ -67,7 +67,7 @@ def _invoke(sup, sid, obj, function, args=(), by_value=True):
 
 
 def _parent(sup, parent):
-    sid = sup._page_session_id
+    sid = sup.page_session_id
     if (not isinstance(parent, str) or not 1 <= len(parent) <= 100 or not sid
             or _call(sup, 'Target.getTargetInfo', {}, sid)['result']['targetInfo']['targetId'] != parent):
         raise ValueError('task-selected parent mismatch')
@@ -148,9 +148,7 @@ def _context(sup, sid, frame, lease):
     params = {'frameId': frame, 'worldName': 'secure-code-' + secrets.token_hex(12)}
     try:
         probe = _call(sup, 'Page.createIsolatedWorld', params, sid)
-    except RuntimeError as exc:
-        if 'No frame for given id found' not in str(exc):
-            raise
+    except FrameUnavailable:
         probe = {}
     if not probe.get('result', {}).get('executionContextId'):
         sid = _call(sup, 'Target.attachToTarget', {'targetId': frame, 'flatten': True})['result']['sessionId']
@@ -303,7 +301,7 @@ def discover(origin, label, task, parent, field_selector=None):
 
 def assert_target(target):
     sup = _supervisor(target.task)
-    if (sup is not getattr(target.supervisor, 'raw', target.supervisor) or target.lease.closed or time.monotonic() >= target.expires
+    if (not target.supervisor.valid() or target.lease.closed or time.monotonic() >= target.expires
             or (target.lease.parent_session.check() if target.lease.parent_session is not None
                 else _parent(sup, target.parent)) != target.parent_sid):
         raise ValueError('stale nested target')
@@ -322,31 +320,33 @@ def assert_target(target):
 
 
 def fill(target, code, expires_at):
-    from agent.vault_login_classifier import build_otp_fills
-    from .redaction_compat import register_context_secret
-    register_context_secret(code, kind='otp')
-    fills = build_otp_fills(list(target.controls), code)
-    if not fills or len(fills) != len(target.controls):
-        raise ValueError('invalid code fields')
-    maximum = target.controls[0].control.max_length
-    if len(fills) == 1 and maximum is not None and maximum < len(code):
-        raise ValueError('code too long')
-    for i, f in enumerate(fills):
-        if time.monotonic() >= expires_at:
-            return False
-        assert_target(target)
-        if _invoke(target.supervisor, target.leaf_sid, target.leaf_guard,
-                'function(i){return this.focus(i)}', (i,)).get('value') is not True:
-            return False
-        assert_target(target)
-        if time.monotonic() >= expires_at:
-            return False
-        result = _invoke(target.supervisor, target.leaf_sid, target.leaf_guard,
-            'function(i,v){return this.write(i,v)}', (i, f['value'])).get('value')
-        if not isinstance(result, dict) or result != {'written': True, 'valid': True}:
-            return False
-        assert_target(target)
-    return True
+    from .bound_cdp import dispatch_scope
+    with dispatch_scope(min(expires_at, target.expires)):
+        from agent.vault_login_classifier import build_otp_fills
+        from .redaction_compat import register_context_secret
+        register_context_secret(code, kind='otp')
+        fills = build_otp_fills(list(target.controls), code)
+        if not fills or len(fills) != len(target.controls):
+            raise ValueError('invalid code fields')
+        maximum = target.controls[0].control.max_length
+        if len(fills) == 1 and maximum is not None and maximum < len(code):
+            raise ValueError('code too long')
+        for i, f in enumerate(fills):
+            if time.monotonic() >= expires_at:
+                return False
+            assert_target(target)
+            if _invoke(target.supervisor, target.leaf_sid, target.leaf_guard,
+                    'function(i){return this.focus(i)}', (i,)).get('value') is not True:
+                return False
+            assert_target(target)
+            if time.monotonic() >= expires_at:
+                return False
+            result = _invoke(target.supervisor, target.leaf_sid, target.leaf_guard,
+                'function(i,v){return this.write(i,v)}', (i, f['value'])).get('value')
+            if not isinstance(result, dict) or result != {'written': True, 'valid': True}:
+                return False
+            assert_target(target)
+        return True
 
 
 def release(target):

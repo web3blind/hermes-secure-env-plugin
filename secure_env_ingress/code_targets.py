@@ -28,20 +28,23 @@ class CodeTarget:
 
 def _supervisor(task):
     from tools.browser_supervisor import SUPERVISOR_REGISTRY
-    sup = SUPERVISOR_REGISTRY.get(task)
-    if not task or task == 'default' or sup is None or sup.task_id != task or not sup._active:
+    from .bound_cdp import require_capture
+    if not task or task == 'default':
+        raise ValueError('browser unavailable')
+    try:
+        sup = SUPERVISOR_REGISTRY.capture(task)
+    except Exception:
+        raise ValueError('public browser capture unavailable') from None
+    require_capture(sup)
+    if sup.task_id != task:
         raise ValueError('browser unavailable')
     return sup
 
 
 def _call(sup, method, params=None, sid=None):
     from .bound_cdp import BoundCDP
-    if isinstance(sup, BoundCDP):
-        return sup.call(method, params, sid)
-    from tools.browser_supervisor import _schedule
-    if not sup._active or sup._loop is None:
-        raise ValueError('browser unavailable')
-    return _schedule(sup._cdp(method, params or {}, session_id=sid, timeout=5), sup._loop, timeout=6)
+    transport = sup if isinstance(sup, BoundCDP) else BoundCDP(sup)
+    return transport.call(method, params, sid)
 
 
 @contextmanager
@@ -103,6 +106,7 @@ def binding_failure_detail(error):
         'parent connection changed': 'browser_changed',
         'browser generation unavailable': 'browser_changed',
         'browser unavailable': 'browser_unavailable',
+        'public browser capture unavailable': 'browser_unavailable',
         'browser changed': 'browser_changed',
         'invalid selection': 'selection_invalid',
         'ambiguous code form': 'form_ambiguous',
@@ -236,7 +240,7 @@ def assert_target(target):
     from .nested_code import NestedCodeTarget, assert_target as nested_assert
     if isinstance(target, NestedCodeTarget):
         return nested_assert(target)
-    if _supervisor(target.task) is not target.supervisor:
+    if not target.supervisor.is_valid():
         raise ValueError('browser changed')
     with _page(target.supervisor, target.page) as sid:
         if _evaluate(target.supervisor, sid, _guard(target)) is not True:
@@ -244,48 +248,50 @@ def assert_target(target):
 
 
 def fill(target, code, expires_at):
-    from agent.vault_login_classifier import build_otp_fills
-    if not isinstance(code, str) or not re.fullmatch(r'[!-~]{4,16}', code):
-        raise ValueError('invalid code')
-    from .nested_code import NestedCodeTarget, fill as nested_fill
-    if isinstance(target, NestedCodeTarget):
-        return nested_fill(target, code, expires_at)
-    if _supervisor(target.task) is not target.supervisor:
-        raise ValueError('browser changed')
-    fills = build_otp_fills(list(target.controls), code)
-    if len(fills) != len(target.controls):
-        raise ValueError('ambiguous code form')
-    if len(fills) == 1:
-        maximum = target.controls[0].control.max_length
-        if maximum is not None and 0 <= maximum < len(code):
-            raise ValueError('code too long')
-    with _page(target.supervisor, target.page) as sid:
-        if time.monotonic() >= expires_at:
-            raise ValueError('expired')
-        # Focus/input callbacks run synchronously and can mutate later fields.
-        # Keep exact references and recheck after focus, before EVERY setter.
-        js = '(() => { const valid=() => ' + _guard(target) + '; const fills=' + json.dumps(fills) + ''';
-          if (!valid()) return {filled:0};
-          const state=document.__hermesCodeTarget;
-          const nodes=fills.map(f => state.nodes[f.index].element);
-          const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-          let filled=0;
-          for (let i=0; i<fills.length; i++) {
-            if (!valid() || document.__hermesCodeTarget!==state) return {filled};
-            const e=nodes[i];
-            e.focus();
-            if (!valid() || document.__hermesCodeTarget!==state) return {filled};
-            setter.call(e, fills[i].value);
-            filled++;
-            e.dispatchEvent(new Event('input', {bubbles:true}));
-            e.dispatchEvent(new Event('change', {bubbles:true}));
-          }
-          return {filled};
-        })()'''
-        result = _evaluate(target.supervisor, sid, js)
-    if isinstance(result, str):
-        result = json.loads(result)
-    return isinstance(result, dict) and result.get('filled') == len(fills) and bool(fills)
+    from .bound_cdp import dispatch_scope
+    with dispatch_scope(expires_at):
+        from agent.vault_login_classifier import build_otp_fills
+        if not isinstance(code, str) or not re.fullmatch(r'[!-~]{4,16}', code):
+            raise ValueError('invalid code')
+        from .nested_code import NestedCodeTarget, fill as nested_fill
+        if isinstance(target, NestedCodeTarget):
+            return nested_fill(target, code, expires_at)
+        if not target.supervisor.is_valid():
+            raise ValueError('browser changed')
+        fills = build_otp_fills(list(target.controls), code)
+        if len(fills) != len(target.controls):
+            raise ValueError('ambiguous code form')
+        if len(fills) == 1:
+            maximum = target.controls[0].control.max_length
+            if maximum is not None and 0 <= maximum < len(code):
+                raise ValueError('code too long')
+        with _page(target.supervisor, target.page) as sid:
+            if time.monotonic() >= expires_at:
+                raise ValueError('expired')
+            # Focus/input callbacks run synchronously and can mutate later fields.
+            # Keep exact references and recheck after focus, before EVERY setter.
+            js = '(() => { const valid=() => ' + _guard(target) + '; const fills=' + json.dumps(fills) + ''';
+              if (!valid()) return {filled:0};
+              const state=document.__hermesCodeTarget;
+              const nodes=fills.map(f => state.nodes[f.index].element);
+              const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+              let filled=0;
+              for (let i=0; i<fills.length; i++) {
+                if (!valid() || document.__hermesCodeTarget!==state) return {filled};
+                const e=nodes[i];
+                e.focus();
+                if (!valid() || document.__hermesCodeTarget!==state) return {filled};
+                setter.call(e, fills[i].value);
+                filled++;
+                e.dispatchEvent(new Event('input', {bubbles:true}));
+                e.dispatchEvent(new Event('change', {bubbles:true}));
+              }
+              return {filled};
+            })()'''
+            result = _evaluate(target.supervisor, sid, js)
+        if isinstance(result, str):
+            result = json.loads(result)
+        return isinstance(result, dict) and result.get('filled') == len(fills) and bool(fills)
 
 
 def release(target):

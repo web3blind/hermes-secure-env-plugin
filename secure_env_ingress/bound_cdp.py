@@ -1,18 +1,33 @@
-"""Plugin-local CDP transport pinned to one supervisor connection.
+"""Public captured-CDP transport with plugin-owned late cleanup workers.
 
-The host reader owns response demultiplexing; commands never use host _cdp's
-mutable websocket. An attachment owns its late reply before it is sent. Timeouts
-abandon acquisition, not responsibility for disposing that exact session.
+The original handle is the only transport authority. Daemon workers retain
+attachment and disposal responsibility after the caller's finite deadline.
 """
-import asyncio
+from concurrent.futures import Future, TimeoutError as FutureTimeout
 from contextlib import contextmanager
-from contextvars import ContextVar
-import json
+from contextvars import ContextVar, copy_context
+import inspect
 import threading
+import time
 
 CALL_TIMEOUT = 6
 REPLY_TIMEOUT = 5
 _cancelled = ContextVar('secure_env_acquisition_cancelled', default=None)
+_deadline = ContextVar('secure_env_dispatch_deadline', default=None)
+
+
+class FrameUnavailable(ValueError):
+    """Fixed signal for exact OOPIF attachment, without raw CDP error text."""
+
+
+@contextmanager
+def dispatch_scope(deadline):
+    old = _deadline.get()
+    token = _deadline.set(deadline if old is None else min(old, deadline))
+    try:
+        yield
+    finally:
+        _deadline.reset(token)
 
 
 @contextmanager
@@ -51,118 +66,136 @@ class _Acquisition:
             self.transport.dispose(sid)
 
 
+def require_capture(handle):
+    """Refuse old hosts before any command, without private compatibility paths."""
+    try:
+        if not callable(handle.is_valid) or not callable(handle.call):
+            raise ValueError
+        parameters = inspect.signature(handle.call).parameters
+        if not {'session_id', 'timeout', 'before_send'} <= parameters.keys():
+            raise ValueError
+        if not handle.task_id or not handle.page_session_id or not handle.cdp_url or not handle.is_valid():
+            raise ValueError
+    except Exception:
+        raise ValueError('public browser capture unavailable') from None
+
+
 class BoundCDP:
-    def __init__(self, sup):
-        self.raw = sup
-        self.ws, self._loop, self.browser = sup._ws, sup._loop, sup.cdp_url
+    def __init__(self, handle):
+        require_capture(handle)
+        self.raw = handle
+        self.browser = handle.cdp_url
+        self.task_id, self.page_session_id = handle.task_id, handle.page_session_id
         self.cancelled = _cancelled.get()
 
     def valid(self):
-        return (self.raw._active and self.raw._ws is self.ws and self.raw._loop is self._loop
-                and self.raw.cdp_url == self.browser and self.ws is not None
-                and not (self.cancelled is not None and self.cancelled.is_set()))
+        try:
+            return (self.raw.is_valid()
+                    and not (self.cancelled is not None and self.cancelled.is_set()))
+        except Exception:
+            return False
 
     def check(self):
         if not self.valid():
             raise ValueError('parent connection changed or discovery cancelled')
 
-    def socket_closed(self):
-        return (getattr(self.ws, 'closed', False) is True
-                or getattr(getattr(self.ws, 'state', None), 'name', None) == 'CLOSED')
-
-    async def _request(self, method, params, sid, *, cleanup=False, acquisition=None):
-        sup = self.raw
-        # This executes on the captured loop. No await intervenes between this
-        # fence and dispatch. Even if send suspends, it uses the captured wire.
-        if cleanup:
-            if self.socket_closed():
-                raise ValueError('parent connection closed')
-        else:
-            self.check()
-            if acquisition is not None and acquisition.abandoned:
-                raise ValueError('attachment cancelled')
-        call_id, sup._next_call_id = sup._next_call_id, sup._next_call_id + 1
-        payload = {'id': call_id, 'method': method}
-        payload.update({k: v for k, v in (('params', params), ('sessionId', sid)) if v})
-        fut = asyncio.get_running_loop().create_future()
-        sup._pending_calls[call_id] = fut
-        try:
-            await self.ws.send(json.dumps(payload))
-            if acquisition is None:
-                result = await asyncio.wait_for(fut, REPLY_TIMEOUT)
-            else:
-                # Do not cancel/drop an attach response at the inner CDP deadline.
-                # It may be the only way to identify the exact acquired session.
-                while not fut.done():
-                    if self.socket_closed():
-                        raise ValueError('parent connection closed')
-                    await asyncio.wait({fut}, timeout=.1)
-                result = fut.result()
-                attached = result.get('result', {}).get('sessionId')
-                if attached:
-                    if not acquisition.finish(attached):
-                        await self._request('Target.detachFromTarget', {'sessionId': attached}, None, cleanup=True)
-                        raise ValueError('attachment cancelled')
+    def _request(self, method, params, sid, *, cleanup=False, acquisition=None,
+                 stopped=None, deadline=None):
+        operation_cancelled, authorization_deadline = _cancelled.get(), _deadline.get()
+        def before_send():
+            # Pure/nonblocking trusted dispatch hook; never capture or call CDP.
             if not cleanup:
-                self.check()  # Never accept a result from a changed generation.
+                self.check()
+                if operation_cancelled is not None and operation_cancelled.is_set():
+                    raise ValueError('operation cancelled')
+                if authorization_deadline is not None and time.monotonic() >= authorization_deadline:
+                    raise ValueError('authorization expired')
+                if (stopped is not None and stopped.is_set()
+                        or acquisition is not None and acquisition.abandoned):
+                    raise ValueError('attachment cancelled')
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise TimeoutError('parent dispatch timeout')
+        try:
+            result = self.raw.call(method, params, session_id=sid,
+                timeout=None if acquisition is not None or cleanup else REPLY_TIMEOUT,
+                before_send=before_send)
+            if acquisition is not None:
+                attached = result.get('result', {}).get('sessionId')
+                if attached and not acquisition.finish(attached):
+                    self.dispose(attached)
+                    raise ValueError('attachment cancelled')
+            if not cleanup:
+                self.check()
             return result
-        except BaseException:
+        except TimeoutError:
             if acquisition is not None:
                 acquisition.abandon()
-            raise
-        finally:
-            sup._pending_calls.pop(call_id, None)
+            raise TimeoutError('parent command timeout') from None
+        except RuntimeError as error:
+            if acquisition is not None:
+                acquisition.abandon()
+            message = error.args[0] if error.args else None
+            if method == 'Page.createIsolatedWorld' and isinstance(message, str) and 'No frame for given id found' in message:
+                raise FrameUnavailable('frame unavailable') from None
+            raise ValueError('parent connection changed or command refused') from None
+        except Exception:
+            if acquisition is not None:
+                acquisition.abandon()
+            raise ValueError('parent connection changed or discovery cancelled') from None
+
+    @staticmethod
+    def _worker(function):
+        future, context = Future(), copy_context()
+        def run():
+            try:
+                future.set_result(context.run(function))
+            except BaseException as error:
+                future.set_exception(error)
+        threading.Thread(target=run, name='secure-env-cdp', daemon=True).start()
+        return future
 
     def dispose(self, sid, *, wait=False):
-        # Cleanup is exact and can use only the captured socket, even after the
-        # supervisor moved on. It never touches the replacement/default/sibling.
-        if self._loop is None or self._loop.is_closed() or self.socket_closed():
-            return
-        async def cleanup():
+        # Invalidation never permits cleanup on a replacement connection.
+        def cleanup():
             try:
-                await self._request('Target.detachFromTarget', {'sessionId': sid}, None, cleanup=True)
+                self._request('Target.detachFromTarget', {'sessionId': sid}, None, cleanup=True)
             except Exception:
                 pass
-        future = asyncio.run_coroutine_threadsafe(cleanup(), self._loop)
+        future = self._worker(cleanup)
         if wait:
             try:
                 future.result(CALL_TIMEOUT)
             except Exception:
-                pass  # The queued cleanup retains responsibility after timeout.
+                pass  # The worker retains responsibility after caller timeout.
 
     def close_object(self, sid, obj, *, inspection=False):
-        """Internal disposal only: fixed guard close, then independent release.
-
-        No caller-supplied JS can cross this cancellation fence. The queued
-        disposal owns both attempts even after its synchronous caller times out.
-        """
-        if self._loop is None or self._loop.is_closed() or self.socket_closed():
-            return
+        """Fixed guard close and independent release, retained after timeout."""
         function = ('function(){this.guard.close();return true;}' if inspection else
                     'function(){if(this.close)this.close();return true;}')
-        async def cleanup():
+        def cleanup():
             try:
-                await self._request('Runtime.callFunctionOn', {'objectId': obj,
-                    'functionDeclaration': function, 'returnByValue': True}, sid, cleanup=True)
+                closing = self._worker(lambda: self._request('Runtime.callFunctionOn', {'objectId': obj,
+                    'functionDeclaration': function, 'returnByValue': True}, sid, cleanup=True))
+                closing.result(REPLY_TIMEOUT)
             except Exception:
                 pass
             try:
-                await self._request('Runtime.releaseObject', {'objectId': obj}, sid, cleanup=True)
+                self._request('Runtime.releaseObject', {'objectId': obj}, sid, cleanup=True)
             except Exception:
                 pass
-        future = asyncio.run_coroutine_threadsafe(cleanup(), self._loop)
+        future = self._worker(cleanup)
         try:
             future.result(CALL_TIMEOUT)
         except Exception:
-            pass  # Retain exact captured-wire cleanup, never cancel it.
+            pass  # Never cancel the exact original-handle cleanup.
 
     def call(self, method, params=None, sid=None):
-        if self._loop is None or self._loop.is_closed():
-            raise ValueError('parent connection unavailable')
         acquisition = _Acquisition(self) if method == 'Target.attachToTarget' else None
         cleanup = method in ('Target.detachFromTarget', 'Runtime.releaseObject')
-        future = asyncio.run_coroutine_threadsafe(
-            self._request(method, params or {}, sid, acquisition=acquisition, cleanup=cleanup), self._loop)
+        stopped = threading.Event()
+        deadline = time.monotonic() + CALL_TIMEOUT
+        future = self._worker(lambda: self._request(method, params or {}, sid,
+            acquisition=acquisition, cleanup=cleanup, stopped=stopped, deadline=deadline))
         try:
             result = future.result(CALL_TIMEOUT)
             if not cleanup:
@@ -170,10 +203,15 @@ class BoundCDP:
             if acquisition is not None:
                 acquisition.claim()
             return result
-        except BaseException:
+        except FutureTimeout:
+            if not cleanup:
+                stopped.set()
             if acquisition is not None:
                 acquisition.abandon()
-            else:
-                if not cleanup:
-                    future.cancel()
+            raise TimeoutError('parent command timeout') from None
+        except BaseException:
+            if not cleanup:
+                stopped.set()
+            if acquisition is not None:
+                acquisition.abandon()
             raise

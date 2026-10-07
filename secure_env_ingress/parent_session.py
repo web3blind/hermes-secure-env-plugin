@@ -14,7 +14,11 @@ from .bound_cdp import BoundCDP
 
 
 def _proof(task, browser, parent, home):
-    from tools.browser_tab_lifecycle import Authority, readonly
+    try:
+        from tools.browser_tab_lifecycle import Authority, readonly
+    except ImportError:
+        # Optional host capability, not a setting users can create on stock core.
+        raise ValueError('parent ownership unavailable') from None
     owner, generation = Authority(home).owner(task, task)
     if owner.startswith('unknown:'):
         raise ValueError('parent ownership unavailable')
@@ -37,11 +41,11 @@ class ParentSession:
             raise ValueError('invalid parent')
         self.sup, self.parent = sup, parent
         self.home = Path(get_hermes_home()).resolve()
-        self.ws, self.loop, self.browser = sup._ws, sup._loop, sup.cdp_url
+        self.browser = sup.cdp_url
         self.transport = BoundCDP(sup)
         self.lock, self.refs, self.closed = threading.Lock(), {None}, False
         self.private, self.proof, self.sid = False, None, None
-        sid = sup._page_session_id
+        sid = sup.page_session_id
         if sid and _call(self.transport, 'Target.getTargetInfo', {}, sid)['result']['targetInfo']['targetId'] == parent:
             self.sid = sid
         else:
@@ -64,13 +68,13 @@ class ParentSession:
     def check(self):
         from hermes_constants import get_hermes_home
         sup = _supervisor(self.sup.task_id)
-        if (self.closed or sup is not self.sup or sup._ws is not self.ws or sup._loop is not self.loop
+        if (self.closed or not self.sup.is_valid()
                 or sup.cdp_url != self.browser or Path(get_hermes_home()).resolve() != self.home):
             raise ValueError('parent connection changed')
         if self.private:
             if _proof(sup.task_id, self.browser, self.parent, self.home) != self.proof:
                 raise ValueError('parent ownership changed')
-        elif sup._page_session_id != self.sid:
+        elif sup.page_session_id != self.sid:
             raise ValueError('parent attachment changed')
         info = _call(self.transport, 'Target.getTargetInfo', {}, self.sid)['result']['targetInfo']
         if info['targetId'] != self.parent or info['type'] != 'page':

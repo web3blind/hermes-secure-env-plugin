@@ -36,7 +36,7 @@ def test_nested_fill_registers_context_otp(monkeypatch):
     calls = []
     monkeypatch.setattr(redact, 'register_vault_redaction_value', lambda value, *, kind='secret': calls.append((value, kind)))
     with pytest.raises(ValueError):
-        nested_code.fill(SimpleNamespace(controls=()), 'synthetic', 0)
+        nested_code.fill(SimpleNamespace(controls=(), expires=float('inf')), 'synthetic', 0)
     assert calls == [('synthetic', 'otp')]
 
 @pytest.mark.parametrize('old_host', [False, True])
@@ -60,7 +60,7 @@ def test_payment_only_pan_and_context_cvc_not_metadata(monkeypatch, old_host):
     monkeypatch.setattr(payment, 'assert_target', lambda *a: None)
     monkeypatch.setattr(payment, 'mapped_fills', lambda *a: [])
     monkeypatch.setattr(payment, '_invoke', lambda *a: [])
-    target = SimpleNamespace(origin='https://synthetic.test', supervisor=None, child_sid='sid', child_guard='guard', controls=())
+    target = SimpleNamespace(expires=float('inf'), origin='https://synthetic.test', supervisor=None, child_sid='sid', child_guard='guard', controls=())
     result = payment.approved_fill(target, 'synthetic-handle', lambda: None)
     assert result['status'] == 'filled'
     assert calls == [('synthetic-pan', 'secret'), ('synthetic-cvc', 'secret' if old_host else 'cvc')]

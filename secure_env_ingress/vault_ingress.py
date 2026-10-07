@@ -1,7 +1,7 @@
 """Strict live browser/page binding for Telegram native Vault ingress."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import re
 import secrets
@@ -24,6 +24,7 @@ class VaultTarget:
     supervisor_identity: int | None = None
     page_session_id: str | None = None
     browser_backend: str = 'legacy'
+    capture: object = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -122,15 +123,9 @@ def assert_profile_home(home: Path) -> None:
 
 def _attached_supervisor(task_id: str):
     """Only an existing native CDP attachment qualifies; never launch or refocus."""
-    from tools.browser_supervisor import SUPERVISOR_REGISTRY
-    supervisor = SUPERVISOR_REGISTRY.get(task_id)
-    if supervisor is None or supervisor.task_id != task_id:
-        raise ValueError('browser supervisor missing')
-    with supervisor._state_lock:
-        if not supervisor._active or not supervisor._page_session_id:
-            raise ValueError('page unavailable')
-        session = supervisor._page_session_id
-    return supervisor, session
+    from .code_targets import _supervisor
+    supervisor = _supervisor(task_id)
+    return supervisor, supervisor.page_session_id
 
 
 def assert_browser_target(target: VaultTarget) -> None:
@@ -160,10 +155,11 @@ def assert_browser_target(target: VaultTarget) -> None:
     else:
         raise ValueError('unknown browser backend')
     supervisor, session = _attached_supervisor(target.browser_task)
-    if target.supervisor_identity != id(supervisor) or target.page_session_id != session:
+    if (target.capture is None or not target.capture.is_valid()
+            or target.page_session_id != session):
         raise ValueError('page changed')
-    result = supervisor.evaluate_runtime('location.href')
-    href = result.get('result') if result.get('ok') else None
+    from .code_targets import _evaluate
+    href = _evaluate(target.capture, target.page_session_id, 'location.href')
     if not isinstance(href, str):
         raise ValueError('page unavailable')
     from agent.vault_store import normalize_origin
@@ -177,7 +173,7 @@ def assert_browser_target(target: VaultTarget) -> None:
     if target.browser_backend == 'legacy' and (is_browser_use_cli_mode() or browser._active_sessions.get(key) is not record or browser._last_active_session_key.get(target.browser_task) != key):
         raise ValueError('browser changed')
     current_supervisor, current_session = _attached_supervisor(target.browser_task)
-    if current_supervisor is not supervisor or current_session != session:
+    if not target.capture.is_valid() or current_session != session:
         raise ValueError('page changed')
 
 
@@ -196,7 +192,7 @@ def capture_browser_target(origin: str, label: str, task_id: str, session_id: st
         # endpoint; the host exposes no authoritative association to plugins.
         supervisor, page_session = _attached_supervisor(task_id)
         target = VaultTarget(origin, label, task_id, '', id(supervisor), session_id,
-                             session_key, id(supervisor), page_session, 'browser-use')
+                             session_key, id(supervisor), page_session, 'browser-use', supervisor)
         assert_browser_target(target)
         return target
     key = browser._last_active_session_key.get(task_id)
@@ -205,7 +201,7 @@ def capture_browser_target(origin: str, label: str, task_id: str, session_id: st
         raise ValueError('browser missing')
     supervisor, page_session = _attached_supervisor(task_id)
     target = VaultTarget(origin, label, task_id, key, id(record), session_id, session_key,
-                         id(supervisor), page_session)
+                         id(supervisor), page_session, capture=supervisor)
     assert_browser_target(target)
     return target
 
@@ -220,14 +216,13 @@ def fill_verification_code(target: VaultTarget, code: str, *, expires_at: float)
     if not isinstance(code, str) or not re.fullmatch(r'[!-~]{4,16}', code):
         raise ValueError('invalid code')
     assert_browser_target(target)
-    supervisor, session = _attached_supervisor(target.browser_task)
-    if id(supervisor) != target.supervisor_identity or session != target.page_session_id:
+    _, session = _attached_supervisor(target.browser_task)
+    supervisor = target.capture
+    if not supervisor.is_valid() or session != target.page_session_id:
         raise ValueError('page changed')
     nonce = secrets.token_hex(8)
-    inspected = supervisor.evaluate_runtime(build_inspection_js(nonce))
-    if not inspected.get('ok'):
-        raise ValueError('inspection failed')
-    raw = inspected.get('result')
+    from .code_targets import _evaluate
+    raw = _evaluate(supervisor, session, build_inspection_js(nonce))
     if isinstance(raw, str):
         raw = json.loads(raw)
     if not isinstance(raw, list):
@@ -243,15 +238,12 @@ def fill_verification_code(target: VaultTarget, code: str, *, expires_at: float)
             and 0 <= controls[0].control.max_length < len(code)):
         raise ValueError('code field too short')
     assert_browser_target(target)
-    if _attached_supervisor(target.browser_task) != (supervisor, session):
+    if not supervisor.is_valid() or _attached_supervisor(target.browser_task)[1] != session:
         raise ValueError('page changed')
     if time.monotonic() >= expires_at:
         raise ValueError('expired')
-    # The captured supervisor's private CDP WebSocket never places code in argv.
-    result = supervisor.evaluate_runtime(build_fill_js(fills, expected_origin=target.origin, nonce=nonce))
-    if not result.get('ok'):
-        raise ValueError('fill failed')
-    output = result.get('result')
+    # The original public captured handle never places code in argv.
+    output = _evaluate(supervisor, session, build_fill_js(fills, expected_origin=target.origin, nonce=nonce))
     if isinstance(output, str):
         output = json.loads(output)
     return isinstance(output, dict) and output.get('filled') == len(fills) and bool(fills)

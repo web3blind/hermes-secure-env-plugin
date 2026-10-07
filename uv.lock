@@ -197,7 +197,7 @@ wheels = [
 
 [[package]]
 name = "hermes-secure-env-ingress"
-version = "0.7.9"
+version = "0.8.0rc1"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },

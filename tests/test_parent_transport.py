@@ -11,6 +11,7 @@ import pytest
 from secure_env_ingress import parent_session as ps
 from secure_env_ingress.code_targets import _call
 from tools.browser_supervisor import CDPSupervisor
+from tools.browser_supervisor_capture import capture
 
 
 @pytest.fixture
@@ -20,30 +21,49 @@ def transport(monkeypatch, tmp_path):
     thread = threading.Thread(target=loop.run_forever, daemon=True)
     thread.start()
     sup = SimpleNamespace(task_id='synthetic', _loop=loop, cdp_url='ws://isolated/devtools/browser/generation',
-        _active=True, _page_session_id='default', _next_call_id=1, _pending_calls={})
+        _active=True, _stop_requested=False, _page_session_id='default', _next_call_id=1, _pending_calls={})
     sup._cdp = lambda *a, **kw: CDPSupervisor._cdp(sup, *a, **kw)
     sessions = {'default': 'other', 'sibling': 'parent'}
+    registry = SimpleNamespace(get=lambda task: sup if task == sup.task_id else None)
     class Wire:
         def __init__(self):
             self.commands = []
             self.delay = 0
-
+            self.closed = False
+            self.owned = set()
             self.switch_on_send = False
+        def close(self):
+            self.closed = True
+            for sid in self.owned:
+                sessions.pop(sid, None)
+            self.owned.clear()
+            pending = list(sup._pending_calls.values())
+            def fail():
+                for future in pending:
+                    if not future.done():
+                        future.set_exception(ConnectionError('synthetic socket closed'))
+            loop.call_soon_threadsafe(fail)
         async def send(self, raw):
+            assert not self.closed, 'command sent after socket closure'
             msg = json.loads(raw)
             if msg['method'] == 'Target.detachFromTarget' and getattr(self, 'detach_delay', 0):
                 await asyncio.sleep(self.detach_delay)
+            if self.closed:
+                raise ConnectionError('synthetic socket closed')
             self.commands.append(msg)
             if self.switch_on_send:
-                sup._ws = replacement
+                reconnect()
                 await asyncio.sleep(0)
+                raise ConnectionError('synthetic socket closed during send')
             method, params = msg['method'], msg.get('params', {})
             if method == 'Target.attachToTarget':
                 sid = 'private-' + str(msg['id'])
                 sessions[sid] = params['targetId']
+                self.owned.add(sid)
                 result = {'sessionId': sid}
             elif method == 'Target.detachFromTarget':
                 sessions.pop(params['sessionId'], None)
+                self.owned.discard(params['sessionId'])
                 result = {}
             elif method == 'Target.getTargetInfo':
                 target = sessions.get(msg.get('sessionId')) if msg.get('sessionId') else params['targetId']
@@ -53,15 +73,34 @@ def transport(monkeypatch, tmp_path):
             else:
                 result = {}
             def reply():
+                if self.closed:
+                    return
                 fut = sup._pending_calls.get(msg['id'])
                 if fut is not None and not fut.done():
                     fut.set_result({'result': result})
             loop.call_later(self.delay if method == 'Target.attachToTarget' else 0, reply)
     wire, replacement = Wire(), Wire()
+    wire.owned.update(sessions)
     sup._ws = wire
-    monkeypatch.setattr(ps, '_supervisor', lambda _: sup)
+    def reconnect():
+        sup._ws.close()
+        sup._ws = replacement
+        sessions.update(default='other', sibling='parent')
+        replacement.owned.update(('default', 'sibling'))
+    class Facade:
+        def __init__(self):
+            self.handle = capture(registry, sup.task_id)
+        def __getattr__(self, name):
+            if name in ('call', 'is_valid', 'task_id', 'cdp_url', 'page_session_id'):
+                return getattr(self.handle, name)
+            return getattr(sup, name)
+        def reconnect(self):
+            reconnect()
+        def capture(self):
+            return capture(registry, sup.task_id)
+    monkeypatch.setattr(ps, '_supervisor', lambda task: capture(registry, task))
     monkeypatch.setattr(ps, '_proof', lambda *a: ('owner', 'generation', 'call'))
-    yield sup, wire, replacement, sessions
+    yield Facade(), wire, replacement, sessions
     async def stop():
         pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
         for task in pending:
@@ -75,7 +114,7 @@ def transport(monkeypatch, tmp_path):
 
 def test_reconnect_between_check_and_dispatch(transport, monkeypatch):
     sup, wire, replacement, sessions = transport
-    parent = ps.ParentSession(sup, 'parent')
+    parent = ps.ParentSession(sup.handle, 'parent')
     entered, resume = threading.Event(), threading.Event()
     def stall():
         entered.set()
@@ -86,7 +125,7 @@ def test_reconnect_between_check_and_dispatch(transport, monkeypatch):
         with ThreadPoolExecutor(1) as pool:
             future = pool.submit(_call, getattr(parent, 'transport', sup), 'Runtime.evaluate', {'expression': 'synthetic'}, parent.sid)
             time.sleep(.03)
-            sup._ws = replacement
+            sup.reconnect()
             resume.set()
             with pytest.raises(ValueError, match='connection'):
                 future.result(2)
@@ -99,7 +138,7 @@ def test_reconnect_between_check_and_dispatch(transport, monkeypatch):
 
 def test_reconnect_during_send_rejects_result(transport):
     sup, wire, replacement, _ = transport
-    parent = ps.ParentSession(sup, 'parent')
+    parent = ps.ParentSession(sup.handle, 'parent')
     wire.switch_on_send = True
     try:
         with pytest.raises(ValueError, match='connection'):
@@ -112,11 +151,8 @@ def test_reconnect_during_send_rejects_result(transport):
 
 @pytest.mark.parametrize('delay', [.08, .16])
 def test_timed_out_attach_has_late_cleanup_owner(transport, monkeypatch, delay):
-    from tools import browser_supervisor as host
     sup, wire, _, sessions = transport
     wire.delay = delay
-    original = host._schedule
-    monkeypatch.setattr(host, '_schedule', lambda coro, loop, timeout=6: original(coro, loop, timeout=.03))
     try:
         from secure_env_ingress import bound_cdp
     except ImportError:
@@ -125,7 +161,7 @@ def test_timed_out_attach_has_late_cleanup_owner(transport, monkeypatch, delay):
         monkeypatch.setattr(bound_cdp, 'CALL_TIMEOUT', .03)
         monkeypatch.setattr(bound_cdp, 'REPLY_TIMEOUT', .04)
     with pytest.raises(TimeoutError):
-        ps.ParentSession(sup, 'parent')
+        ps.ParentSession(sup.handle, 'parent')
     time.sleep(delay + .1)
     assert set(sessions) == {'default', 'sibling'}
     assert not sup._pending_calls
@@ -149,7 +185,7 @@ def test_queued_attach_timeout_sends_no_late_command(transport, monkeypatch):
     monkeypatch.setattr(bound_cdp, 'CALL_TIMEOUT', .03)
     try:
         with pytest.raises(TimeoutError):
-            ps.ParentSession(sup, 'parent')
+            ps.ParentSession(sup.handle, 'parent')
     finally:
         resume.set()
     time.sleep(.1)
@@ -163,11 +199,11 @@ def test_reconnect_after_lookup_before_attach(transport, monkeypatch):
     def observe(transport, method, params=None, sid=None):
         result = original(transport, method, params, sid)
         if method == 'Target.getTargetInfo' and params and params.get('targetId') == 'parent':
-            sup._ws = replacement
+            sup.reconnect()
         return result
     monkeypatch.setattr(ps, '_call', observe)
     with pytest.raises(ValueError, match='connection'):
-        ps.ParentSession(sup, 'parent')
+        ps.ParentSession(sup.handle, 'parent')
     assert not replacement.commands
     assert set(sessions) == {'default', 'sibling'}
 
@@ -179,7 +215,7 @@ def test_cancel_during_attach_retains_exact_cleanup(transport):
     batch = threading.Event()
     def construct():
         with acquisition_scope(batch):
-            return ps.ParentSession(sup, 'parent')
+            return ps.ParentSession(sup.handle, 'parent')
     with ThreadPoolExecutor(1) as pool:
         future = pool.submit(construct)
         deadline = time.monotonic() + 1
@@ -198,12 +234,13 @@ def test_cancel_during_attach_retains_exact_cleanup(transport):
 
 @pytest.mark.parametrize('adapter', ['payment', 'code'])
 @pytest.mark.parametrize('terminal', ['cancel', 'expiry'])
-def test_child_disposal_survives_stalled_loop(transport, monkeypatch, adapter, terminal):
+@pytest.mark.parametrize('reconnect', [False, True])
+def test_child_disposal_survives_stalled_loop(transport, monkeypatch, adapter, terminal, reconnect):
     from secure_env_ingress import bound_cdp, payment_fill as pf, nested_code as nc
     sup, wire, replacement, sessions = transport
     batch = threading.Event()
     with bound_cdp.acquisition_scope(batch):
-        transport_cdp = bound_cdp.BoundCDP(sup)
+        transport_cdp = bound_cdp.BoundCDP(sup.handle)
     child = transport_cdp.call('Target.attachToTarget', {'targetId': 'child', 'flatten': True})['result']['sessionId']
     if adapter == 'payment':
         owner = pf._Attachment(transport_cdp, child)
@@ -226,7 +263,8 @@ def test_child_disposal_survives_stalled_loop(transport, monkeypatch, adapter, t
     try:
         cleanup()  # Must return before the captured loop resumes.
         assert child in sessions
-        sup._ws = replacement
+        if reconnect:
+            sup.reconnect()
     finally:
         resume.set()
     deadline = time.monotonic() + 1
@@ -236,31 +274,41 @@ def test_child_disposal_survives_stalled_loop(transport, monkeypatch, adapter, t
     assert set(sessions) == {'default', 'sibling'}
     assert not replacement.commands
     detached = [c['params']['sessionId'] for c in wire.commands if c['method'] == 'Target.detachFromTarget']
-    assert detached == [child]
-    sup._ws = wire
-    assert bound_cdp.BoundCDP(sup).call('Target.getTargetInfo', {}, 'default')['result']['targetInfo']['targetId'] == 'other'
+    assert detached == ([] if reconnect else [child])
+    assert wire.closed is reconnect
+    assert bound_cdp.BoundCDP(sup.capture()).call('Target.getTargetInfo', {}, 'default')['result']['targetInfo']['targetId'] == 'other'
+    assert not any(c['method'] == 'Target.detachFromTarget' for c in replacement.commands)
 
 
 @pytest.mark.parametrize('adapter', ['payment', 'code'])
-@pytest.mark.parametrize('failure', ['close-error', 'caller-timeout'])
+@pytest.mark.parametrize('failure', ['close-error', 'caller-timeout', 'hung-close'])
 def test_guard_release_is_independent_and_timeout_owned(transport, monkeypatch, adapter, failure):
     from secure_env_ingress import bound_cdp, payment_fill as pf, nested_code as nc
     sup, wire, replacement, _ = transport
     batch = threading.Event()
     with bound_cdp.acquisition_scope(batch):
-        captured = bound_cdp.BoundCDP(sup)
+        captured = bound_cdp.BoundCDP(sup.handle)
     original_send = wire.send
+    close_entered = threading.Event()
     async def send(raw):
         msg = json.loads(raw)
         if msg['method'] == 'Runtime.callFunctionOn':
             if failure == 'close-error':
                 wire.commands.append(msg)
-                raise ValueError('synthetic close failure')
+                sup._pending_calls[msg['id']].set_exception(ValueError('synthetic close failure'))
+                return
+            if failure == 'hung-close':
+                wire.commands.append(msg)
+                close_entered.set()
+                return
+            await original_send(raw)
             await asyncio.sleep(.05)
+            return
         await original_send(raw)
     wire.send = send
     batch.set()
     monkeypatch.setattr(bound_cdp, 'CALL_TIMEOUT', .03)
+    monkeypatch.setattr(bound_cdp, 'REPLY_TIMEOUT', .04)
     entered, resume = threading.Event(), threading.Event()
     def stall():
         entered.set()
@@ -276,12 +324,11 @@ def test_guard_release_is_independent_and_timeout_owned(transport, monkeypatch, 
             owner = nc._Lease(captured)
             owner.keep('default', 'exact-guard')
             owner.discard('default', 'exact-guard')
-        sup._ws = replacement
     finally:
         resume.set()
     deadline = time.monotonic() + 1
     expected_objects = ['exact-parent', 'exact-guard'] if adapter == 'payment' else ['exact-guard']
-    while len([c for c in wire.commands if c['method'] == 'Runtime.releaseObject']) < len(expected_objects) or sup._pending_calls:
+    while len([c for c in wire.commands if c['method'] == 'Runtime.releaseObject']) < len(expected_objects):
         assert time.monotonic() < deadline
         time.sleep(.005)
     assert len(wire.commands) == 2 * len(expected_objects)
@@ -289,6 +336,18 @@ def test_guard_release_is_independent_and_timeout_owned(transport, monkeypatch, 
         calls = [c for c in wire.commands if c['params']['objectId'] == obj]
         assert [c['method'] for c in calls] == ['Runtime.callFunctionOn', 'Runtime.releaseObject']
         assert all(c['sessionId'] == 'default' for c in calls)
+    if failure == 'hung-close':
+        assert close_entered.is_set()
+        assert sup._pending_calls
+        async def finish_closes():
+            for future in list(sup._pending_calls.values()):
+                if not future.done():
+                    future.set_result({'result': {}})
+        asyncio.run_coroutine_threadsafe(finish_closes(), sup._loop).result(1)
+    deadline = time.monotonic() + 1
+    while sup._pending_calls:
+        assert time.monotonic() < deadline
+        time.sleep(.005)
     assert not replacement.commands
     with pytest.raises(ValueError, match='cancelled'):
         captured.call('Runtime.callFunctionOn', {'objectId': 'exact-guard', 'functionDeclaration': 'function(){this.write(0,"x")} '}, 'default')
@@ -299,5 +358,5 @@ def test_failure_after_attach_disposes_exact_session(transport, monkeypatch):
     sup, _, _, sessions = transport
     monkeypatch.setattr(ps.ParentSession, 'check', lambda _: (_ for _ in ()).throw(ValueError('post attach')))
     with pytest.raises(ValueError, match='post attach'):
-        ps.ParentSession(sup, 'parent')
+        ps.ParentSession(sup.handle, 'parent')
     assert set(sessions) == {'default', 'sibling'}

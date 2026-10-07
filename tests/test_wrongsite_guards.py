@@ -138,7 +138,7 @@ def test_private_candidate_cancel_cleanup(nested, tmp_path, monkeypatch):
         assert all(t.lease.closed and t.lease.parent_session.closed for t in targets)
         for t in targets:
             with pytest.raises(Exception):
-                codes._call(nested.sup, 'Target.getTargetInfo', {}, t.parent_sid)
+                codes._call(nested.capture(), 'Target.getTargetInfo', {}, t.parent_sid)
         assert nested.sup._page_session_id == previous
     finally:
         selection.close()
@@ -173,7 +173,7 @@ def test_private_payment_terminal_guards(nested, tmp_path, monkeypatch, change):
         pf.release(target)
         assert target.parent_session.closed
         with pytest.raises(Exception):
-            codes._call(nested.sup, 'Target.getTargetInfo', {}, target.parent_sid)
+            codes._call(nested.capture(), 'Target.getTargetInfo', {}, target.parent_sid)
         other.close()
 
 
@@ -207,14 +207,14 @@ def test_concurrent_exact_private_attachments(nested, tmp_path, monkeypatch):
     authorize(tmp_path, monkeypatch, nested.sup, nested.parent)
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
-            bindings = list(pool.map(lambda _: ParentSession(nested.sup, nested.parent), range(2)))
+            bindings = list(pool.map(lambda _: ParentSession(nested.capture(), nested.parent), range(2)))
         assert bindings[0].sid != bindings[1].sid
         bindings[0].drop(None)
         assert bindings[1].check() == bindings[1].sid
         bindings[1].drop(None)
         for binding in bindings:
             with pytest.raises(Exception):
-                codes._call(nested.sup, 'Target.getTargetInfo', {}, binding.sid)
+                codes._call(nested.capture(), 'Target.getTargetInfo', {}, binding.sid)
         assert nested.sup._page_session_id == previous
     finally:
         other.close()

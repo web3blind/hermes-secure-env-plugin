@@ -63,7 +63,7 @@ def test_ambiguous_or_incomplete_group_refuses(tokens):
 def test_real_consent_refusal_never_resolves(choice, monkeypatch):
     from secure_env_ingress import payment_fill as pf
     backend = SimpleNamespace(needs_unlock=False, name='local',
-        get_meta=lambda h: SimpleNamespace(kind='payment', origin='https://frame.test', label='Synthetic card'))
+        get_meta=lambda h: SimpleNamespace(kind='payment', origin='https://frame.test', label='Synthetic card', expires=1e30))
     backend.resolve_secret = lambda h: pytest.fail('declined consent must not resolve secret')
     monkeypatch.setattr(pf, 'payment_backend', lambda *a: backend)
     monkeypatch.setattr(pf, 'assert_target', lambda *a: None)
@@ -130,7 +130,7 @@ def test_selection_binding_cannot_retarget(changed, monkeypatch):
 @pytest.mark.parametrize('failure', ['scope', 'metadata', 'target'])
 def test_approval_revalidation_precedes_resolution(failure, monkeypatch):
     from secure_env_ingress import payment_fill as pf
-    meta = SimpleNamespace(kind='payment', origin='https://frame.test', label='Synthetic card')
+    meta = SimpleNamespace(kind='payment', origin='https://frame.test', label='Synthetic card', expires=1e30)
     state = {'approved': False}
     backend = SimpleNamespace(get_meta=lambda h: meta,
         resolve_secret=lambda h: pytest.fail('changed binding must not resolve a secret'))
@@ -145,9 +145,9 @@ def test_approval_revalidation_precedes_resolution(failure, monkeypatch):
     def change():
         state['approved'] = True
         if failure == 'metadata':
-            backend.get_meta = lambda h: SimpleNamespace(kind='payment', origin=meta.origin, label='Other label')
+            backend.get_meta = lambda h: SimpleNamespace(kind='payment', origin=meta.origin, label='Other label', expires=1e30)
     with payment_consent('once', before_decision=change):
-        result = pf.approved_fill(SimpleNamespace(origin=meta.origin), 'vault_fixture', check_scope)
+        result = pf.approved_fill(SimpleNamespace(origin=meta.origin, expires=1e30), 'vault_fixture', check_scope)
     assert result == {'success': False, 'status': 'target_refused', 'stage': 'revalidation'}
 
 
@@ -193,7 +193,7 @@ async def test_cancel_during_real_consent_stops_worker_before_resolution(tmp_pat
     runtime, settings, home, _ = make_runtime(tmp_path, mini=False)
     runtime.close()
     monkeypatch.setenv('HERMES_HOME', str(home))
-    target = SimpleNamespace(origin='https://frame.test')
+    target = SimpleNamespace(expires=float('inf'), origin='https://frame.test')
     backend = SimpleNamespace(get_meta=lambda h: SimpleNamespace(label='Synthetic card'),
         resolve_secret=lambda h: pytest.fail('cancelled consent must not resolve'))
     released = []

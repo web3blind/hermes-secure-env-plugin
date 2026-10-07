@@ -54,7 +54,8 @@ def nested():
                 session.detach()
                 try:
                     yield SimpleNamespace(page=page, context=context, pages=pages,
-                        sup=sup, parent=parent, endpoint=endpoint)
+                        sup=sup, parent=parent, endpoint=endpoint,
+                        capture=lambda: SUPERVISOR_REGISTRY.capture(sup.task_id))
                 finally:
 
                     sup.stop()
@@ -214,7 +215,7 @@ def test_registered_nested_https(nested, sites, split, tmp_path, monkeypatch, at
             assert 'authorize' in content and '3-D Secure' in content
             token = urlsplit(content.split('form: ', 1)[1].split(' for ', 1)[0]).fragment
             if attack:
-                codes._evaluate(nested.sup, nested.sup._page_session_id, attack)
+                codes._evaluate(nested.capture(), nested.sup._page_session_id, attack)
             status, body = await asyncio.to_thread(post, settings, root, '/submit', {
                 'token': token, 'initData': '', 'values': [synthetic]})
             assert status == (409 if refusal else 200)

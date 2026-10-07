@@ -693,7 +693,9 @@ def register(ctx):
                     args['origin'], args['handle'], args.get('selection'), batch=cancelled)
                 if response is not None:
                     return response
-                return approved_fill(target, args['handle'], guard, resume_existing=True) if args.get('resume_existing', False) else approved_fill(target, args['handle'], guard)
+                from .bound_cdp import acquisition_scope
+                with acquisition_scope(cancelled):
+                    return approved_fill(target, args['handle'], guard, resume_existing=True) if args.get('resume_existing', False) else approved_fill(target, args['handle'], guard)
             except Exception:
                 return {'success': False, 'status': 'target_refused', 'stage': stage}
             finally:

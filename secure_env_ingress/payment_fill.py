@@ -15,7 +15,7 @@ import time
 
 from .code_targets import _call, _supervisor
 from .vault_ingress import strict_origin
-from .bound_cdp import BoundCDP
+from .bound_cdp import BoundCDP, FrameUnavailable
 
 
 @dataclass(frozen=True)
@@ -560,7 +560,7 @@ def payment_backend(handle, origin):
 
 
 def _parent(sup, parent):
-    sid = sup._page_session_id
+    sid = sup.page_session_id
     if not sid or _call(sup, 'Target.getTargetInfo', {}, sid)['result']['targetInfo']['targetId'] != parent:
         raise ValueError('explicit parent is not task-selected supervisor page')
     return sid
@@ -593,9 +593,7 @@ def discover(task, parent, origin):
                 try:
                     probe = _call(sup, 'Page.createIsolatedWorld', {'frameId': frame,
                         'worldName': 'secure-payment-inspect-' + secrets.token_hex(12)}, psid)
-                except RuntimeError as error:
-                    if 'No frame for given id found' not in str(error):
-                        raise
+                except FrameUnavailable:
                     probe = {}
                 if probe.get('error') or not probe.get('result', {}).get('executionContextId'):
                     csid = _call(sup, 'Target.attachToTarget', {'targetId': frame, 'flatten': True})['result']['sessionId']
@@ -662,7 +660,7 @@ def discover(task, parent, origin):
 def assert_target(target):
     sup = _supervisor(target.task)
     parent_sid = target.parent_session.check() if target.parent_session is not None else _parent(sup, target.parent)
-    if sup is not getattr(target.supervisor, 'raw', target.supervisor) or time.monotonic() >= target.expires or parent_sid != target.parent_sid:
+    if not target.supervisor.valid() or time.monotonic() >= target.expires or parent_sid != target.parent_sid:
         raise ValueError('stale target')
     sup = target.supervisor
     # getFrameOwner resolves only in the selected parent document's session;
@@ -699,81 +697,83 @@ def release(target):
 
 
 def approved_fill(target, handle, scope_guard, resume_existing=False):
-    from tools.browser_vault_tool import _confirm_payment_fill, _bot_desktop_browser_session
-    from agent.redact import register_vault_redaction_value
-    started = False
-    secret = None
-    stage = 'preflight'
-    try:
-        scope_guard()
-        backend = payment_backend(handle, target.origin)
-        meta = backend.get_meta(handle)
-        assert_target(target)
-        stage = 'consent'
-        if not _confirm_payment_fill(meta.label, target.origin):
-            return {'success': False, 'status': 'payment_declined'}
-        stage = 'revalidation'
-        scope_guard()
-        assert_target(target)
-        approved_meta = meta
-        backend = payment_backend(handle, target.origin)
-        if backend.get_meta(handle) != approved_meta:
-            raise ValueError('payment metadata changed')
-        stage = 'mapping'
-        secret = backend.resolve_secret(handle)
-        fills = mapped_fills(target.controls, secret)
-        # Mirror native Vault policy: payment metadata is not a global secret.
-        register_vault_redaction_value(secret.get('card_number', ''))
-        from .redaction_compat import register_context_secret
-        register_context_secret(secret.get('cvc', ''), kind='cvc')
-        sup, sid, obj = target.supervisor, target.child_sid, target.child_guard
-        stage = 'format'
-        for i, f in enumerate(fills):
-            if _invoke(sup, sid, obj, 'function(i,v,token){return this.accepts(i,v,token);}', (i, f['value'], f['token'])) is not True:
-                raise ValueError('unsupported field format')
-        stage = 'existing'
-        adopted = _invoke(sup, sid, obj, 'function(fills,resume){return this.prepare(fills,resume);}', (fills, resume_existing))
-        if not isinstance(adopted, list) or any(type(i) is not int or not 0 <= i < len(fills) for i in adopted):
-            raise ValueError('existing field refused')
-        filled = len(adopted)
-        for i, f in enumerate(fills):
-            if i in adopted:
-                continue
-            stage = 'focus'
+    from .bound_cdp import dispatch_scope
+    with dispatch_scope(target.expires):
+        from tools.browser_vault_tool import _confirm_payment_fill, _bot_desktop_browser_session
+        from agent.redact import register_vault_redaction_value
+        started = False
+        secret = None
+        stage = 'preflight'
+        try:
+            scope_guard()
+            backend = payment_backend(handle, target.origin)
+            meta = backend.get_meta(handle)
+            assert_target(target)
+            stage = 'consent'
+            if not _confirm_payment_fill(meta.label, target.origin):
+                return {'success': False, 'status': 'payment_declined'}
+            stage = 'revalidation'
             scope_guard()
             assert_target(target)
-            if _bot_desktop_browser_session(target.task):
-                from tools.bot_desktop import lease
-                lease.assert_agent_may_act()
-            if _invoke(sup, sid, obj, 'function(i){return this.focus(i);}', (i,)) is not True:
-                raise ValueError('focus mutated target')
-            # Focus callbacks in either document complete before the next CDP
-            # read. Recheck BOTH lineage and closure identities before each write.
+            approved_meta = meta
+            backend = payment_backend(handle, target.origin)
+            if backend.get_meta(handle) != approved_meta:
+                raise ValueError('payment metadata changed')
+            stage = 'mapping'
+            secret = backend.resolve_secret(handle)
+            fills = mapped_fills(target.controls, secret)
+            # Mirror native Vault policy: payment metadata is not a global secret.
+            register_vault_redaction_value(secret.get('card_number', ''))
+            from .redaction_compat import register_context_secret
+            register_context_secret(secret.get('cvc', ''), kind='cvc')
+            sup, sid, obj = target.supervisor, target.child_sid, target.child_guard
+            stage = 'format'
+            for i, f in enumerate(fills):
+                if _invoke(sup, sid, obj, 'function(i,v,token){return this.accepts(i,v,token);}', (i, f['value'], f['token'])) is not True:
+                    raise ValueError('unsupported field format')
+            stage = 'existing'
+            adopted = _invoke(sup, sid, obj, 'function(fills,resume){return this.prepare(fills,resume);}', (fills, resume_existing))
+            if not isinstance(adopted, list) or any(type(i) is not int or not 0 <= i < len(fills) for i in adopted):
+                raise ValueError('existing field refused')
+            filled = len(adopted)
+            for i, f in enumerate(fills):
+                if i in adopted:
+                    continue
+                stage = 'focus'
+                scope_guard()
+                assert_target(target)
+                if _bot_desktop_browser_session(target.task):
+                    from tools.bot_desktop import lease
+                    lease.assert_agent_may_act()
+                if _invoke(sup, sid, obj, 'function(i){return this.focus(i);}', (i,)) is not True:
+                    raise ValueError('focus mutated target')
+                # Focus callbacks in either document complete before the next CDP
+                # read. Recheck BOTH lineage and closure identities before each write.
+                scope_guard()
+                assert_target(target)
+                if _bot_desktop_browser_session(target.task):
+                    from tools.bot_desktop import lease
+                    lease.assert_agent_may_act()
+                stage = 'write'
+                started = True
+                result = _invoke(sup, sid, obj, 'function(i,v,token){return this.write(i,v,token);}', (i, f['value'], f['token']))
+                if not isinstance(result, dict) or not result.get('written') or not result.get('valid'):
+                    raise ValueError('write not confirmed')
+                filled += 1
+                scope_guard()
+                assert_target(target)
+            stage = 'completion'
             scope_guard()
             assert_target(target)
-            if _bot_desktop_browser_session(target.task):
-                from tools.bot_desktop import lease
-                lease.assert_agent_may_act()
-            stage = 'write'
-            started = True
-            result = _invoke(sup, sid, obj, 'function(i,v,token){return this.write(i,v,token);}', (i, f['value'], f['token']))
-            if not isinstance(result, dict) or not result.get('written') or not result.get('valid'):
-                raise ValueError('write not confirmed')
-            filled += 1
-            scope_guard()
-            assert_target(target)
-        stage = 'completion'
-        scope_guard()
-        assert_target(target)
-        result = {'success': True, 'status': 'filled', 'filled_fields': filled, 'origin': target.origin, 'kind': 'payment'}
-        if resume_existing:
-            result['resumed_fields'] = len(adopted)
-        return result
-    except Exception:
-        return {'success': False, 'status': 'unknown' if started else 'target_refused', 'stage': stage}
-    finally:
-        if secret is not None:
-            secret.clear()
+            result = {'success': True, 'status': 'filled', 'filled_fields': filled, 'origin': target.origin, 'kind': 'payment'}
+            if resume_existing:
+                result['resumed_fields'] = len(adopted)
+            return result
+        except Exception:
+            return {'success': False, 'status': 'unknown' if started else 'target_refused', 'stage': stage}
+        finally:
+            if secret is not None:
+                secret.clear()
 
 
 class PaymentSelection:

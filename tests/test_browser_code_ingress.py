@@ -1,18 +1,18 @@
 """Standalone code ingress through real HTTPS and native classifier/CDP expression."""
 import json
-import threading
 from types import SimpleNamespace
 from urllib.parse import urlsplit
 
 import pytest
 
 from test_runtime_e2e import make_runtime, post
+from public_capture_helpers import PublicConnection, install_public_registry
 from secure_env_ingress.vault_ingress import capture_browser_target
 
 
 @pytest.fixture
 def harness(tmp_path, monkeypatch):
-    from tools import browser_use_cli, browser_supervisor
+    from tools import browser_use_cli
     runtime, cfg, home, root = make_runtime(tmp_path, mini=False)
     monkeypatch.setenv('HERMES_HOME', str(home))
     monkeypatch.setattr(browser_use_cli, 'is_browser_use_cli_mode', lambda: True)
@@ -20,23 +20,22 @@ def harness(tmp_path, monkeypatch):
     state = {'href': 'https://site.test/challenge', 'page': 'page', 'controls': [{
         'autocomplete': 'one-time-code', 'formIndex': 0, 'index': 0, 'maxLength': 8,
         'label': 'Verification code', 'name': 'verification_code', 'type': 'text'}]}
-    supervisor = SimpleNamespace(task_id='task', _state_lock=threading.RLock(),
-                                 _active=True, _page_session_id='page')
+    connection = PublicConnection()
 
     def evaluate(expr):
         if expr == 'location.href':
-            return {'ok': True, 'result': state['href']}
+            return state['href']
         scripts.append(expr)
         if 'const expectedOrigin' in expr:
             if state['href'].split('/')[2] != 'site.test':
-                return {'ok': True, 'result': json.dumps({'refused': 'origin_changed'})}
-            return {'ok': True, 'result': json.dumps({'filled': state.get('filled', 1)})}
-        return {'ok': True, 'result': json.dumps(state['controls'])}
+                return json.dumps({'refused': 'origin_changed'})
+            return json.dumps({'filled': state.get('filled', 1)})
+        return json.dumps(state['controls'])
 
-    supervisor.evaluate_runtime = evaluate
-    monkeypatch.setattr(browser_supervisor.SUPERVISOR_REGISTRY, 'get', lambda task: supervisor)
+    connection.evaluate = evaluate
+    registry = install_public_registry(monkeypatch, connection)
     target = capture_browser_target('https://site.test', 'Synthetic challenge', 'task', 'task', 'chat-key')
-    yield runtime, cfg, home, root, target, state, scripts, supervisor
+    yield runtime, cfg, home, root, target, state, scripts, registry
     runtime.close()
 
 
@@ -98,7 +97,7 @@ def test_localized_code_fallback_does_not_guess(harness, name, label, duplicate)
     ('origin', 409), ('page', 409), ('partial', 409),
 ])
 def test_fail_closed_code_submission(harness, case, expected):
-    runtime, cfg, home, root, target, state, scripts, supervisor = harness
+    runtime, cfg, home, root, target, state, scripts, registry = harness
     links, token = issue(harness)
     code = 'A1B2C3'
     if case == 'invalid':
@@ -110,7 +109,7 @@ def test_fail_closed_code_submission(harness, case, expected):
     if case == 'origin':
         state['href'] = 'https://else.test/challenge'
     if case == 'page':
-        supervisor._page_session_id = 'new-page'
+        registry.connection.page_session_id = 'new-page'
     if case == 'partial':
         state['filled'] = 0
     status, result = post(cfg, root, '/submit', {'token': token, 'initData': '', 'values': [code]})
@@ -141,19 +140,58 @@ def test_cancel_before_submission(harness):
 
 
 def test_page_changes_during_inspection_are_refused(harness):
-    runtime, cfg, _home, root, _target, state, scripts, supervisor = harness
+    runtime, cfg, _home, root, _target, state, scripts, registry = harness
     _links, token = issue(harness)
-    original = supervisor.evaluate_runtime
+    original = registry.connection.evaluate
 
     def switched(expr):
         result = original(expr)
         if expr != 'location.href' and 'const expectedOrigin' not in expr:
-            supervisor._page_session_id = 'different-page'
+            registry.connection.page_session_id = 'different-page'
         return result
 
-    supervisor.evaluate_runtime = switched
+    registry.connection.evaluate = switched
     status, _ = post(cfg, root, '/submit', {'token': token, 'initData': '', 'values': ['A1B2C3']})
     assert status == 409 and len(scripts) == 1
+
+
+@pytest.mark.parametrize('case', ['original_invalid', 'replacement', 'fresh_invalid'])
+@pytest.mark.parametrize('during_inspection', [False, True])
+def test_invalid_captures_refuse_secret_dispatch(harness, case, during_inspection):
+    runtime, cfg, home, root, target, state, scripts, registry = harness
+    links, token = issue(harness)
+    original_handle = registry.handles[0]
+    connection = registry.connection
+
+    def invalidate():
+        if case == 'original_invalid':
+            original_handle.valid = False
+        elif case == 'replacement':
+            registry.connection = PublicConnection(evaluate=connection.evaluate)
+        else:
+            registry.capture_valid = False
+
+    if during_inspection:
+        evaluate = connection.evaluate
+
+        def changed(expr):
+            value = evaluate(expr)
+            if expr != 'location.href' and 'const expectedOrigin' not in expr:
+                invalidate()
+            return value
+
+        connection.evaluate = changed
+    else:
+        invalidate()
+    status, result = post(cfg, root, '/submit',
+                          {'token': token, 'initData': '', 'values': ['A1B2C3']})
+    assert status == 409 and 'filled' not in result
+    assert len(scripts) == int(during_inspection)
+    assert not any('const expectedOrigin' in script for script in scripts)
+    assert not any(handle.calls for handle in registry.handles[1:])
+    assert links['completion'].result(timeout=1)['status'] in ('rejected', 'failed', 'unknown')
+    assert post(cfg, root, '/session', {'token': token, 'initData': ''})[0] == 410
+    assert not (home / 'vault').exists() and not (home / '.env').exists()
 
 
 def test_split_code_boxes_are_filled_only_when_exact(harness):

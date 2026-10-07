@@ -10,7 +10,8 @@ if ROOT not in sys.path:
 
 
 @pytest.fixture(autouse=True)
-def remove_disposable_material(tmp_path):
+def remove_disposable_material(tmp_path, monkeypatch):
     """Do not retain fake credentials or private test-CA keys after a test."""
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path / 'hermes-home'))
     yield
     shutil.rmtree(tmp_path)
