@@ -77,4 +77,3 @@ def test_top_level_refusal_preserves_false_result(nested):
         assert nested.page.locator('input').input_value() == ''
     finally:
         codes.release(target)
-
