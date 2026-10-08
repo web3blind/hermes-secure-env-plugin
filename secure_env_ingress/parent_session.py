@@ -29,6 +29,42 @@ def _proof(task, browser, parent, home):
     return owner, generation, row['call_token']
 
 
+class TopSession:
+    """Legacy no-parent tab admission, with a retained captured-wire session.
+
+    This does not confer explicit-parent creation ownership. It preserves the
+    historical same-origin page scan without extending it to nested frames.
+    """
+    def __init__(self, sup, parent):
+        from hermes_constants import get_hermes_home
+        self.sup, self.parent = sup, parent
+        self.home = Path(get_hermes_home()).resolve()
+        self.transport = BoundCDP(sup)
+        self.closed = False
+        self.sid = _call(self.transport, 'Target.attachToTarget',
+                         {'targetId': parent, 'flatten': True})['result']['sessionId']
+        try:
+            self.check()
+        except BaseException:
+            self.drop(None)
+            raise
+
+    def check(self):
+        from hermes_constants import get_hermes_home
+        if (self.closed or _supervisor(self.sup.task_id) is not self.sup
+                or Path(get_hermes_home()).resolve() != self.home):
+            raise ValueError('parent connection changed')
+        info = _call(self.transport, 'Target.getTargetInfo', {}, self.sid)['result']['targetInfo']
+        if info['targetId'] != self.parent or info['type'] != 'page':
+            raise ValueError('parent session changed')
+        return self.sid
+
+    def drop(self, key):
+        if not self.closed:
+            self.closed = True
+            self.transport.dispose(self.sid, wait=True)
+
+
 class ParentSession:
     """Captured connection/session; never reattach a capability after reconnect."""
     def __init__(self, sup, parent):

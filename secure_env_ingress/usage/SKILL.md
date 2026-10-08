@@ -53,7 +53,7 @@ The plugin traverses same-process, OOPIF and mixed iframe chains, retaining each
 iframe owner, complete DOM ancestry, containing document, origin/navigation and
 exact leaf form/field references in isolated worlds. All ancestor and leaf guards
 are checked after the HTTPS wait, after focus, before every setter and after every
-write. Sticky document mutation/navigation guards reject reverted changes.
+write. Sticky authority-relevant mutation/navigation guards reject reverted changes.
 The leaf document must actually have focus (`hasFocus()`) and the exact active
 input after focus callbacks and immediately before setters. Background tabs are
 not activated; focus loss after input prevents later split-field writes.
@@ -66,12 +66,21 @@ Failure never retargets, retries an unknown write or explicitly submits a site
 form. Earlier split-field values are compared internally, never returned.
 
 Bounds: 8 iframe edges, 40 documents, 20 owners per document, 20 candidate forms,
-200 controls and 2,000 DOM nodes per document (DOM depth 32; truncated trees refuse), 120-second discovery
+200 controls, 128 custom shadow roots and 10,000 DOM nodes per document (DOM depth 128; truncated trees refuse), 120-second discovery
 and selection lifetime, 240-second target lifetime. HTTPS is required for every
-ancestor. Opaque sandbox documents, custom open/closed shadow roots, ambiguous
-forms, detached/orphan contexts and unsupported navigation authority refuse.
-Conservative guards refuse any DOM mutation in bound documents; dynamic sites
-that change unrelated UI while waiting may therefore be unsupported. Standard
+ancestor. Opaque sandbox documents, ambiguous forms, detached/orphan contexts
+and unsupported navigation authority refuse. Open and closed custom shadow roots
+are inspected via captured CDP references in isolated worlds; browser user-agent
+shadow internals are not candidate controls. Unrelated decoration/tooltip nodes
+and text updates do not invalidate ordinary code targets. Retained composed
+ancestry, selected control/form/label semantics, effective form action/method,
+base href changes and navigation remain sticky, including reverted changes.
+A complete bounded differential census adopts late open/closed roots for
+root-local uniqueness and semantic checks; unrelated non-code controls and
+separate-form labels may change without retargeting. New code-like controls,
+frame owners and selector matches (even noncontrols) refuse. Simple tag/ID/class
+hints track token dependencies; arbitrary relational/pseudo/escaped CSS hints
+conservatively retain broad mutation dependencies. Standard
 single and contiguous split fields retain 4–16 printable ASCII/punctuation
 semantics, with no spaces/control characters or code storage in Vault/ENV.
 Discovery returns only public origin, opaque IDs, form index and field/depth
@@ -163,21 +172,25 @@ Code discovery refusals retain `reason=browser_binding` and add a fixed `detail`
 `document_depth`, `document_capacity`, `document_shadow`, `document_unsupported`,
 `selector_ambiguous`, `selector_inadmissible`, `parent_ownership`, `parent_binding`,
 `browser_unavailable`, `browser_changed`, `selection_invalid`, `form_ambiguous`,
-`target_changed` or generic `binding_refused`. Depth/size/shadow refusals do not
+`target_changed` or generic `binding_refused`. Depth/size refusals do not
 permit bypassing limits; selector ambiguity requires a unique selector, not a retry
 of the same hint. Unknown failures remain generic. No raw exceptions, URLs,
 selectors, arbitrary page text or secrets are included in these diagnostics.
 
-The selector is never evaluated again at fill time. Discovery retains the
+The selector never resolves a fill destination after discovery. Mutation guards
+may test newly inserted elements against the hint only to refuse ambiguity; they
+never assign authority to those elements. Discovery retains the
 original isolated-world document/input/form/attributes and the existing sticky
 mutation/navigation, origin/ownership/generation/captured-wire/ancestor/focus
 fences. Navigation, replacement or form mutation refuses; no alternate control
 is searched or filled. Selection lineage includes the exact hint if supplied.
 The protected HTTPS form still requires separate authorized owner/session,
 trusted delivery and user secret submission; a selector supplies none of these.
-Same-process/OOPIF support uses existing bounded traversal; custom shadow roots
-remain unsupported. No automatic submit, transaction permission or real-site
-compatibility guarantee is added. Input can itself authorize an operation.
+Same-process/OOPIF and open/closed Shadow DOM support use bounded traversal.
+CSS hints match within each root, not across shadow boundaries; uniqueness is
+checked across all matching-origin roots/documents. Controls in independent
+shadow roots are never combined into a split code widget. No automatic submit,
+transaction permission or real-site compatibility guarantee is added. Input can itself authorize an operation.
 
 Imported local redaction policy is retained: PAN is globally registered;
 OTP and CVC are **context-only** on hosts supporting `kind`, not unconditionally
