@@ -6,9 +6,11 @@ A profile-scoped, on-demand HTTPS form for adding missing `.env` keys. `/senv` a
 
 ## Installation, separately from TLS setup
 
-**0.8.0rc2 is a migration release candidate, not a stable/upstream compatibility or catalog-readiness claim.** The base captured-CDP seam is merged in Hermes #133552 but has not reached a stable release. The dispatch/lossless-wait follow-up required by this candidate is not yet merged. No minimum Hermes release is established or declared. Runtime requires Python 3.11+, POSIX ownership/modes, `flock`, `O_NOFOLLOW`, OpenSSL and the bounded dependencies in `pyproject.toml` / `uv.lock`.
+YAML configuration uses bounded `ruamel.yaml>=0.18.16,<0.19`; PyYAML is not a plugin runtime dependency. Setup preserves the historical implicit scalar grammar and rejects duplicate keys, including collisions through YAML merges. Optional consumer config-read failures disable consumer discovery only; ordinary ingress config reads remain strict. A fresh-wheel registration and strict-YAML check is available in `tests/wheel_yaml_smoke.py`, run outside the checkout with an unmodified ruamel-based Hermes host on `PYTHONPATH`, an isolated `HOME`/`HERMES_HOME`, and `SENV_WHEEL_ROOT` pointing to the clean wheel environment.
 
-### Browser transport requirements (0.8.0rc2)
+**0.8.0rc3 is a migration release candidate, not a stable/upstream compatibility or catalog-readiness claim.** The base captured-CDP seam is merged in Hermes #133552 but has not reached a stable release. The dispatch/lossless-wait follow-up required by this candidate is not yet merged. No minimum Hermes release is established or declared. Runtime requires Python 3.11+, POSIX ownership/modes, `flock`, `O_NOFOLLOW`, OpenSSL and the bounded dependencies in `pyproject.toml` / `uv.lock`.
+
+### Browser transport requirements (0.8.0rc3)
 
 The plugin's browser-writing paths — `browser_vault(mode="code")` (top-level and nested) and `secure_payment_fill` — require the host supervisor registry's public `registry.capture(task_id)` / `SUPERVISOR_REGISTRY.capture(task_id)` API. Its captured handle must support public `call(..., timeout=None, before_send=...)`: `timeout=None` waits for the actual command outcome rather than timing out locally while a secret write can still run; a **synchronous trusted `before_send` callback** runs on supervisor dispatch immediately before sending, to enforce the plugin's cancellation, expiry and binding checks. These are trusted in-process callbacks, not model-supplied code. A host with only the initial capture seam but without this dispatch follow-up is insufficient.
 

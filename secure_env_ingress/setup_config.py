@@ -12,6 +12,7 @@ import fcntl
 import importlib
 import json
 import os
+import re
 import datetime as dt
 import stat
 import sys
@@ -21,7 +22,10 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Iterator, Mapping, Sequence
 
-import yaml
+from ruamel.yaml import YAML
+from ruamel.yaml.constructor import SafeConstructor
+from ruamel.yaml.error import YAMLError
+from ruamel.yaml.resolver import VersionedResolver
 
 from .config import ConfigError, IngressConfig, owner_identity
 from .tls import TLSValidationError, validate_certificate
@@ -42,7 +46,37 @@ _SECURITY_DEFAULTS = {
 }
 
 
-class _StrictLoader(yaml.SafeLoader):
+# Preserve the historical SafeLoader implicit scalar grammar, not ruamel's
+# broader YAML 1.1 grammar (single y/n, bare exponents and 0o octal differ).
+_SCALAR_PATTERNS = {
+    "bool": re.compile(r"^(?:yes|Yes|YES|no|No|NO|true|True|TRUE|false|False|FALSE|on|On|ON|off|Off|OFF)$"),
+    "float": re.compile(r"^(?:[-+]?(?:[0-9][0-9_]*)\.[0-9_]*(?:[eE][-+][0-9]+)?|\.[0-9][0-9_]*(?:[eE][-+][0-9]+)?|[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))$"),
+    "int": re.compile(r"^(?:[-+]?0b[0-1_]+|[-+]?0[0-7_]+|[-+]?(?:0|[1-9][0-9_]*)|[-+]?0x[0-9a-fA-F_]+|[-+]?[1-9][0-9_]*(?::[0-5]?[0-9])+)$"),
+}
+
+
+class _ConfigResolver(VersionedResolver):
+    @property
+    def processing_version(self):
+        # PyYAML retained YAML 1.1 scalar parsing even with a %YAML 1.2 directive.
+        # Fix both implicit resolution and SafeConstructor's numeric conversion.
+        return (1, 1)
+
+    def add_version_implicit_resolver(self, version, tag, regexp, first):
+        regexp = _SCALAR_PATTERNS.get(tag.rsplit(":", 1)[-1], regexp)
+        super().add_version_implicit_resolver(version, tag, regexp, first)
+
+
+class _StrictConstructor(SafeConstructor):
+    def construct_yaml_timestamp(self, node):
+        # Keep historical microsecond truncation rather than ruamel rounding.
+        from copy import copy
+        compatible_node = copy(node)
+        compatible_node.value = re.sub(
+            r'(\d{1,2}:\d{2}:\d{2}\.\d{6})\d+', r'\1', node.value
+        )
+        return super().construct_yaml_timestamp(compatible_node)
+
     def construct_mapping(self, node, deep=False):
         self.flatten_mapping(node)
         result = {}
@@ -52,6 +86,11 @@ class _StrictLoader(yaml.SafeLoader):
                 raise SetupConfigError("duplicate configuration key")
             result[key] = self.construct_object(value_node, deep=deep)
         return result
+
+
+_StrictConstructor.add_constructor(
+    'tag:yaml.org,2002:timestamp', _StrictConstructor.construct_yaml_timestamp
+)
 
 
 class SetupConfigError(RuntimeError):
@@ -240,8 +279,14 @@ def _read_config_file(path: Path, uid: int) -> tuple[dict, bytes | None, tuple[i
     finally:
         os.close(fd)
     try:
-        loaded = yaml.load(raw.decode("utf-8"), Loader=_StrictLoader) if raw else {}
-    except (UnicodeDecodeError, yaml.YAMLError, TypeError, ValueError) as exc:
+        # Keep YAML 1.1 scalar semantics and reject merged-key collisions too.
+        loader = YAML(typ="safe", pure=True)
+        loader.version = (1, 1)
+        loader.allow_duplicate_keys = False
+        loader.Constructor = _StrictConstructor
+        loader.Resolver = _ConfigResolver
+        loaded = loader.load(raw.decode("utf-8")) if raw else {}
+    except (UnicodeDecodeError, YAMLError, TypeError, ValueError) as exc:
         raise SetupConfigError("existing config is malformed") from exc
     if loaded is None:
         loaded = {}

@@ -209,7 +209,7 @@ def factory(public):
         loaded_ops.bind(home, 'good', {})
 
 
-@pytest.mark.parametrize('error', [OSError, ValueError, yaml.YAMLError])
+@pytest.mark.parametrize('error', [OSError, ValueError, yaml.YAMLError, RuntimeError])
 def test_consumer_config_read_failure_is_scoped(tmp_path, monkeypatch, caplog, error):
     from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
     from secure_env_ingress.plugin import register
