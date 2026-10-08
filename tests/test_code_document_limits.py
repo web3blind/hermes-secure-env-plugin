@@ -57,17 +57,13 @@ def test_deep_document_keeps_sticky_guards(nested, attack):
 
 @pytest.mark.parametrize('case,detail', [
     ('depth', 'document_depth'), ('nodes', 'document_capacity'),
-    ('open_shadow', 'document_shadow'), ('closed_shadow', 'document_shadow'),
 ])
 def test_document_bounds_still_refuse(nested, case, detail):
     origin, leaf = setup_chain(nested)
-    html = markup(40) if case == 'depth' else markup(0)
+    html = markup(140) if case == 'depth' else markup(0)
     if case == 'nodes':
-        html += '<span></span>' * 2100
+        html += '<span></span>' * 10100
     leaf.evaluate('(html)=>document.body.innerHTML=html', html)
-    if case in {'open_shadow', 'closed_shadow'}:
-        leaf.evaluate('(mode)=>document.body.appendChild(document.createElement("div")).attachShadow({mode})',
-                      'open' if case == 'open_shadow' else 'closed')
     with pytest.raises(ValueError) as caught:
         codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent)
     assert codes.binding_failure_detail(caught.value) == detail
@@ -102,7 +98,7 @@ def test_registered_real_discovery_details(nested, tmp_path, monkeypatch, case, 
     from tools.registry import registry
 
     setup_chain(nested)
-    html = markup(40) if case == 'depth' else (
+    html = markup(140) if case == 'depth' else (
         '<section hidden>' + markup(0) + '</section>' + markup(0))
     nested.page.evaluate('(html)=>document.body.innerHTML=html', html)
     sample, settings, home, _ = make_runtime(tmp_path, mini=False)

@@ -176,7 +176,7 @@ def test_previous_value_tamper_stops_later_write(nested):
 
 @pytest.mark.parametrize('sites', [('parent.test', 'parent.test'), ('middle.test', 'leaf.test'), ('parent.test', 'leaf.test'), ('middle.test', 'middle.test')])
 @pytest.mark.parametrize('split', [False, True])
-def test_registered_nested_https(nested, sites, split, tmp_path, monkeypatch, attack=None, focus_exit=None, wrongsite_hook=None, field_selector=None, markup=None):
+def test_registered_nested_https(nested, sites, split, tmp_path, monkeypatch, attack=None, focus_exit=None, wrongsite_hook=None, field_selector=None, markup=None, shadow_mode=None):
     import asyncio
     from types import SimpleNamespace
     from urllib.parse import urlsplit
@@ -194,7 +194,9 @@ def test_registered_nested_https(nested, sites, split, tmp_path, monkeypatch, at
 
     origin, leaf = setup_chain(nested, sites, split)
     if markup is not None:
-        leaf.evaluate('(html)=>document.body.innerHTML=html', markup)
+        leaf.evaluate('(markup) => {document.body.innerHTML=markup}', markup)
+    if shadow_mode is not None:
+        leaf.evaluate('(mode)=>{const r=document.body.appendChild(document.createElement("div")).attachShadow({mode});r.innerHTML=document.querySelector("form").outerHTML;document.querySelector("form").remove();window.fixtureRoot=r}', shadow_mode)
     if focus_exit:
         nested.page.evaluate('document.body.insertAdjacentHTML("beforeend", "<button id=exit>Elsewhere</button>")')
         leaf.evaluate('(event)=>document.querySelector("input").addEventListener(event,()=>top.document.querySelector("#exit").focus(),{once:true})', focus_exit)
@@ -217,7 +219,7 @@ def test_registered_nested_https(nested, sites, split, tmp_path, monkeypatch, at
             if attack:
                 codes._evaluate(nested.capture(), nested.sup._page_session_id, attack)
             status, body = await asyncio.to_thread(post, settings, root, '/submit', {
-                'token': token, 'initData': '', 'values': [synthetic]})
+                'token': token, 'initData': '', 'values': [synthetic]}, timeout=20 if shadow_mode else 3)
             assert status == (409 if refusal else 200)
             assert body == ({'error': 'fill_unconfirmed'} if refusal else {'filled': True})
             return SimpleNamespace(success=True)
@@ -235,7 +237,7 @@ def test_registered_nested_https(nested, sites, split, tmp_path, monkeypatch, at
             assert synthetic not in raw and 'https://' not in raw.replace(origin, '')
         finally:
             sc.clear_session_vars(tokens)
-    assert leaf.evaluate('(v)=>Array.from(document.querySelectorAll("input")).map(e=>e.value).join("")===v', synthetic[0] if focus_exit == 'input' else '' if refusal else synthetic)
+    assert leaf.evaluate('(v)=>Array.from((window.fixtureRoot||document).querySelectorAll("input")).map(e=>e.value).join("")===v', synthetic[0] if focus_exit == 'input' else '' if refusal else synthetic)
     assert leaf.evaluate('!window.submitted')
     assert not (home / 'vault').exists()
 
@@ -279,7 +281,7 @@ def test_late_closed_shadow_refuses_without_writes(nested, where):
     subject.evaluate('const host=document.createElement("div");host.id="host";document.body.append(host)')
     target = codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent)[0]
     try:
-        subject.evaluate('document.querySelector("#host").attachShadow({mode:"closed"})')
+        subject.evaluate('document.querySelector("#host").attachShadow({mode:"closed"}).innerHTML="<input autocomplete=one-time-code>"')
         with pytest.raises(ValueError):
             codes.fill(target, '123456', time.monotonic() + 10)
         assert leaf.evaluate('document.querySelector("input").value===""')
@@ -410,14 +412,12 @@ def test_selection_parent_origin_scope_expiry_and_reuse(nested, monkeypatch):
         picker.close()
 
 
-@pytest.mark.parametrize('case', ['wrong-parent', 'wrong-origin', 'opaque', 'shadow', 'ambiguous', 'capacity', 'closed'])
+@pytest.mark.parametrize('case', ['wrong-parent', 'wrong-origin', 'opaque', 'ambiguous', 'capacity', 'closed'])
 def test_unsupported_targets_fail_safely(nested, case):
     origin, leaf = setup_chain(nested)
     if case == 'opaque':
         nested.pages['https://parent.test/root'] = nested.pages['https://parent.test/root'].replace('<iframe ', '<iframe sandbox="" ')
         nested.page.reload()
-    elif case == 'shadow':
-        leaf.evaluate('const d=document.createElement("div");document.body.append(d);d.attachShadow({mode:"closed"}).innerHTML="<input autocomplete=one-time-code>"')
     elif case == 'ambiguous':
         leaf.evaluate('document.querySelector("form").append(document.querySelector("input").cloneNode(true))')
     elif case == 'capacity':

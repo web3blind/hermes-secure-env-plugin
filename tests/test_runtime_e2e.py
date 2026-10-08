@@ -40,8 +40,8 @@ def signed_data(uid=7):
     return urlencode(fields)
 
 
-def post(config, root, path, body):
-    conn = http.client.HTTPSConnection('127.0.0.1', config['listen_port'], context=ssl.create_default_context(cafile=str(root)), timeout=3)
+def post(config, root, path, body, *, timeout=3):
+    conn = http.client.HTTPSConnection('127.0.0.1', config['listen_port'], context=ssl.create_default_context(cafile=str(root)), timeout=timeout)
     try:
         conn.request('POST', path, json.dumps(body), headers={'Content-Type': 'application/json', 'Origin': f"https://127.0.0.1:{config['listen_port']}"})
         response = conn.getresponse()

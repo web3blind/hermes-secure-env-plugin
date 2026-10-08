@@ -158,7 +158,6 @@ def _classified(raw, explicit=False):
 
 
 def discover(origin, label, task, parent=None, field_selector=None):
-    from agent.vault_login_classifier import build_inspection_js
     strict_origin(origin)
     validate_field_selector(field_selector, parent)
     if not isinstance(label, str) or not 1 <= len(label) <= 80 or any(ord(c) < 32 for c in label):
@@ -179,33 +178,19 @@ def discover(origin, label, task, parent=None, field_selector=None):
     deadline = time.monotonic() + 20
     for p in matching:
         if time.monotonic() >= deadline:
+            for target in result:
+                release(target)
             raise ValueError('discovery timeout')
-        nonce = secrets.token_hex(12)
-        with _page(sup, p['targetId']) as sid:
-            # href remains internal: query/path can contain login tokens.
-            data = _evaluate(sup, sid, '(() => { const href=location.href; if(location.origin !== '
-                + json.dumps(origin) + ') return null; const inputs = '
-                + build_inspection_js(nonce) + '; const nodes = Array.from(document.querySelectorAll("input, select"));'
-                + 'Object.defineProperty(document, "__hermesCodeTarget", {configurable:true, value:Object.freeze({nonce:'
-                + json.dumps(nonce) + ', nodes:Object.freeze(nodes.map(e => Object.freeze({element:e, form:e.form, '
-                + 'action:e.form ? e.form.action : null, method:e.form ? e.form.method : null})))})});'
-                + 'return {href, inputs}; })()')
-        if isinstance(data, dict) and isinstance(data.get('inputs'), str):
-            data['inputs'] = json.loads(data['inputs'])
-        if not isinstance(data, dict) or not isinstance(data.get('inputs'), list):
-            raise ValueError('page changed')
-        groups = {}
-        for c in _classified(data['inputs']):
-            groups.setdefault(c.control.form_index, []).append(c)
-        for controls in groups.values():
-            controls = sorted(controls, key=lambda c: c.control.index)
-            # Multiple full-code fields within one form are ambiguous, never pick first.
-            if len(controls) > 1 and not (all(c.control.max_length == 1 for c in controls)
-                    and all(b.control.index == a.control.index + 1 for a, b in zip(controls, controls[1:]))):
-                raise ValueError('ambiguous code form')
-            result.append(CodeTarget(origin, label, task, p['targetId'], nonce,
-                                     data['href'], tuple(controls), sup))
+        from .nested_code import discover as nested_discover
+        try:
+            result.extend(nested_discover(origin, label, task, p['targetId'], top_only=True))
+        except BaseException:
+            for target in result:
+                release(target)
+            raise
     if len(result) > 20:
+        for target in result:
+            release(target)
         raise ValueError('too many candidate forms')
     return result
 
@@ -255,6 +240,11 @@ def fill(target, code, expires_at):
             raise ValueError('invalid code')
         from .nested_code import NestedCodeTarget, fill as nested_fill
         if isinstance(target, NestedCodeTarget):
+            if not target.explicit_parent:
+                try:
+                    return nested_fill(target, code, expires_at)
+                except ValueError:
+                    return False
             return nested_fill(target, code, expires_at)
         if not target.supervisor.is_valid():
             raise ValueError('browser changed')
@@ -343,7 +333,7 @@ class CodeSelection:
                 if entry is None or entry[1] != scope or entry[2].origin != origin or entry[2].label != label:
                     raise ValueError('invalid selection')
                 target = entry[2]
-                if (target.task != task or getattr(target, 'parent', None) != parent
+                if (target.task != task or (getattr(target, 'parent', None) if getattr(target, 'explicit_parent', True) else None) != parent
                         or target.field_selector != field_selector):
                     raise ValueError('invalid selection')
                 self._entries.pop(selection)

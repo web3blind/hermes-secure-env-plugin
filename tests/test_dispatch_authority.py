@@ -81,7 +81,7 @@ def queued_result(gate, function, expire):
             gate.resume.set()
 
 
-@pytest.mark.parametrize('adapter', ['top', 'nested'])
+@pytest.mark.parametrize('adapter', ['top', 'nested', 'top_only'])
 @pytest.mark.parametrize('expiry', ['authorization', 'target'])
 def test_queued_code_never_outlives_authority(transport, monkeypatch, clock, adapter, expiry):
     if adapter == 'top' and expiry == 'target':
@@ -99,7 +99,8 @@ def test_queued_code_never_outlives_authority(transport, monkeypatch, clock, ada
     else:
         target = nc.NestedCodeTarget('https://synthetic.test', 'Synthetic', 'synthetic', 'other',
             'nonce', 'https://synthetic.test/login', code_control(), bc.BoundCDP(gate),
-            leaf_sid='default', leaf_guard='guard', expires=now + (.5 if expiry == 'target' else 30))
+            leaf_sid='default', leaf_guard='guard', expires=now + (.5 if expiry == 'target' else 30),
+            explicit_parent=adapter != 'top_only')
         monkeypatch.setattr(nc, 'assert_target', lambda t: None)
     def fill():
         try:

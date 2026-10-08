@@ -250,6 +250,7 @@ def test_child_disposal_survives_stalled_loop(transport, monkeypatch, adapter, t
         owner = nc._Lease(transport_cdp)
         owner.sessions.append(child)
         cleanup = owner.close
+    original_timeout = bound_cdp.CALL_TIMEOUT
     monkeypatch.setattr(bound_cdp, 'CALL_TIMEOUT', .03)
     wire.detach_delay = .05
     entered, resume = threading.Event(), threading.Event()
@@ -276,6 +277,9 @@ def test_child_disposal_survives_stalled_loop(transport, monkeypatch, adapter, t
     detached = [c['params']['sessionId'] for c in wire.commands if c['method'] == 'Target.detachFromTarget']
     assert detached == ([] if reconnect else [child])
     assert wire.closed is reconnect
+    # The 30ms budget proves stalled cleanup returns; it is not the healthy
+    # post-cleanup command's scheduling budget on a loaded Chromium test host.
+    monkeypatch.setattr(bound_cdp, 'CALL_TIMEOUT', original_timeout)
     assert bound_cdp.BoundCDP(sup.capture()).call('Target.getTargetInfo', {}, 'default')['result']['targetInfo']['targetId'] == 'other'
     assert not any(c['method'] == 'Target.detachFromTarget' for c in replacement.commands)
 
