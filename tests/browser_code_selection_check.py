@@ -1,10 +1,7 @@
 """Real isolated Chromium + registered tool/HTTPS, unmodified supervisor API."""
-import importlib.util
 import json
 import os
 from pathlib import Path
-import subprocess
-import sys
 import tempfile
 import time
 from types import SimpleNamespace
@@ -17,20 +14,12 @@ from generic_helpers import registered
 
 
 def main():
-    # Load baseline core module, NOT today's uncommitted target_id patch.
-    core = Path(os.environ['SENV_CORE_ROOT'])
-    with tempfile.TemporaryDirectory(prefix='senv-baseline-') as baseline:
-        path = Path(baseline) / 'browser_supervisor.py'
-        path.write_bytes(subprocess.check_output(['git', '-C', str(core), 'show', 'HEAD:tools/browser_supervisor.py']))
-        spec = importlib.util.spec_from_file_location('tools.browser_supervisor', path)
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
-        import tools
-        tools.browser_supervisor = module
-        import inspect
-        assert 'target_id' not in inspect.signature(module.CDPSupervisor.focus_page).parameters
-        _run(module)
+    # Public candidate needs the isolated host's captured-CDP seam, not a
+    # git-show replacement module whose registry has no capture API.
+    from tools import browser_supervisor as module
+    import inspect
+    assert 'target_id' not in inspect.signature(module.CDPSupervisor.focus_page).parameters
+    _run(module)
 
 
 def _run(module):

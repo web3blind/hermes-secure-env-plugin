@@ -311,6 +311,8 @@ def test_guard_release_is_independent_and_timeout_owned(transport, monkeypatch, 
         await original_send(raw)
     wire.send = send
     batch.set()
+    original_timeout = bound_cdp.CALL_TIMEOUT
+    original_reply_timeout = bound_cdp.REPLY_TIMEOUT
     monkeypatch.setattr(bound_cdp, 'CALL_TIMEOUT', .03)
     monkeypatch.setattr(bound_cdp, 'REPLY_TIMEOUT', .04)
     entered, resume = threading.Event(), threading.Event()
@@ -353,6 +355,10 @@ def test_guard_release_is_independent_and_timeout_owned(transport, monkeypatch, 
         assert time.monotonic() < deadline
         time.sleep(.005)
     assert not replacement.commands
+    # The short timeout proves cleanup ownership, not cancellation dispatch
+    # scheduling. Restore normal budgets before testing the retained refusal.
+    monkeypatch.setattr(bound_cdp, 'CALL_TIMEOUT', original_timeout)
+    monkeypatch.setattr(bound_cdp, 'REPLY_TIMEOUT', original_reply_timeout)
     with pytest.raises(ValueError, match='cancelled'):
         captured.call('Runtime.callFunctionOn', {'objectId': 'exact-guard', 'functionDeclaration': 'function(){this.write(0,"x")} '}, 'default')
     assert not replacement.commands

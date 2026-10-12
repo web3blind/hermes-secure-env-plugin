@@ -14,6 +14,9 @@ from secure_env_ingress.vault_ingress import capture_browser_target
 def harness(tmp_path, monkeypatch):
     from tools import browser_use_cli
     runtime, cfg, home, root = make_runtime(tmp_path, mini=False)
+    # Hold only the synthetic replay fixture's idle watcher until teardown.
+    # Runtime E2Es separately verify listener shutdown and expiry.
+    monkeypatch.setattr(runtime, '_watch', lambda: runtime._stop.wait())
     monkeypatch.setenv('HERMES_HOME', str(home))
     monkeypatch.setattr(browser_use_cli, 'is_browser_use_cli_mode', lambda: True)
     scripts = []

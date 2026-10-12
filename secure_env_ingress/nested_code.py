@@ -11,6 +11,7 @@ import time
 from .code_targets import CodeTarget, _call, _classified, _supervisor
 from .vault_ingress import strict_origin
 from .bound_cdp import BoundCDP, FrameUnavailable
+from .grouped_otp import GROUP_JS
 
 
 # Retained references, including composed shadow ancestry, are authority.
@@ -21,20 +22,26 @@ _GUARD = r'''function(nodes, inspection=false, roots=[document], selector=null) 
   const attrs=e=>JSON.stringify(Array.from(e.attributes||[],a=>[a.name,a.value]));
   const saved=nodes.map(e=>({e,path:path(e),attrs:attrs(e),form:e.form,
     formAttrs:e.form?attrs(e.form):null,action:e.form?.action,method:e.form?.method}));
-  const protectedNodes=new Set(saved.flatMap(s=>[...s.path,s.form].filter(Boolean)));
-  const labels=new Set(nodes.flatMap(e=>[...Array.from(e.labels||[]),
-    ...(e.getAttribute('aria-labelledby')||'').split(/\s+/).filter(Boolean).map(id=>e.getRootNode().getElementById(id)).filter(Boolean)]));
+  const groupContainers=new Set(nodes.filter(e=>e.matches('input')&&e.maxLength===1).map(e=>e.parentElement));
+  const groupFor=(__GROUP__);
+  const candidate=nodes.length?groupFor(nodes[0]):null;
+  const group=!inspection&&candidate&&!candidate.forbidden&&candidate.digits.length===nodes.length&&candidate.digits.every((e,i)=>e===nodes[i])?candidate:null;
+  const extras=group?[group.canonical,...group.sources].filter(Boolean):[];
+  const protectedNodes=new Set([...saved.flatMap(s=>[...s.path,s.form].filter(Boolean)),...extras.flatMap(path)]);
+  const labels=new Set([...(group?group.sources:[]),...nodes.flatMap(e=>[...Array.from(e.labels||[]),
+    ...(e.getAttribute('aria-labelledby')||'').split(/\s+/).filter(Boolean).map(id=>e.getRootNode().getElementById(id)).filter(Boolean)])]);
   for(const l of labels){protectedNodes.add(l);for(const n of path(l))protectedNodes.add(n)}
   // MutationObserver does not cross shadow boundaries. Observe every composed
   // ancestry root, not only the iframe's immediate root and document.
   for(const n of protectedNodes){const root=n.getRootNode();if(!roots.includes(root))roots.push(root)}
   const selected=selector===null?[]:roots.flatMap(r=>Array.from(r.querySelectorAll(selector)));
   const snapshots=Array.from(protectedNodes,n=>[n,attrs(n)]);
+  let completed=false;
   const touches=n=>Array.from(protectedNodes).some(p=>n===p||(n.contains&&n.contains(p)));
   const base=n=>n.nodeType===1&&(n.matches('base[href]')||n.querySelector('base[href]'));
   // Discovery uses the native classifier. Conservative semantic potential is
   // a refusal-only superset, including transient/reverted changes; never admission.
-  const codeText=v=>/код/i.test(v||'')||/\b(?:code|pin|token|otp|totp|2fa|mfa|passcode)\b/i.test(String(v||'').normalize('NFKD').replace(/[^a-z0-9]+/gi,' '));
+  const codeText=v=>/код/i.test(v||'')||/(?:\b(?:code|pin|token|otp|totp|2fa|mfa|passcode)\b|sms[ _-]*code)/i.test(String(v||'').normalize('NFKD').replace(/[^a-z0-9]+/gi,' '));
   const semantic=n=>n.nodeType===1&&(n.matches('iframe,frame')||
     (n.matches('input,select,label')&&(Array.from(n.attributes,a=>a.value).some(codeText)||
       (n.matches('label')&&codeText(n.textContent))||Array.from(n.labels||[],l=>l.textContent).some(codeText)||
@@ -57,13 +64,18 @@ _GUARD = r'''function(nodes, inspection=false, roots=[document], selector=null) 
     const values=[r.oldValue,r.target.getAttribute(r.attributeName)].flatMap(v=>r.attributeName==='class'?String(v||'').split(/\s+/):[v]);
     return Array.from(selector.matchAll(/([.#])([\w-]+)/g)).some(m=>m[1]===prefix&&values.includes(m[2]));
   };
-  const authority=n=>n.nodeType===1&&(base(n)||semantic(n)||labelTouches(n)||selectorTouches(n)||
-    Array.from(n.querySelectorAll('input,select,iframe,frame,label,[id]')).some(e=>semantic(e)||labelTouches(e)));
+  const linkRoots=new WeakMap();
+  const groupPotential=n=>n.nodeType===1&&n.querySelector('input')&&(
+    Array.from(n.attributes,a=>a.value).some(codeText)||
+    (n.getAttribute('aria-labelledby')||'').split(/\s+/).filter(Boolean).some(id=>
+      codeText((linkRoots.get(n)||n.getRootNode()).getElementById?.(id)?.textContent)));
+  const authority=n=>n.nodeType===1&&(base(n)||semantic(n)||labelTouches(n)||selectorTouches(n)||groupPotential(n)||
+    Array.from(n.querySelectorAll('*')).some(e=>semantic(e)||groupPotential(e)||labelTouches(e)));
   const sources=new Set(), sourceIds=new Map();
   const collectSources=()=>{
     for(const root of roots){
       if(!sourceIds.has(root))sourceIds.set(root,new Set());
-      for(const e of root.querySelectorAll('input[aria-labelledby],select[aria-labelledby]')){
+      for(const e of root.querySelectorAll('[aria-labelledby]')){
         for(const id of e.getAttribute('aria-labelledby').split(/\s+/).filter(Boolean)){
           sourceIds.get(root).add(id);
           const source=root.getElementById(id);if(source)sources.add(source);
@@ -75,12 +87,12 @@ _GUARD = r'''function(nodes, inspection=false, roots=[document], selector=null) 
   const sourceAttribute=r=>{
     if(r.attributeName!=='id'&&r.attributeName!=='aria-labelledby')return false;
     collectSources();
-    const root=r.target.getRootNode(), ids=sourceIds.get(root)||new Set();
+    const root=linkRoots.get(r.target)||r.target.getRootNode(), ids=sourceIds.get(root)||new Set();
     if(r.attributeName==='id'){
       if(![r.oldValue,r.target.id].some(id=>id&&ids.has(id)))return false;
       sources.add(r.target);return codeText(r.target.textContent);
     }
-    if(!r.target.matches('input,select'))return false;
+    if(!r.target.hasAttribute('aria-labelledby')&&r.attributeName!=='aria-labelledby')return false;
     for(const id of [r.oldValue,r.target.getAttribute('aria-labelledby')].flatMap(v=>String(v||'').split(/\s+/).filter(Boolean))){
       ids.add(id);const source=root.getElementById(id);if(source){sources.add(source);if(codeText(source.textContent))return true;}
     }
@@ -88,13 +100,13 @@ _GUARD = r'''function(nodes, inspection=false, roots=[document], selector=null) 
   };
   sourceRelated(doc);
   const inLabel=n=>Array.from(labels).some(l=>l===n||l.contains(n));
-  const relevant=r=>r.type==='attributes'?(protectedNodes.has(r.target)||inLabel(r.target)||sourceAttribute(r)||
+  const relevant=r=>r.type==='attributes'?(protectedNodes.has(r.target)||(r.target.matches('input')&&groupContainers.has(r.target.parentElement))||inLabel(r.target)||sourceAttribute(r)||
     (r.target.matches('base')&&r.attributeName==='href')||semantic(r.target)||
-    (r.target.matches('input,select,label')&&codeText(r.oldValue))||labelTouches(r.target)||
+    ((r.target.matches('input,select,label')||r.target.querySelector('input'))&&codeText(r.oldValue))||groupPotential(r.target)||labelTouches(r.target)||
     (r.attributeName==='for'&&nodes.some(e=>e.id&&e.id===r.oldValue))||
     (r.attributeName==='id'&&nodes.some(e=>(e.getAttribute('aria-labelledby')||'').split(/\s+/).includes(r.oldValue)))||selectorAttribute(r)):
     r.type==='characterData'?((selector!==null&&!simple)||inLabel(r.target)||((sourceRelated(r.target)||r.target.parentElement?.closest('label'))&&(codeText(r.oldValue)||codeText(r.target.data)))):
-    (selector!==null&&!simple)||[...r.addedNodes,...r.removedNodes].some(n=>touches(n)||authority(n)||
+    groupContainers.has(r.target)||(selector!==null&&!simple)||[...r.addedNodes,...r.removedNodes].some(n=>touches(n)||authority(n)||
       ((sourceRelated(r.target)||(r.target.nodeType===1&&r.target.closest('label')))&&codeText(n.textContent)))||inLabel(r.target);
   let bad=false, closed=false;
   const historyLength=history.length;
@@ -105,9 +117,20 @@ _GUARD = r'''function(nodes, inspection=false, roots=[document], selector=null) 
   const filled=new Map();
   const mutationsBad=records=>{
     collectSources();
+    // Detached subtree links still resolve in the mutation's observed root.
+    // Learn every nested dependency before evaluating any historical record.
+    for(const r of records)if(r.type==='childList'){
+      const root=linkRoots.get(r.target)||r.target.getRootNode();if(!sourceIds.has(root))sourceIds.set(root,new Set());
+      for(const n of [...r.addedNodes,...r.removedNodes])if(n.nodeType===1){
+        for(const e of [n,...n.querySelectorAll('*')]){
+          linkRoots.set(e,root);
+          for(const id of (e.getAttribute('aria-labelledby')||'').split(/\s+/).filter(Boolean))sourceIds.get(root).add(id);
+        }
+      }
+    }
     // Learn the whole batch's historical links before evaluating earlier records.
-    for(const r of records)if(r.type==='attributes'&&r.attributeName==='aria-labelledby'&&r.target.matches('input,select')){
-      const root=r.target.getRootNode();if(!sourceIds.has(root))sourceIds.set(root,new Set());
+    for(const r of records)if(r.type==='attributes'&&r.attributeName==='aria-labelledby'){
+      const root=linkRoots.get(r.target)||r.target.getRootNode();if(!sourceIds.has(root))sourceIds.set(root,new Set());
       for(const id of [r.oldValue,r.target.getAttribute('aria-labelledby')].flatMap(v=>String(v||'').split(/\s+/).filter(Boolean)))sourceIds.get(root).add(id);
     }
     for(const [root,ids] of sourceIds)for(const id of ids){const source=root.getElementById(id);if(source)sources.add(source);}
@@ -127,28 +150,54 @@ _GUARD = r'''function(nodes, inspection=false, roots=[document], selector=null) 
     if(selector!==null&&!inspection){const matches=roots.filter(r=>r===doc||r.host.isConnected).flatMap(r=>Array.from(r.querySelectorAll(selector)));
       if(matches.length!==selected.length||matches.some((e,i)=>e!==selected[i]))bad=true;}
     if(Array.from(filled).some(([i,v])=>saved[i].e.value!==v))bad=true;
+    if(group?.canonical&&filled.size&&group.canonical.value!==nodes.map(n=>n.value).join(''))bad=true;
     return !bad&&!closed&&document===doc&&self.origin===origin&&location.href===href&&history.length===historyLength&&
       saved.every(s=>s.e.isConnected&&s.e.ownerDocument===doc&&attrs(s.e)===s.attrs&&
         path(s.e).length===s.path.length&&path(s.e).every((n,i)=>n===s.path[i])&&
         s.e.form===s.form&&(!s.form||(s.form.isConnected&&attrs(s.form)===s.formAttrs&&s.form.action===s.action&&s.form.method===s.method))&&
-        (inspection||(!s.e.matches(':disabled')&&!s.e.readOnly&&!path(s.e).some(n=>n.nodeType===1&&n.hasAttribute('inert'))&&s.e.getClientRects().length&&
+        (inspection||((completed||!s.e.matches(':disabled'))&&!s.e.readOnly&&!path(s.e).some(n=>n.nodeType===1&&n.hasAttribute('inert'))&&s.e.getClientRects().length&&
         getComputedStyle(s.e).display!=='none'&&getComputedStyle(s.e).visibility==='visible')));
   };
   return Object.freeze({document:doc,valid,
     censusRoot(root){if(!roots.includes(root)){roots.push(root);observe(root);
-      if(Array.from(root.querySelectorAll('input,select,iframe,frame,label')).some(semantic))bad=true;}return valid()},
+      if(Array.from(root.querySelectorAll('*')).some(n=>semantic(n)||groupPotential(n)))bad=true;}return valid()},
     censusNode(n){if(authority(n))bad=true;return valid()},
     close(){closed=true;observer.disconnect();navigation.removeEventListener('navigate',dirty);
     removeEventListener('popstate',dirty);removeEventListener('hashchange',dirty);filled.clear();selected.length=0;saved.length=0;nodes.length=0;roots.length=0;protectedNodes.clear();labels.clear();sources.clear();sourceIds.clear();snapshots.length=0},
     focus(i){if(!valid())return false;saved[i].e.focus();return valid()&&doc.hasFocus()&&focused(saved[i].e)},
     write(i,value){if(!valid()||!doc.hasFocus()||!focused(saved[i].e))return {written:false,valid:false};
-      const e=saved[i].e;
+      const e=saved[i].e, previousCanonical=group?.canonical?.value;
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,value);
       filled.set(i,value);
       e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));
-      return {written:true,valid:valid()&&doc.hasFocus()&&focused(e)};}
+      if(group){
+        const final=i===saved.length-1&&filled.size===saved.length;
+        const records=observer.takeRecords();
+        const token=v=>String(v||'').split(/\s+/).filter(Boolean);
+        const expectedClass=r=>{
+          if(r.target!==e||r.attributeName!=='class')return false;
+          const before=token(r.oldValue),after=token(e.className);
+          return after.includes('filled')&&!after.includes('error')&&
+            before.filter(t=>!['filled','error'].includes(t)).join(' ')===after.filter(t=>!['filled','error'].includes(t)).join(' ');
+        };
+        const allowed=r=>r.type==='attributes'&&(expectedClass(r)||
+          (r.target===group.canonical&&r.attributeName==='min'&&r.oldValue===String(saved.length)&&r.target.getAttribute('min')===r.oldValue)||
+          (r.target===group.canonical&&r.attributeName==='value'&&r.target.type==='hidden'&&
+            r.target.getAttribute('value')===nodes.map(n=>n.value).join('')&&
+            (r.oldValue===previousCanonical||r.oldValue===r.target.value||(r.oldValue===null&&previousCanonical==='')))||
+          (final&&nodes.includes(r.target)&&r.attributeName==='disabled'&&r.oldValue===null&&r.target.disabled));
+        if(mutationsBad(records.filter(r=>!allowed(r))))bad=true;
+        completed=final&&nodes.every(n=>n.disabled);
+        for(const r of records.filter(allowed)){
+          const snapshot=snapshots.find(s=>s[0]===r.target);if(snapshot)snapshot[1]=attrs(r.target);
+          const s=saved.find(s=>s.e===r.target);if(s)s.attrs=attrs(s.e);
+        }
+        if(group.canonical&&group.canonical.value!==nodes.map(n=>n.value).join(''))bad=true;
+      }
+      const expectedFocus=group?(completed||focused(saved[Math.min(i+1,saved.length-1)].e)||focused(e)):focused(e);
+      return {written:true,valid:valid()&&doc.hasFocus()&&expectedFocus};}
   });
-}'''
+}'''.replace('__GROUP__', GROUP_JS)
 
 
 def _result(response):
@@ -159,9 +208,17 @@ def _result(response):
 
 
 def _invoke(sup, sid, obj, function, args=(), by_value=True):
-    return _result(_call(sup, 'Runtime.callFunctionOn', {'objectId': obj,
-        'functionDeclaration': function, 'arguments': [{'value': x} for x in args],
-        'returnByValue': by_value}, sid))
+    try:
+        response = _call(sup, 'Runtime.callFunctionOn', {'objectId': obj,
+            'functionDeclaration': function, 'arguments': [{'value': x} for x in args],
+            'returnByValue': by_value}, sid)
+    except RuntimeError as exc:
+        # Navigation destroys the retained world; normalize only that exact
+        # refusal, never retry or resolve a replacement destination.
+        if 'Cannot find context with specified id' not in str(exc):
+            raise
+        raise ValueError('nested context refused') from None
+    return _result(response)
 
 
 def _parent(sup, parent):
@@ -310,6 +367,11 @@ def _inspection_js(nonce, selector):
           e.getAttribute('aria-disabled')!=='true'&&e.getAttribute('aria-readonly')!=='true'&&
           getComputedStyle(e).visibility==='visible';
         row.inputMode=e.inputMode;row.fieldName=e.name;row.rootIndex=roots.indexOf(e.getRootNode());
+        const group=(''' + GROUP_JS + r''')(e);
+        row.groupedOtp=group&&!group.forbidden?nodes.indexOf(group.digits[0]):null;
+        row.groupForbidden=!!group?.forbidden;
+        row.splitContainer=nodes.indexOf(Array.from(e.parentElement?.children||[]).find(n=>n.matches('input,select')));
+        row.splitSize=Array.from(e.parentElement?.children||[]).filter(n=>n.matches('input')&&n.maxLength===1).length;
       }
       const raw=JSON.stringify(rows);const guard=(''' + _GUARD + r''')(nodes.slice(),true,roots.slice(),selector);
       return {raw,nodes,roots,selector,matchCount:matches.length,href:location.href,guard,close(){guard.close()}};
@@ -361,10 +423,18 @@ def discover(origin, label, task, parent, field_selector=None, *, top_only=False
                 lease.scopes.append((sid, scope, ancestry))
             groups = {}
             root_indices = {r['index']: r['rootIndex'] for r in rows}
+            rows_by_index = {r['index']: r for r in rows}
             classified = _classified(rows, explicit=True) if field_selector is not None else _classified(rows)
             for c in classified:
                 groups.setdefault((root_indices[c.control.index], c.control.form_index), []).append(c)
             for controls in groups.values():
+                witnesses={rows_by_index[c.control.index].get('groupedOtp') for c in controls}
+                if any(w is not None for w in witnesses) and len(witnesses)!=1:
+                    raise ValueError('ambiguous code form')
+                if len(controls)>1 and len({rows_by_index[c.control.index].get('splitContainer') for c in controls})!=1:
+                    raise ValueError('ambiguous code form')
+                if len(controls)>1 and any(rows_by_index[c.control.index].get('splitSize')!=len(controls) for c in controls):
+                    raise ValueError('ambiguous code form')
                 controls.sort(key=lambda c: c.control.index)
                 if len(controls) > 1 and not (4 <= len(controls) <= 16
                         and all(c.control.max_length == 1 for c in controls)

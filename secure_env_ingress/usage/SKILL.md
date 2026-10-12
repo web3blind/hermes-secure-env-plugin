@@ -146,6 +146,33 @@ Supported candidates are one complete native-classified card form (card number +
 
 `filled` confirms only guarded field setters/readback, not purchase/sign-in/registration. `target_refused` is a pre-write refusal; `unknown` means a write was attempted and may be partial. Verify site state without reading card values before any retry; never auto-retry a decline or unknown result. There is **no submit, Pay click, registration action or payment authorization**. Sites may act on input; consent remains required. Real provider/Computop checkout acceptance and Telegram device/button round-trips are not implied by synthetic Chromium tests. As with native filling, a compromised right-origin site, same-UID/root process, or compromised browser/OS is outside the guarantee; separate CDP processes cannot offer a global atomic transaction against adversarial concurrent scripts. Python memory zeroization is not guaranteed.
 
+## Segmented verification codes
+
+Code mode supports 4–16 adjacent single-character text/tel inputs in one form,
+root and container. Standard OTP autocomplete, field names and accessible labels
+remain valid evidence. Unnamed inputs can instead use genuine group-level OTP
+semantics (a verification/one-time label, root-local aria-labelledby source, or
+an OTP-identifying container token). Numeric input mode, arbitrary counts and
+lookalike unrelated classes alone are not evidence. Split groups in different
+containers are never merged; competing groups in the same form refuse.
+
+Retained references include the group, linked label sources and an optional
+unique hidden canonical code input with matching length metadata. Ordinary
+synchronous input handlers may advance focus to the next retained digit, add
+`filled` / remove `error` on that digit, refresh the canonical input's unchanged
+length metadata and disable all digits after the final guarded write. These
+exceptions apply only inside that setter's event dispatch, never while waiting
+for the HTTPS submission. Other attribute/semantic changes (including reverts),
+replacement, reparenting, stale forms and ambiguous/new candidates still refuse.
+
+`filled` confirms guarded field writes, not authentication or site submission.
+The plugin does not click Submit, but a site's own input handler can schedule an
+automatic submission. `unknown` may mean partial input or an operation already
+started: inspect nonsecret site state before any retry. Synthetic tests include
+the untouched public HOSTKEY component; no real account/code was submitted.
+This is not an all-sites guarantee: canvas widgets, unsupported handlers,
+arbitrary nested/nonadjacent controls and groups without code evidence fail closed.
+
 ## Conservative code discovery and explicit field hint
 
 Code discovery recognizes Russian verification/one-time phrases such as
