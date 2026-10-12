@@ -1,0 +1,2 @@
+include tests/fixtures/hostkey-public-otp.js
+include tests/fixtures/hostkey-public-otp.README.md

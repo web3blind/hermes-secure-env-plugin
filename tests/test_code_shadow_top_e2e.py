@@ -2,6 +2,7 @@
 import os
 import subprocess
 import sys
+import pytest
 from pathlib import Path
 from test_nested_code import nested as nested
 
@@ -9,11 +10,27 @@ from test_nested_code import nested as nested
 def test_top_level_registered_browser_flow(nested):
     from tools import browser_supervisor
     core = str(Path(browser_supervisor.__file__).resolve().parents[1])
-    env = dict(os.environ, SENV_TEST_CDP_URL=nested.endpoint, SENV_CORE_ROOT=core)
+    import secure_env_ingress
+    candidate = str(Path(secure_env_ingress.__file__).resolve().parents[1])
+    env = dict(os.environ, SENV_TEST_CDP_URL=nested.endpoint, SENV_CORE_ROOT=core,
+               PYTHONPATH=os.pathsep.join([candidate, core, os.environ.get('PYTHONPATH', '')]))
     proc = subprocess.run([sys.executable, str(Path(__file__).with_name('browser_code_selection_check.py'))],
                           env=env, capture_output=True, text=True, timeout=240)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert 'REGISTERED_HTTPS_FILL' in proc.stdout
+
+
+@pytest.mark.parametrize('message,expected', [
+    ('CDP error: Cannot find context with specified id', ValueError),
+    ('unrelated transport failure', RuntimeError),
+])
+def test_retained_context_refusal_is_narrow(monkeypatch, message, expected):
+    from secure_env_ingress import nested_code
+    def refused(*args, **kwargs):
+        raise RuntimeError(message)
+    monkeypatch.setattr(nested_code, '_call', refused)
+    with pytest.raises(expected):
+        nested_code._invoke(None, 'retained-session', 'retained-object', 'function(){}')
 
 
 def test_discovery_does_not_change_focus_emulation(nested, monkeypatch):

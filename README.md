@@ -357,6 +357,33 @@ From the checkout, `python -m scripts.setup_tls --help`, `python -m scripts.depl
 
 The form uses native labeled inputs and requests `autocomplete="off"` rather than password generation. Browsers may override this hint. Terminal outcomes receive focus; client-side authenticator errors are associated with and focus the invalid field. An operator confirmed the updated ordinary form permits Tab navigation on Windows 11 + Chrome + NVDA. This is not an all-browser or all-screen-reader guarantee.
 
+## Segmented verification codes
+
+Code mode supports 4–16 adjacent single-character text/tel inputs in one form,
+root and container. Standard OTP autocomplete, field names and accessible labels
+remain valid evidence. Unnamed inputs can instead use genuine group-level OTP
+semantics (a verification/one-time label, root-local aria-labelledby source, or
+an OTP-identifying container token). Numeric input mode, arbitrary counts and
+lookalike unrelated classes alone are not evidence. Split groups in different
+containers are never merged; competing groups in the same form refuse.
+
+Retained references include the group, linked label sources and an optional
+unique hidden canonical code input with matching length metadata. Ordinary
+synchronous input handlers may advance focus to the next retained digit, add
+`filled` / remove `error` on that digit, refresh the canonical input's unchanged
+length metadata and disable all digits after the final guarded write. These
+exceptions apply only inside that setter's event dispatch, never while waiting
+for the HTTPS submission. Other attribute/semantic changes (including reverts),
+replacement, reparenting, stale forms and ambiguous/new candidates still refuse.
+
+`filled` confirms guarded field writes, not authentication or site submission.
+The plugin does not click Submit, but a site's own input handler can schedule an
+automatic submission. `unknown` may mean partial input or an operation already
+started: inspect nonsecret site state before any retry. Synthetic tests include
+the untouched public HOSTKEY component; no real account/code was submitted.
+This is not an all-sites guarantee: canvas widgets, unsupported handlers,
+arbitrary nested/nonadjacent controls and groups without code evidence fail closed.
+
 ## Verification
 
 Run plugin Python tests through a disposable Hermes checkout, not the live profile:

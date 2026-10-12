@@ -126,7 +126,7 @@ def _classified(raw, explicit=False):
     from agent.vault_login_classifier import LoginControl, ClassifiedLoginControl, classify_otp_controls
     found = []
     for row in raw:
-        if not isinstance(row, dict):
+        if not isinstance(row, dict) or row.get("groupForbidden"):
             continue
         c = LoginControl.from_dict(row)
         text = ' '.join((c.name, c.label, c.autocomplete))
@@ -144,6 +144,9 @@ def _classified(raw, explicit=False):
         native = classify_otp_controls([c])
         if native:
             found.extend(native)
+        elif (not explicit and row.get('groupedOtp') is not None
+                and c.type in ('text', 'tel') and c.max_length == 1):
+            found.append(ClassifiedLoginControl(c, 70, 'one-time-code'))
         elif c.type != 'password' and _RU_CODE.search(c.label):
             found.append(ClassifiedLoginControl(c, 70, 'one-time-code'))
         elif (explicit and str(row.get('fieldName', '')).lower() == 'code'

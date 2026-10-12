@@ -27,10 +27,14 @@ def nested():
         try:
             port = Path(directory) / 'DevToolsActivePort'
             deadline = time.monotonic() + 20
-            while not port.exists():
+            # Chromium creates DevToolsActivePort before finishing its contents.
+            # Retain the same startup budget, but wait for both complete lines.
+            lines = []
+            while len(lines) < 2 or not lines[0].isdigit():
                 assert time.monotonic() < deadline and proc.poll() is None
                 time.sleep(.05)
-            endpoint = 'http://127.0.0.1:' + port.read_text().splitlines()[0]
+                lines = port.read_text().splitlines() if port.exists() else []
+            endpoint = 'http://127.0.0.1:' + lines[0]
             with urllib.request.urlopen(endpoint + '/json/version') as response:
                 ws = json.load(response)['webSocketDebuggerUrl']
             from playwright.sync_api import sync_playwright
@@ -175,7 +179,7 @@ def test_previous_value_tamper_stops_later_write(nested):
 
 @pytest.mark.parametrize('sites', [('parent.test', 'parent.test'), ('middle.test', 'leaf.test'), ('parent.test', 'leaf.test'), ('middle.test', 'middle.test')])
 @pytest.mark.parametrize('split', [False, True])
-def test_registered_nested_https(nested, sites, split, tmp_path, monkeypatch, attack=None, focus_exit=None, wrongsite_hook=None, field_selector=None, markup=None, shadow_mode=None):
+def test_registered_nested_https(nested, sites, split, tmp_path, monkeypatch, attack=None, focus_exit=None, wrongsite_hook=None, field_selector=None, markup=None, shadow_mode=None, setup_hook=None, synthetic_code=None, completion_check=None):
     import asyncio
     from types import SimpleNamespace
     from urllib.parse import urlsplit
@@ -194,6 +198,8 @@ def test_registered_nested_https(nested, sites, split, tmp_path, monkeypatch, at
     origin, leaf = setup_chain(nested, sites, split)
     if markup is not None:
         leaf.evaluate('(markup) => {document.body.innerHTML=markup}', markup)
+    if setup_hook is not None:
+        setup_hook(leaf)
     if shadow_mode is not None:
         leaf.evaluate('(mode)=>{const r=document.body.appendChild(document.createElement("div")).attachShadow({mode});r.innerHTML=document.querySelector("form").outerHTML;document.querySelector("form").remove();window.fixtureRoot=r}', shadow_mode)
     if focus_exit:
@@ -208,7 +214,7 @@ def test_registered_nested_https(nested, sites, split, tmp_path, monkeypatch, at
     factory = runtime_module.IngressRuntime
     monkeypatch.setattr(runtime_module, 'IngressRuntime', lambda cfg, h, token: factory(cfg, h, token, trust_roots=root))
     sent = []
-    synthetic = 'Q!7&z=' if split else 'Q!7&z=R9'
+    synthetic = synthetic_code or ('Q!7&z=' if split else 'Q!7&z=R9')
 
     class Adapter:
         async def send(self, chat_id, content, metadata=None):
@@ -218,7 +224,7 @@ def test_registered_nested_https(nested, sites, split, tmp_path, monkeypatch, at
             if attack:
                 codes._evaluate(nested.sup, nested.sup._page_session_id, attack)
             status, body = await asyncio.to_thread(post, settings, root, '/submit', {
-                'token': token, 'initData': '', 'values': [synthetic]}, timeout=20 if shadow_mode else 3)
+                'token': token, 'initData': '', 'values': [synthetic]}, timeout=20 if shadow_mode or setup_hook else 3)
             assert status == (409 if refusal else 200)
             assert body == ({'error': 'fill_unconfirmed'} if refusal else {'filled': True})
             return SimpleNamespace(success=True)
@@ -236,7 +242,10 @@ def test_registered_nested_https(nested, sites, split, tmp_path, monkeypatch, at
             assert synthetic not in raw and 'https://' not in raw.replace(origin, '')
         finally:
             sc.clear_session_vars(tokens)
-    assert leaf.evaluate('(v)=>Array.from((window.fixtureRoot||document).querySelectorAll("input")).map(e=>e.value).join("")===v', synthetic[0] if focus_exit == 'input' else '' if refusal else synthetic)
+    if completion_check is not None:
+        completion_check(leaf)
+    else:
+        assert leaf.evaluate('(v)=>Array.from((window.fixtureRoot||document).querySelectorAll("input")).map(e=>e.value).join("")===v', synthetic[0] if focus_exit == 'input' else '' if refusal else synthetic)
     assert leaf.evaluate('!window.submitted')
     assert not (home / 'vault').exists()
 
