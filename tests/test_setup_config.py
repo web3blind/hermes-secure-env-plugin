@@ -263,7 +263,8 @@ def test_check_rejects_existing_target_with_unsafe_metadata(tmp_path: Path) -> N
 def test_cli_uses_profile_aware_home_supports_options_and_check_mode(tmp_path: Path) -> None:
     home = _private_home(tmp_path)
     tls_dir = home / "custom-tls"
-    env = {**os.environ, "HERMES_HOME": str(home), "PYTHONPATH": str(Path(__file__).resolve().parents[1])}
+    from host_fixture_env import host_env
+    env = host_env(HERMES_HOME=str(home))
     configured = subprocess.run(
         [
             sys.executable,

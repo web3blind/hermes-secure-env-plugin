@@ -67,7 +67,7 @@ def test_real_consent_refusal_never_resolves(choice, monkeypatch):
     backend.resolve_secret = lambda h: pytest.fail('declined consent must not resolve secret')
     monkeypatch.setattr(pf, 'payment_backend', lambda *a: backend)
     monkeypatch.setattr(pf, 'assert_target', lambda *a: None)
-    target = SimpleNamespace(origin='https://frame.test', expires=1e30)
+    target = SimpleNamespace(origin='https://frame.test', expires=1e30, parent_session=SimpleNamespace(origin='https://merchant.test'))
     with payment_consent(choice) as seen:
         result = pf.approved_fill(target, 'vault_fixture', lambda: None)
     assert result['status'] == 'payment_declined'
@@ -147,7 +147,7 @@ def test_approval_revalidation_precedes_resolution(failure, monkeypatch):
         if failure == 'metadata':
             backend.get_meta = lambda h: SimpleNamespace(kind='payment', origin=meta.origin, label='Other label', expires=1e30)
     with payment_consent('once', before_decision=change):
-        result = pf.approved_fill(SimpleNamespace(origin=meta.origin, expires=1e30), 'vault_fixture', check_scope)
+        result = pf.approved_fill(SimpleNamespace(origin=meta.origin, expires=1e30, parent_session=SimpleNamespace(origin="https://merchant.test")), 'vault_fixture', check_scope)
     assert result == {'success': False, 'status': 'target_refused', 'stage': 'revalidation'}
 
 
@@ -193,7 +193,7 @@ async def test_cancel_during_real_consent_stops_worker_before_resolution(tmp_pat
     runtime, settings, home, _ = make_runtime(tmp_path, mini=False)
     runtime.close()
     monkeypatch.setenv('HERMES_HOME', str(home))
-    target = SimpleNamespace(expires=float('inf'), origin='https://frame.test')
+    target = SimpleNamespace(expires=float('inf'), origin='https://frame.test', parent_session=SimpleNamespace(origin='https://merchant.test'))
     backend = SimpleNamespace(get_meta=lambda h: SimpleNamespace(label='Synthetic card'),
         resolve_secret=lambda h: pytest.fail('cancelled consent must not resolve'))
     released = []

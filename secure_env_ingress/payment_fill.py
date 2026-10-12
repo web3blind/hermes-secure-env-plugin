@@ -710,7 +710,11 @@ def approved_fill(target, handle, scope_guard, resume_existing=False):
             meta = backend.get_meta(handle)
             assert_target(target)
             stage = 'consent'
-            if not _confirm_payment_fill(meta.label, target.origin):
+            # Retained exact parent identity, not the provider/iframe origin or
+            # a fresh URL lookup after approval. Never disclose URL paths/query.
+            merchant = target.parent_session.origin
+            if not _confirm_payment_fill(meta.label,
+                    f'payment frame {target.origin}; merchant page {merchant}'):
                 return {'success': False, 'status': 'payment_declined'}
             stage = 'revalidation'
             scope_guard()

@@ -225,7 +225,10 @@ def test_registered_nested_https(nested, sites, split, tmp_path, monkeypatch, at
             if attack:
                 codes._evaluate(nested.capture(), nested.sup._page_session_id, attack)
             status, body = await asyncio.to_thread(post, settings, root, '/submit', {
-                'token': token, 'initData': '', 'values': [synthetic]}, timeout=20 if shadow_mode or setup_hook else 3)
+                'token': token, 'initData': '', 'values': [synthetic]}, timeout=20)
+            # Guarded split/OOPIF/private-parent CDP fills can exceed three
+            # seconds. This is only the fixture client's HTTPS read timeout;
+            # production target/authorization TTL and cancellation are unchanged.
             assert status == (409 if refusal else 200)
             assert body == ({'error': 'fill_unconfirmed'} if refusal else {'filled': True})
             return SimpleNamespace(success=True)

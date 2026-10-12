@@ -37,7 +37,8 @@ def captured_parent(nested, tmp_path, monkeypatch, home, html, *, capture=True):
     from gateway.run import _profile_runtime_scope
     from hermes_state import SessionDB
     from hermes_constants import get_hermes_home
-    from tools import browser_use_cli as host, browser_tab_lifecycle as life
+    life = pytest.importorskip("tools.browser_tab_lifecycle", reason="stock release lacks optional independent parent ownership authority")
+    from tools import browser_use_cli as host
     from tools.browser_tab_lifecycle import readonly
     unrelated = tmp_path / 'process-home'
     unrelated.mkdir(exist_ok=True)

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 import stat
 import subprocess
 import sys
@@ -104,13 +103,14 @@ def test_configure_merges_generic_owner_without_telegram_or_unrelated_changes(tm
 
 
 def test_cli_platform_configures_fresh_non_telegram_home(tmp_path: Path) -> None:
+    from host_fixture_env import host_env
     home = _home(tmp_path)
     completed = subprocess.run(
         [sys.executable, "-m", "secure_env_ingress.setup_config", "configure",
          "--home", str(home), "--platform", "discord", "--owner", "opaque-user:A",
          "--public-ip", PUBLIC_IP],
         cwd=Path(__file__).resolve().parents[1],
-        env={**os.environ, "HERMES_HOME": str(home)},
+        env=host_env(HERMES_HOME=str(home)),
         text=True, capture_output=True, check=False,
     )
     assert completed.returncode == 0, completed.stderr

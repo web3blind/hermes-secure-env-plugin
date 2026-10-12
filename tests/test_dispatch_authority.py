@@ -114,7 +114,8 @@ def test_queued_code_never_outlives_authority(transport, monkeypatch, clock, ada
 
 def payment_target(transport, frame='frame'):
     return pf.PaymentTarget('synthetic', 'parent', frame, 'https://synthetic.test', 0,
-        (), 1, transport, 'default', 'default', 'parent-guard', frame + '-guard', time.monotonic() + 30)
+        (), 1, transport, 'default', 'default', 'parent-guard', frame + '-guard', time.monotonic() + 30,
+        parent_session=SimpleNamespace(origin='https://merchant.test'))
 
 
 def install_payment(monkeypatch):

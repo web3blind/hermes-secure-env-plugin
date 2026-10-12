@@ -13,6 +13,18 @@ from .code_targets import _call, _supervisor
 from .bound_cdp import BoundCDP
 
 
+def _page_origin(info, parent):
+    """Only a canonical public HTTPS origin may enter a consent prompt."""
+    from agent.vault_store import normalize_origin
+    from .vault_ingress import strict_origin
+    url = info.get('url', '')
+    parsed = urlsplit(url)
+    if (info.get('targetId') != parent or info.get('type') != 'page'
+            or parsed.scheme != 'https' or parsed.username or parsed.password):
+        raise ValueError('parent unavailable')
+    return strict_origin(normalize_origin(url))
+
+
 def _proof(task, browser, parent, home):
     try:
         from tools.browser_tab_lifecycle import Authority, readonly
@@ -82,7 +94,10 @@ class ParentSession:
         self.lock, self.refs, self.closed = threading.Lock(), {None}, False
         self.private, self.proof, self.sid = False, None, None
         sid = sup.page_session_id
-        if sid and _call(self.transport, 'Target.getTargetInfo', {}, sid)['result']['targetInfo']['targetId'] == parent:
+        info = _call(self.transport, 'Target.getTargetInfo', {}, sid)['result']['targetInfo'] if sid else None
+        if info is not None and info.get('targetId') == parent:
+            self.origin = _page_origin(info, parent)
+            self._url = info['url']
             self.sid = sid
         else:
             # Only pinned browser websockets, no endpoint discovery or new browser.
@@ -91,8 +106,8 @@ class ParentSession:
                 raise ValueError('browser generation unavailable')
             self.proof = _proof(sup.task_id, self.browser, parent, self.home)
             info = _call(self.transport, 'Target.getTargetInfo', {'targetId': parent})['result']['targetInfo']
-            if info['targetId'] != parent or info['type'] != 'page' or urlsplit(info['url']).scheme != 'https':
-                raise ValueError('parent unavailable')
+            self.origin = _page_origin(info, parent)
+            self._url = info['url']
             self.sid = _call(self.transport, 'Target.attachToTarget', {'targetId': parent, 'flatten': True})['result']['sessionId']
             self.private = True
         try:
@@ -113,7 +128,7 @@ class ParentSession:
         elif sup.page_session_id != self.sid:
             raise ValueError('parent attachment changed')
         info = _call(self.transport, 'Target.getTargetInfo', {}, self.sid)['result']['targetInfo']
-        if info['targetId'] != self.parent or info['type'] != 'page':
+        if _page_origin(info, self.parent) != self.origin or info['url'] != self._url:
             raise ValueError('parent session changed')
         return self.sid
 
