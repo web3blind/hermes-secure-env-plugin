@@ -181,7 +181,7 @@ def test_configured_consumer_startup_fail_closed(tmp_path, monkeypatch, fault):
             from tools.registry import registry
             assert 'senv' in manager._plugin_commands
             assert all(registry.get_entry(name, scope=str(home)) for name in (
-                'browser_vault', 'secure_payment_fill', 'secure_operation'))
+                'secure_env_vault', 'secure_payment_fill', 'secure_operation'))
             with pytest.raises(ValueError):
                 bind(home, 'fixture_action', {'target': 'fixture'})
             assert not (home / 'secrets-ingress').exists()

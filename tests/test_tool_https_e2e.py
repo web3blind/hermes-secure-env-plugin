@@ -1,4 +1,4 @@
-"""Registered browser_vault -> Hermes dispatcher -> HTTPS -> native encrypted Vault."""
+"""Registered secure_env_vault -> Hermes dispatcher -> HTTPS -> native encrypted Vault."""
 import asyncio
 import json
 import threading
@@ -58,7 +58,7 @@ def test_vault_tool_reports_bounded_browser_binding_failure(tmp_path, monkeypatc
             tokens = sc.set_session_vars(platform='telegram', user_id='7', chat_id='-600',
                 chat_type='group', session_id='sid', session_key='key', cron_session='')
             try:
-                raw = registry.dispatch('browser_vault',
+                raw = registry.dispatch('secure_env_vault',
                     {'origin': 'https://site.test', 'label': 'Fixture', 'mode': 'code'}, task_id='sid', session_id='sid')
             finally:
                 sc.clear_session_vars(tokens)
@@ -82,7 +82,7 @@ def test_vault_tool_reports_bounded_session_binding_failure(tmp_path, monkeypatc
             tokens = sc.set_session_vars(platform='telegram', user_id='7', chat_id='-600',
                 chat_type='group', session_id='sid', session_key='key', cron_session='')
             try:
-                raw = registry.dispatch('browser_vault',
+                raw = registry.dispatch('secure_env_vault',
                     {'origin': 'https://site.test', 'label': 'Fixture'}, task_id='wrong', session_id='sid')
             finally:
                 sc.clear_session_vars(tokens)
@@ -173,14 +173,14 @@ def test_registered_tool_https_native_vault(secret_kind, mode, running_dispatch_
                 platform=Platform.TELEGRAM, user_id='7', chat_id='-600', chat_type='group'),
                 text='ordinary message')
             invoke_hook('pre_gateway_dispatch', event=event, gateway=gateway)
-            entry = registry.get_entry('browser_vault', scope=str(home))
+            entry = registry.get_entry('secure_env_vault', scope=str(home))
             assert entry is not None and entry.is_async
             tokens = sc.set_session_vars(
                 platform='telegram', user_id='7', chat_id='-600', chat_type='forum',
                 thread_id='99', session_id='sid', session_key='key', profile='', cron_session='')
             try:
                 def dispatch():
-                    return registry.dispatch('browser_vault',
+                    return registry.dispatch('secure_env_vault',
                         {'origin': target.origin, 'label': target.label, 'mode': secret_kind},
                         task_id='sid', session_id='sid')
 
@@ -273,7 +273,7 @@ def test_registered_code_tool_https_delivery_and_completion(tmp_path, monkeypatc
                 chat_type='forum', thread_id='99', session_id='sid', session_key='key',
                 profile='', cron_session='')
             try:
-                raw = registry.dispatch('browser_vault',
+                raw = registry.dispatch('secure_env_vault',
                     {'origin': target.origin, 'label': target.label, 'mode': 'code'},
                     task_id='sid', session_id='sid')
             finally:

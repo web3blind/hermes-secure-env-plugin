@@ -15,7 +15,7 @@ def test_registered_usage_and_both_modes(tmp_path, monkeypatch):
     runtime.close()
     monkeypatch.setenv('HERMES_HOME', str(home))
     with registered(monkeypatch, home, settings=settings), _profile_runtime_scope(home, {}):
-        entry = registry.get_entry('browser_vault', scope=str(home))
+        entry = registry.get_entry('secure_env_vault', scope=str(home))
         description = entry.schema['description'].lower()
         for term in ('secure env', 'login', 'username', 'password', 'code', 'passcode', 'payment', 'confirmation', 'prompt_unavailable'):
             assert term in description
@@ -23,7 +23,7 @@ def test_registered_usage_and_both_modes(tmp_path, monkeypatch):
         assert 'mode' not in entry.schema['parameters']['required']
         assert 'parent' in entry.schema['parameters']['properties']
         for mode, parent in [('login', 'chosen'), ('payment', 'chosen'), ('code', None), ('code', ''), ('code', 123)]:
-            refused = json.loads(registry.dispatch('browser_vault', {
+            refused = json.loads(registry.dispatch('secure_env_vault', {
                 'origin': 'https://example.test', 'label': 'Synthetic', 'mode': mode, 'parent': parent},
                 task_id='synthetic', session_id='synthetic'))
             assert refused['success'] is False and refused['reason'] == 'session_binding'
@@ -58,7 +58,7 @@ async def test_cancelled_discovery_releases_late_exact_target(tmp_path, monkeypa
     with registered(monkeypatch, home, settings=settings), _profile_runtime_scope(home, {}):
         tokens = sc.set_session_vars(platform='telegram', user_id='7', chat_id='7', chat_type='dm', session_id='task', session_key='key', profile='', cron_session='')
         try:
-            handler = registry.get_entry('browser_vault', scope=str(home)).handler
+            handler = registry.get_entry('secure_env_vault', scope=str(home)).handler
             worker = asyncio.create_task(handler(dict(origin=target.origin, label=target.label, mode='code', parent='p'), task_id='task'))
             assert await asyncio.to_thread(ready.wait, 5)
             worker.cancel()

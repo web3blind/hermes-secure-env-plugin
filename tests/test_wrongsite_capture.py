@@ -187,7 +187,7 @@ def test_captured_registered_nested_https(nested, tmp_path, monkeypatch):
             tokens = sc.set_session_vars(platform='telegram', user_id='7', chat_id='-600', chat_type='group', session_id=nested.sup.task_id, session_key='key', cron_session='')
             try:
                 assert get_hermes_home() == home and os.environ['HERMES_HOME'] != str(home)
-                raw = registry.dispatch('browser_vault', dict(mode='code', origin='https://capture.test', label='Synthetic', parent=captured.parent), task_id=nested.sup.task_id, session_id=nested.sup.task_id)
+                raw = registry.dispatch('secure_env_vault', dict(mode='code', origin='https://capture.test', label='Synthetic', parent=captured.parent), task_id=nested.sup.task_id, session_id=nested.sup.task_id)
                 assert json.loads(raw)['status'] == 'filled', raw
                 assert len(sent) == 1 and 'Q!7&z=R9' not in raw
             finally:

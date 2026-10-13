@@ -115,13 +115,13 @@ def _run(module):
                         tokens = sc.set_session_vars(platform='telegram', user_id='7', chat_id='-600', chat_type='group', session_id=task, session_key='key', cron_session='')
                         try:
                             args = {'origin': origin, 'label': 'Fixture', 'mode': 'code'}
-                            choices = json.loads(registry.dispatch('browser_vault', args, task_id=task, session_id=task))
+                            choices = json.loads(registry.dispatch('secure_env_vault', args, task_id=task, session_id=task))
                             assert choices['status'] == 'selection_required' and not sent
                             cdp = context.new_cdp_session(second)
                             tid = cdp.send('Target.getTargetInfo')['targetInfo']['targetId']
                             cdp.detach()
                             chosen = next(c for c in choices['candidates'] if c['page_ref'] == tid)
-                            result = json.loads(registry.dispatch('browser_vault', {**args, 'selection': chosen['selection']}, task_id=task, session_id=task))
+                            result = json.loads(registry.dispatch('secure_env_vault', {**args, 'selection': chosen['selection']}, task_id=task, session_id=task))
                             assert result.get('status') == 'filled' and len(sent) == 1, result
                             assert 'Q!7&z=R9' not in json.dumps(result)
                         finally:

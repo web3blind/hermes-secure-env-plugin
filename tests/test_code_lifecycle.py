@@ -182,7 +182,7 @@ async def test_registered_late_discovery_terminal_cleanup(tmp_path, monkeypatch,
         invoke_hook('pre_gateway_dispatch', event=event, gateway=gateway)
         tokens = sc.set_session_vars(platform='telegram', user_id='7', chat_id='7', chat_type='dm', session_id='task', session_key='key', profile='', cron_session='')
         try:
-            handler = registry.get_entry('browser_vault', scope=str(home)).handler
+            handler = registry.get_entry('secure_env_vault', scope=str(home)).handler
             worker = asyncio.create_task(handler(dict(origin=targets[0].origin, label='Synthetic', mode='code', parent='p'), task_id='task'))
             assert await asyncio.to_thread(ready.wait, 5)
             if case.startswith('unload'):
@@ -323,7 +323,7 @@ def test_dispatcher_cancel_selected_worker_after_loop_closed(tmp_path, monkeypat
             old, newer = threading.Event(), threading.Event()
             _, response = picker.choose(scope, targets[0].origin, 'Synthetic', 'task', parent='p', batch=old)
             picker.choose(('new-scope',), newer_targets[0].origin, 'Fixture', 'task', batch=newer)
-            handler = registry.get_entry('browser_vault', scope=str(home)).handler
+            handler = registry.get_entry('secure_env_vault', scope=str(home)).handler
             async def run():
                 await handler(dict(origin=targets[0].origin, label='Synthetic', mode='code', parent='p',
                     selection=response['candidates'][0]['selection']), task_id='task')

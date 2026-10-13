@@ -20,13 +20,23 @@ assert callable(module.register)
 assert Path(module.__file__).is_relative_to(Path(os.environ['SENV_WHEEL_ROOT']))
 from hermes_cli.plugins import PluginManager
 from tools.registry import registry
+from tools import browser_vault_tool as native
+native_names = ['browser_vault'] if hasattr(native, 'BROWSER_VAULT_SCHEMA') else ['browser_vault_list', 'browser_vault_fill']
+native_entries = {name: registry.get_entry(name, scope=str(home)) for name in native_names}
+assert all(native_entries.values())
 manager = PluginManager(scope_key=str(home))
 manager.discover_and_load()
 assert 'senv' in manager._plugin_commands, manager._plugin_commands
 assert manager._hooks.get('pre_gateway_dispatch')
-for name in ('browser_vault', 'secure_payment_fill', 'secure_operation'):
+for name in ('secure_env_vault', 'secure_payment_fill', 'secure_operation'):
     assert registry.get_entry(name, scope=str(home)), name
+for name, entry in native_entries.items():
+    assert registry.get_entry(name, scope=str(home)) is entry
 manager.unload()
+for name in ('secure_env_vault', 'secure_payment_fill', 'secure_operation'):
+    assert registry.get_entry(name, scope=str(home)) is None
+for name, entry in native_entries.items():
+    assert registry.get_entry(name, scope=str(home)) is entry
 from secure_env_ingress.setup_config import _read_config_file, SetupConfigError
 cases = ['a: [unfinished', 'a: 1\na: 2\n', 'base: &b {a: 1}\nother: {<<: *b, a: 2}\n']
 for text in cases:

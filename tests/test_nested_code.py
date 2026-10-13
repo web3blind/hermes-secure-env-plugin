@@ -240,7 +240,7 @@ def test_registered_nested_https(nested, sites, split, tmp_path, monkeypatch, at
         invoke_hook('pre_gateway_dispatch', event=event, gateway=gateway)
         tokens = sc.set_session_vars(platform='telegram', user_id='7', chat_id='-600', chat_type='group', session_id=nested.sup.task_id, session_key='key', cron_session='')
         try:
-            raw = registry.dispatch('browser_vault', {'origin': origin, 'label': 'Synthetic', 'mode': 'code', 'parent': nested.parent, **({'field_selector': field_selector} if field_selector is not None else {})}, task_id=nested.sup.task_id, session_id=nested.sup.task_id)
+            raw = registry.dispatch('secure_env_vault', {'origin': origin, 'label': 'Synthetic', 'mode': 'code', 'parent': nested.parent, **({'field_selector': field_selector} if field_selector is not None else {})}, task_id=nested.sup.task_id, session_id=nested.sup.task_id)
             result = json.loads(raw)
             assert result['status'] == ('unknown' if refusal else 'filled') and len(sent) == 1, result
             assert synthetic not in raw and 'https://' not in raw.replace(origin, '')

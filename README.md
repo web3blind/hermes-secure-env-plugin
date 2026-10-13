@@ -8,11 +8,13 @@ A profile-scoped, on-demand HTTPS form for adding missing `.env` keys. `/senv` a
 
 YAML configuration uses bounded `ruamel.yaml>=0.18.16,<0.19`; PyYAML is not a plugin runtime dependency. Setup preserves the historical implicit scalar grammar and rejects duplicate keys, including collisions through YAML merges. Optional consumer config-read failures disable consumer discovery only; ordinary ingress config reads remain strict. A fresh-wheel registration and strict-YAML check is available in `tests/wheel_yaml_smoke.py`, run outside the checkout with an unmodified ruamel-based Hermes host on `PYTHONPATH`, an isolated `HOME`/`HERMES_HOME`, and `SENV_WHEEL_ROOT` pointing to the clean wheel environment.
 
-**0.8.0 requires Hermes >=0.21.7.** Stable Hermes v0.21.7 ships the public captured-CDP seam (#133552) and dispatch/lossless-wait follow-up (#135499). This establishes the transport floor, not arbitrary parent ownership or catalog acceptance. Runtime requires Python 3.11+, POSIX ownership/modes, `flock`, `O_NOFOLLOW`, OpenSSL and the bounded dependencies in `pyproject.toml` / `uv.lock`.
+**0.8.1 requires Hermes >=0.21.7.** Stable Hermes v0.21.7 ships the public captured-CDP seam (#133552) and dispatch/lossless-wait follow-up (#135499). This establishes the transport floor, not arbitrary parent ownership or catalog acceptance. Runtime requires Python 3.11+, POSIX ownership/modes, `flock`, `O_NOFOLLOW`, OpenSSL and the bounded dependencies in `pyproject.toml` / `uv.lock`.
 
-### Browser transport requirements (0.8.0)
+0.8.1 names the plugin tool `secure_env_vault` to avoid colliding with Hermes' native unified `browser_vault(action=...)`. There is no plugin `browser_vault` alias. Native Vault filling/listing remains separate; legacy Hermes >=0.21.7 exposes `browser_vault_list` / `browser_vault_fill`.
 
-The plugin's browser-writing paths — `browser_vault(mode="code")` (top-level and nested) and `secure_payment_fill` — require the host supervisor registry's public `registry.capture(task_id)` / `SUPERVISOR_REGISTRY.capture(task_id)` API. Its captured handle must support public `call(..., timeout=None, before_send=...)`: `timeout=None` waits for the actual command outcome rather than timing out locally while a secret write can still run; a **synchronous trusted `before_send` callback** runs on supervisor dispatch immediately before sending, to enforce the plugin's cancellation, expiry and binding checks. These are trusted in-process callbacks, not model-supplied code. A host with only the initial capture seam but without this dispatch follow-up is insufficient.
+### Browser transport requirements (0.8.1)
+
+The plugin's browser-writing paths — `secure_env_vault(mode="code")` (top-level and nested) and `secure_payment_fill` — require the host supervisor registry's public `registry.capture(task_id)` / `SUPERVISOR_REGISTRY.capture(task_id)` API. Its captured handle must support public `call(..., timeout=None, before_send=...)`: `timeout=None` waits for the actual command outcome rather than timing out locally while a secret write can still run; a **synchronous trusted `before_send` callback** runs on supervisor dispatch immediately before sending, to enforce the plugin's cancellation, expiry and binding checks. These are trusted in-process callbacks, not model-supplied code. A host with only the initial capture seam but without this dispatch follow-up is insufficient.
 
 Commands, exact-target CDP attachments and late cleanup use the **original captured handle only**. There is no private supervisor transport fallback, raw-socket send or automatic reconnect/recapture onto a replacement connection. Reconnect, stop or registry replacement invalidates the handle; refuse or report an uncertain attempted write, inspect the site without reading secrets, and rediscover only for a fresh request. Capturing transport does not grant origin permission, human consent or task-to-target ownership.
 
@@ -114,13 +116,13 @@ This distinct mode saves a card without an open browser or checkout. The authori
 
 Native `VaultStore.add_item('payment', ...)` appends an encrypted entry with canonical `card_number`, `cardholder_name`, `exp_month`, `exp_year`, `cvc`, `billing_postal_code` fields. CVC storage is deliberately supported by the native contract; this is a personal Vault feature, **not a PCI-compliance claim** or merchant card-processing service. Empty optional fields are omitted. Exact HTTPS origin/profile are bound at issuance and never taken from submitted values. Storage does not consult a browser, request payment-fill consent, fill checkout fields, submit a site form or authorize payment. `saved` is reported only after native metadata readback; no card value or last-four value is returned. Links retain the login flow's at-most-240-second TTL, one-use, cancel/supersession and safe unknown-write handling. Duplicate requests append entries, never overwrite.
 
-After saving, recheck the intended checkout and its exact origin, use native Vault listing, and call native `browser_vault_fill`. **Native filling requires a separate human confirmation**, routed by Hermes to the active approval surface (Telegram gateway callback or interactive CLI). Missing/unresolved/declined approval fails closed; never retry a decline automatically. This confirmation permits field filling, not a later Pay click. Some sites react to input automatically: verify the page and payment intent before filling. The native fill is not implemented or weakened by this plugin. Cross-origin hosted-payment iframes are outside the native top-document fill path; do not bypass origin checks, read card details back or manually inject them. Use the additive `secure_payment_fill` path below for its explicitly supported iframe cases; other checkout controls still require a supported integration.
+After saving, recheck the intended checkout and its exact origin, use native Vault listing, and call native `browser_vault(action="fill", handle=...)` (legacy Hermes >=0.21.7: `browser_vault_fill`). **Native filling requires a separate human confirmation**, routed by Hermes to the active approval surface (Telegram gateway callback or interactive CLI). Missing/unresolved/declined approval fails closed; never retry a decline automatically. This confirmation permits field filling, not a later Pay click. Some sites react to input automatically: verify the page and payment intent before filling. The native fill is not implemented or weakened by this plugin. Cross-origin hosted-payment iframes are outside the native top-document fill path; do not bypass origin checks, read card details back or manually inject them. Use the additive `secure_payment_fill` path below for its explicitly supported iframe cases; other checkout controls still require a supported integration.
 
 Never put card details in chat/tool arguments, `.env`, logs, or ordinary browser inputs. Use a public nonsensitive label without card numbers. `unknown` means inspect native metadata before retrying, not proof of either success or failure. This release does not unlock third-party managers or resume secret forms after restart.
 
 ## Browser Vault login entry (0.6.5)
 
-The agent can call `browser_vault` with the exact HTTPS site origin and a public label. Login storage requires no browser, open tab or CDP attachment:
+The agent can call `secure_env_vault` with the exact HTTPS site origin and a public label. Login storage requires no browser, open tab or CDP attachment:
 
 ```json
 {"origin":"https://example.com","label":"Example account"}
@@ -131,7 +133,7 @@ Login storage requires an interactive Telegram owner/session/profile, but is ind
 1. A one-time HTTPS form link is sent using the shared delivery setting, without returning the capability URL to the model.
 2. The form identifies the site and profile. The user enters a username/email, password and optional authenticator setup key directly into the form, never chat. Raw TOTP keys and supported `otpauth://totp/` URIs are validated through the native code generator before storage; invalid keys save no item and consume the submitted capability.
 3. The password is stored with native encrypted `VaultStore` in the bound profile, not in `.env` or a separate password store. The tool waits for a terminal outcome; `saved` requires native metadata readback and returns the handle and origin with `filled: false`.
-4. The agent rechecks the page, reads identifier metadata through `browser_vault_list`, enters the identifier, and invokes native `browser_vault_fill`. Saving, filling and successful sign-in are separate results; this plugin does not submit the site's login form.
+4. The agent rechecks the page, reads identifier metadata through native `browser_vault(action="list")` (legacy: `browser_vault_list`), enters the identifier, and invokes native `browser_vault(action="fill", handle=...)` (legacy: `browser_vault_fill`). Saving, filling and successful sign-in are separate results; this plugin does not submit the site's login form.
 
 Browser Vault requests use at most 240 seconds even when configured TTL is higher, leaving headroom below the native dispatch timeout. Ordinary `.env` retains its configured TTL. Expiry, cancellation, supersession, rejection and uncertain post-write results are distinct; an uncertain write must be checked through native metadata before retrying. New saves append native items rather than overwrite an existing login.
 
@@ -141,13 +143,13 @@ The owner/session, profile context and exact HTTPS origin are bound to the stora
 
 The plugin ships the runtime skill `secure-env-ingress:usage` (separate from installation `setup`). Its tool descriptions explicitly cover **login/username/password** as well as **verification codes/passcodes**, so discovery need not depend on this README or another conversation's memory.
 
-- **Save login/password and optional TOTP setup key:** `browser_vault` with `mode="login"` (or omit mode). No browser required. Saving is not filling or signing in. Afterwards list the native Vault, enter only the public username, and use native password filling on the verified origin. Reuse matching saved entries; support username-first/password-only pages without treating them as OTP forms.
-- **Save payment card:** `browser_vault` with `mode="payment"`; no browser required. Card/CVC encrypted storage is separate from native approved checkout filling and payment authorization.
-- **Fill a recognized standalone code/passcode field:** `browser_vault` with `mode="code"`, using the current task's supported browser connection. No Vault storage or automatic site submission. The agent resolves multiple candidates, not the user.
+- **Save login/password and optional TOTP setup key:** `secure_env_vault` with `mode="login"` (or omit mode). No browser required. Saving is not filling or signing in. Afterwards list the native Vault, enter only the public username, and use native password filling on the verified origin. Reuse matching saved entries; support username-first/password-only pages without treating them as OTP forms.
+- **Save payment card:** `secure_env_vault` with `mode="payment"`; no browser required. Card/CVC encrypted storage is separate from native approved checkout filling and payment authorization.
+- **Fill a recognized standalone code/passcode field:** `secure_env_vault` with `mode="code"`, using the current task's supported browser connection. No Vault storage or automatic site submission. The agent resolves multiple candidates, not the user.
 - **Write an ENV secret:** `/senv <profile> <FIELD1,FIELD2>`. Do not use this to read secrets back and manually fill a browser.
 - **Run a pre-registered trusted action:** `secure_operation`. Such registration is NOT required for browser login/password or code forms.
 
-Native Vault prompts and this plugin's Telegram HTTPS forms are different paths. Native `prompt_unavailable` does not prove this plugin is unavailable: discover its `browser_vault` tool and select the appropriate mode, subject to real session authorization, delivery and HTTPS availability. Code mode is not a substitute for arbitrary account passwords.
+Native Vault prompts and this plugin's Telegram HTTPS forms are different paths. Native `prompt_unavailable` does not prove this plugin is unavailable: discover its `secure_env_vault` tool and select the appropriate mode, subject to real session authorization, delivery and HTTPS availability. Code mode is not a substitute for arbitrary account passwords.
 
 On `expired`, reissue only when the user is ready. On `unknown`, inspect the browser without reading the secret before retrying. On `runtime_preflight`, diagnose the failed preparation step: that label is not a root cause. Never loop identical failed calls or claim all secret entry is unavailable based on another tool's error. Login/payment/code links last at most 240 seconds, possibly less by configuration.
 
@@ -246,7 +248,7 @@ This release also recognizes localized verification inputs such as `name="code"`
 
 ## Protected nested verification-code frames (0.7.6)
 
-For a code form inside an iframe, call `browser_vault` with `mode="code"`,
+For a code form inside an iframe, call `secure_env_vault` with `mode="code"`,
 `parent` equal to the exact **task-selected page target ID**, and
 `origin` equal to the code document's exact HTTPS origin (not necessarily the
 parent origin). No global page guessing or arbitrary selectors/CDP endpoints.
@@ -328,7 +330,7 @@ Failure diagnostics use fixed static `stage` values only: preflight, selection, 
 
 ## Protected payment iframe fill (0.7.1)
 
-For a hosted card form, discover `secure_payment_fill` (`Secure ENV payment iframe fill`). It is an **additive plugin tool**, not a replacement for native `browser_vault_fill`:
+For a hosted card form, discover `secure_payment_fill` (`Secure ENV payment iframe fill`). It is an **additive plugin tool**, not a replacement for native `browser_vault(action="fill")` (legacy: `browser_vault_fill`):
 
 ```json
 {"handle":"vault_example","parent":"EXACT_TASK_SELECTED_PARENT_TARGET_ID","origin":"https://payments.example.com"}

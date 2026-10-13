@@ -183,7 +183,7 @@ def factory(public):
         manager.discover_and_load()
         assert 'senv' in manager._plugin_commands
         assert manager._hooks['pre_gateway_dispatch']
-        for name in ('browser_vault', 'secure_operation', 'secure_payment_fill'):
+        for name in ('secure_env_vault', 'secure_operation', 'secure_payment_fill'):
             assert registry.get_entry(name, scope=str(home))
         import sys
         operation_handler = registry.get_entry('secure_operation', scope=str(home)).handler
@@ -223,7 +223,7 @@ def test_consumer_config_read_failure_is_scoped(tmp_path, monkeypatch, caplog, e
     try:
         register(ctx)
         assert 'senv' in manager._plugin_commands
-        for name in ('browser_vault', 'secure_payment_fill', 'secure_operation'):
+        for name in ('secure_env_vault', 'secure_payment_fill', 'secure_operation'):
             assert registry.get_entry(name, scope=str(tmp_path))
         assert 'invalid configuration container' in caplog.text
         assert 'PRIVATE-DIAGNOSTIC' not in caplog.text
