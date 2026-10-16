@@ -8,11 +8,11 @@ A profile-scoped, on-demand HTTPS form for adding missing `.env` keys. `/senv` a
 
 YAML configuration uses bounded `ruamel.yaml>=0.18.16,<0.19`; PyYAML is not a plugin runtime dependency. Setup preserves the historical implicit scalar grammar and rejects duplicate keys, including collisions through YAML merges. Optional consumer config-read failures disable consumer discovery only; ordinary ingress config reads remain strict. A fresh-wheel registration and strict-YAML check is available in `tests/wheel_yaml_smoke.py`, run outside the checkout with an unmodified ruamel-based Hermes host on `PYTHONPATH`, an isolated `HOME`/`HERMES_HOME`, and `SENV_WHEEL_ROOT` pointing to the clean wheel environment.
 
-**0.8.1 requires Hermes >=0.21.7.** Stable Hermes v0.21.7 ships the public captured-CDP seam (#133552) and dispatch/lossless-wait follow-up (#135499). This establishes the transport floor, not arbitrary parent ownership or catalog acceptance. Runtime requires Python 3.11+, POSIX ownership/modes, `flock`, `O_NOFOLLOW`, OpenSSL and the bounded dependencies in `pyproject.toml` / `uv.lock`.
+**0.8.2 requires Hermes >=0.21.7.** Stable Hermes v0.21.7 ships the public captured-CDP seam (#133552) and dispatch/lossless-wait follow-up (#135499). This establishes the transport floor, not arbitrary parent ownership or catalog acceptance. Runtime requires Python 3.11+, POSIX ownership/modes, `flock`, `O_NOFOLLOW`, OpenSSL and the bounded dependencies in `pyproject.toml` / `uv.lock`.
 
-0.8.1 names the plugin tool `secure_env_vault` to avoid colliding with Hermes' native unified `browser_vault(action=...)`. There is no plugin `browser_vault` alias. Native Vault filling/listing remains separate; legacy Hermes >=0.21.7 exposes `browser_vault_list` / `browser_vault_fill`.
+0.8.2 names the plugin tool `secure_env_vault` to avoid colliding with Hermes' native unified `browser_vault(action=...)`. There is no plugin `browser_vault` alias. Native Vault filling/listing remains separate; legacy Hermes >=0.21.7 exposes `browser_vault_list` / `browser_vault_fill`.
 
-### Browser transport requirements (0.8.1)
+### Browser transport requirements (0.8.2)
 
 The plugin's browser-writing paths — `secure_env_vault(mode="code")` (top-level and nested) and `secure_payment_fill` — require the host supervisor registry's public `registry.capture(task_id)` / `SUPERVISOR_REGISTRY.capture(task_id)` API. Its captured handle must support public `call(..., timeout=None, before_send=...)`: `timeout=None` waits for the actual command outcome rather than timing out locally while a secret write can still run; a **synchronous trusted `before_send` callback** runs on supervisor dispatch immediately before sending, to enforce the plugin's cancellation, expiry and binding checks. These are trusted in-process callbacks, not model-supplied code. A host with only the initial capture seam but without this dispatch follow-up is insufficient.
 
@@ -370,10 +370,105 @@ From the checkout, `python -m scripts.setup_tls --help`, `python -m scripts.depl
 
 The form uses native labeled inputs and requests `autocomplete="off"` rather than password generation. Browsers may override this hint. Terminal outcomes receive focus; client-side authenticator errors are associated with and focus the invalid field. An operator confirmed the updated ordinary form permits Tab navigation on Windows 11 + Chrome + NVDA. This is not an all-browser or all-screen-reader guarantee.
 
+## 0.8.2 compatibility corrections
+
+This release carries explicit retained code/card policies, nonmutating discovery,
+frontend scalar-length validation and fixed-category fill diagnostics onto the
+public captured-CDP transport. Diagnostic records contain only stage/reason and
+attempted/confirmed write counts, never values, URLs or exception text.
+
+An unrelated iframe's `tabindex` bookkeeping does not invalidate ordinary code
+targets when neither a selector hint nor an exact spec is present. Selected
+frame owners, selected controls, frame origin/src/replacement history, explicit
+specs and complex-selector dependencies remain protected. This bounded exception
+is not permission to retarget or ignore navigation.
+
+## Explicit retained transient-code targets
+
+When a legitimate transient verification-code control is not recognized by
+legacy autodiscovery, use code-only `target_spec` with an exact task-owned
+`parent`. This is not an account-password/API-key/recovery-seed/card fallback.
+Conflicting credential, payment and promo semantics refuse before requesting a
+secret. Unknown fields require the human to confirm the transient-code purpose
+in the protected HTTPS form; caller purpose alone grants no authority.
+
+```json
+{"origin":"https://example.com","label":"Verification","mode":"code","parent":"EXACT_TASK_OWNED_TARGET","target_spec":{"version":1,"purpose":"transient_code","layout":"single","fields":[{"selector":"#challenge"}],"validation":{"charset":"ascii_printable_no_space","exact_length":17,"multiline":false}}}
+```
+
+The closed version-1 contract supports:
+- `single`: exactly one input text/tel (or clearly identified masked OTP),
+  textarea, or simple `contenteditable="plaintext-only"` / `contenteditable="true"`
+  editing host containing only text nodes at capture. Rich editors, child markup
+  (including BR), nested editing hosts and unsupported input types refuse.
+  Canvas/media fallback elements, interactive non-text widgets and a selected
+  editor with its own shadow renderer also refuse; writing hidden fallback text
+  is not code entry. A simple editor inside an ancestor shadow root is supported.
+- `ordered_cells`: 1–100 unique `fields` selectors in **explicit fill order**,
+  each selecting a text/tel/identified masked-code input. Site maxlength is
+  retained unchanged, not required to equal 1 or synthetically repaired. The
+  confirmed exact count/value policy determines one scalar per retained cell;
+  truncation or handler redirection refuses. No form, sibling adjacency,
+  coordinate ordering or classifier admission is required.
+- `indexed_cells`: `group`, `field_selector`, `order: "dom"` and
+  `expected_count: 1..100`, instead of `fields`. Capture freezes the exact group
+  and DOM-ordered member identities, not a selector to rerun for setters.
+
+All fields must belong to one retained document and one root. Selectors must
+resolve uniquely within the bounded traversal; ambiguous documents, duplicate
+nodes and wrong membership refuse. Repeat the same complete spec for any
+selection token. `field_selector` and `target_spec` are mutually exclusive.
+`validation` always declares `charset`, `exact_length: 1..100` and boolean
+`multiline`. Charsets are `ascii_digits`, `ascii_printable_no_space` and
+`unicode_text`; Unicode length is scalar count, not graphemes. The Unicode
+policy is pinned to Unicode 14.0.0 on both server and browser; characters assigned
+in later Unicode versions remain unsupported even on newer runtimes. The trusted
+session carries the same versioned policy, and missing or changed policy metadata
+refuses before code submission. LF is permitted
+only for explicit single Unicode multiline textarea/plaintext policy and
+confirmed purpose. CR, NUL and Unicode control/format/surrogate characters
+refuse. Legacy code stays 4–16 printable nonspace ASCII; ENV/login/payment
+submission never gains a newline exception.
+
+Discovery is value-free and nonmutating, including legacy discovery: no
+attribute stamps, maxlength/type/autocomplete changes or document-owned target
+properties. Existing ownership, composed ancestry, history, effective form
+origin/action/method, original identities, focus and callback/readback guards
+remain. Explicit targets conservatively refuse any observed child-list change,
+unselected attribute change or newly discovered root while waiting; arbitrary
+rich editor/dynamic DOM effects are unsupported, not silently exempted. Single
+plain-text replacement uses a fixed native textContent setter and collapsed
+editor selection, permitting only its exact text-node reflection. LF remains
+text, never HTML/BR; handler-produced or reverted markup refuses. The protected
+form displays the site and requires an unchecked
+purpose confirmation. Input can trigger site handlers; no Submit or Pay click
+is performed. Codes are not saved to ENV/Vault or returned to the agent.
+
+Card exact-target fill is additive through `secure_payment_fill`: version 1,
+`purpose="payment_card"`, exact `merchant_origin` and ordered explicit roles,
+simple selectors, original frame IDs and fixed formats. Native Vault handles
+provide all card values, with separate native human consent binding both merchant
+and provider before resolution. Top/nested/shadow/multi-frame same-provider
+targets support text/tel inputs, textarea and simple child-markup-free
+plaintext-only/true editing hosts. All original identities, effective forms,
+history, focus, ownership and lease fences remain; LF/card-purpose conflicts,
+rich editors, ambiguous/changed targets and nonempty fields refuse. No Pay click
+or submit is performed. See the bundled usage skill for the complete mapping.
+`target_spec` remains rejected for login/card storage. Existing no-spec payment
+discovery, native consent and resume rules remain unchanged.
+
 ## Segmented verification codes
 
-Code mode supports 4–16 adjacent single-character text/tel inputs in one form,
-root and container. Standard OTP autocomplete, field names and accessible labels
+Code mode supports 4–16 adjacent single-character text/tel inputs in one
+root and container, with or without a form. Exact zero-based `code-0` through
+`code-(N-1)` names, numeric input mode and a single ASCII digit pattern
+(`[0-9]` or `[0-9]{1}`) also prove a numeric group when maxlength is absent.
+This uses public metadata, never site domains, generated class hashes or Vault
+markers. A unique explicit field hint may select one cell of this already-proven
+group; it binds the entire original group, never a one-cell destination or an
+OTP evidence bypass. Discovery does not stamp native Vault attributes onto these
+controls. Arbitrary numeric controls are not admitted. Format and exact group
+length are checked before writing any digit. Standard OTP autocomplete, field names and accessible labels
 remain valid evidence. Unnamed inputs can instead use genuine group-level OTP
 semantics (a verification/one-time label, root-local aria-labelledby source, or
 an OTP-identifying container token). Numeric input mode, arbitrary counts and
@@ -384,7 +479,11 @@ Retained references include the group, linked label sources and an optional
 unique hidden canonical code input with matching length metadata. Ordinary
 synchronous input handlers may advance focus to the next retained digit, add
 `filled` / remove `error` on that digit, refresh the canonical input's unchanged
-length metadata and disable all digits after the final guarded write. These
+length metadata and disable all digits after the final guarded write. Numeric
+controlled components may mirror the current digit's exact value into its value
+attribute (one observed own-dispatch mutation only), or blur the final retained
+digit after the complete group is populated. Earlier focus exits, foreign value
+attributes and transient value-attribute changes still refuse. These
 exceptions apply only inside that setter's event dispatch, never while waiting
 for the HTTPS submission. Other attribute/semantic changes (including reverts),
 replacement, reparenting, stale forms and ambiguous/new candidates still refuse.
@@ -393,7 +492,8 @@ replacement, reparenting, stale forms and ambiguous/new candidates still refuse.
 The plugin does not click Submit, but a site's own input handler can schedule an
 automatic submission. `unknown` may mean partial input or an operation already
 started: inspect nonsecret site state before any retry. Synthetic tests include
-the untouched public HOSTKEY component; no real account/code was submitted.
+the untouched public HOSTKEY component and the verbatim public Privy input
+handler on real controlled React inputs; no real account/code was submitted.
 This is not an all-sites guarantee: canvas widgets, unsupported handlers,
 arbitrary nested/nonadjacent controls and groups without code evidence fail closed.
 
@@ -403,7 +503,7 @@ Run plugin Python tests through a disposable Hermes checkout, not the live profi
 
 ```bash
 cd /path/to/disposable/hermes-agent
-HERMES_PYTHON=/path/to/hermes/python scripts/run_tests.sh /path/to/plugin/tests/ -q
+HERMES_PYTHON=/path/to/hermes/python scripts/run_tests.sh /path/to/plugin/tests/ --file-retries 0
 ```
 
 Three strict xfails in the historical Phase 0 probe characterize generic-host routing limitations; they are not failed HTTPS requirements. Add `--runxfail` to expose them as actual assertions.

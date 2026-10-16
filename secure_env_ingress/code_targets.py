@@ -24,6 +24,7 @@ class CodeTarget:
     controls: tuple = field(repr=False)
     supervisor: object = field(repr=False, compare=False)
     field_selector: str | None = field(default=None, kw_only=True, repr=False)
+    target_spec: dict | None = field(default=None, kw_only=True, repr=False)
 
 
 def _supervisor(task):
@@ -106,7 +107,6 @@ def binding_failure_detail(error):
         'parent connection changed': 'browser_changed',
         'browser generation unavailable': 'browser_changed',
         'browser unavailable': 'browser_unavailable',
-        'public browser capture unavailable': 'browser_unavailable',
         'browser changed': 'browser_changed',
         'invalid selection': 'selection_invalid',
         'ambiguous code form': 'form_ambiguous',
@@ -160,14 +160,19 @@ def _classified(raw, explicit=False):
     return found
 
 
-def discover(origin, label, task, parent=None, field_selector=None):
+def discover(origin, label, task, parent=None, field_selector=None, target_spec=None):
     strict_origin(origin)
     validate_field_selector(field_selector, parent)
+    if target_spec is not None:
+        from .exact_code import validate_spec
+        target_spec = validate_spec(target_spec, parent)
+        if field_selector is not None:
+            raise ValueError("invalid target spec")
     if not isinstance(label, str) or not 1 <= len(label) <= 80 or any(ord(c) < 32 for c in label):
         raise ValueError('invalid label')
     if parent is not None:
         from .nested_code import discover as nested_discover
-        return nested_discover(origin, label, task, parent, field_selector=field_selector)
+        return nested_discover(origin, label, task, parent, field_selector=field_selector, target_spec=target_spec)
     sup = _supervisor(task)
     pages = _call(sup, 'Target.getTargets').get('result', {}).get('targetInfos', [])
     result = []
@@ -239,7 +244,10 @@ def fill(target, code, expires_at):
     from .bound_cdp import dispatch_scope
     with dispatch_scope(expires_at):
         from agent.vault_login_classifier import build_otp_fills
-        if not isinstance(code, str) or not re.fullmatch(r'[!-~]{4,16}', code):
+        from .exact_code import policy
+        target_spec = getattr(target, 'target_spec', None)
+        if not (policy(target_spec).accepts(code) if target_spec is not None else
+                isinstance(code, str) and re.fullmatch(r'[!-~]{4,16}', code)):
             raise ValueError('invalid code')
         from .nested_code import NestedCodeTarget, fill as nested_fill
         if isinstance(target, NestedCodeTarget):
@@ -323,8 +331,13 @@ class CodeSelection:
         with self._lock:
             self._retire(lambda entry: entry[3] is batch)
 
-    def choose(self, scope, origin, label, task, selection=None, parent=None, field_selector=None, *, batch=None):
+    def choose(self, scope, origin, label, task, selection=None, parent=None, field_selector=None, *, batch=None, target_spec=None):
         validate_field_selector(field_selector, parent)
+        if target_spec is not None:
+            from .exact_code import validate_spec
+            target_spec = validate_spec(target_spec, parent)
+            if field_selector is not None:
+                raise ValueError("invalid target spec")
         batch = batch if batch is not None else threading.Event()
         with self._lock:
             if self._closed or batch.is_set():
@@ -337,7 +350,7 @@ class CodeSelection:
                     raise ValueError('invalid selection')
                 target = entry[2]
                 if (target.task != task or (getattr(target, 'parent', None) if getattr(target, 'explicit_parent', True) else None) != parent
-                        or target.field_selector != field_selector):
+                        or target.field_selector != field_selector or getattr(target, 'target_spec', None) != target_spec):
                     raise ValueError('invalid selection')
                 self._entries.pop(selection)
                 self._retire(lambda entry: False)
@@ -351,7 +364,8 @@ class CodeSelection:
         from .bound_cdp import acquisition_scope
         with acquisition_scope(batch):
             targets = discover(origin, label, task) if parent is None else discover(
-                origin, label, task, parent=parent, **({'field_selector': field_selector} if field_selector is not None else {}))
+                origin, label, task, parent=parent, **({'field_selector': field_selector} if field_selector is not None else {}),
+                **({'target_spec': target_spec} if target_spec is not None else {}))
         with self._lock:
             if self._closed or batch.is_set():
                 for target in targets:

@@ -262,6 +262,8 @@ class _Handler(BaseHTTPRequestHandler):
             token = self._bounded_string(payload.get("token"), self.server.max_token_bytes)
             init_data = self._bounded_string(payload.get("initData"), self.server.max_init_data_bytes)
             required = {"token", "initData"} | ({"values"} if path == "/submit" else set())
+            if path == '/submit' and 'confirmed' in payload:
+                required.add('confirmed')
             if set(payload) != required:
                 raise HTTPError(400, "invalid_request")
             cap_key = "cap:" + hashlib.sha256(token.encode("utf-8")).hexdigest()
@@ -271,8 +273,15 @@ class _Handler(BaseHTTPRequestHandler):
                 result = self.server.backend.session(token, init_data)
                 result = self._validate_session_result(result)
             else:
-                values = self._validate_values(payload["values"])
-                result = self.server.backend.submit(token, init_data, values)
+                if 'confirmed' in payload:
+                    session = self._validate_session_result(self.server.backend.session(token, init_data))
+                    if session.get('target') is None or type(payload['confirmed']) is not bool:
+                        raise HTTPError(400, 'invalid_request')
+                    values = self._validate_values(payload['values'], allow_lf=payload['confirmed'] is True and session['target']['validation']['multiline'])
+                    result = self.server.backend.submit(token, init_data, values, confirmed=payload['confirmed'])
+                else:
+                    values = self._validate_values(payload['values'])
+                    result = self.server.backend.submit(token, init_data, values)
                 result = self._validate_submit_result(result)
             self._json(HTTPStatus.OK, result)
         except HTTPError as exc:
@@ -333,9 +342,13 @@ class _Handler(BaseHTTPRequestHandler):
             raise HTTPError(400, "invalid_request")
         return value
 
-    def _validate_values(self, value: Any) -> list[str]:
+    def _validate_values(self, value: Any, *, allow_lf=False) -> list[str]:
         if not isinstance(value, list) or not value or len(value) > self.server.max_values:
             raise HTTPError(400, "invalid_request")
+        if allow_lf:
+            if len(value) != 1 or not isinstance(value[0], str) or len(value[0].encode('utf-8')) > self.server.max_value_bytes or '\r' in value[0] or '\0' in value[0]:
+                raise HTTPError(400, 'invalid_request')
+            return list(value)
         return [self._bounded_string(item, self.server.max_value_bytes) for item in value]
 
     @staticmethod
@@ -348,10 +361,13 @@ class _Handler(BaseHTTPRequestHandler):
                 raise RuntimeError('unsafe session response')
             return value
         if isinstance(value, dict) and value.get('kind') == 'browser_code':
-            if (set(value) != {'label', 'keys', 'kind'} or value['keys'] != ['Verification code']
+            if (set(value) not in ({'label', 'keys', 'kind'}, {'label', 'keys', 'kind', 'target'}) or value['keys'] != (['Transient verification code'] if 'target' in value else ['Verification code'])
                     or not isinstance(value['label'], str) or len(value['label'].encode('utf-8')) > 768):
                 raise RuntimeError('unsafe session response')
-            return {'label': value['label'], 'keys': ['Verification code'], 'kind': 'browser_code'}
+            if 'target' in value:
+                from .exact_code import validate_descriptor
+                validate_descriptor(value['target'])
+            return dict(value)
         if isinstance(value, dict) and value.get('kind') == 'browser_payment':
             from .payment import PAYMENT_KEYS
             if (set(value) != {'label', 'keys', 'kind'} or value['keys'] != list(PAYMENT_KEYS)

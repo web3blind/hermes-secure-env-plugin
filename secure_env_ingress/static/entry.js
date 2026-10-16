@@ -15,6 +15,9 @@
   let codeMode = false;
   let paymentMode = false;
   let operationMode = false;
+  let targetPolicy = null;
+  let confirmation = null;
+  const controls = [];
 
   function decode(value) {
     try { return decodeURIComponent(value.replace(/\+/g, " ")); }
@@ -61,11 +64,12 @@
 
   function disableAndClear(message) {
     terminal = true;
-    for (const input of form.querySelectorAll("input")) {
+    for (const input of controls) {
       input.value = "";
       input.disabled = true;
     }
     submit.disabled = true;
+    if (confirmation) confirmation.disabled = true;
     status.textContent = message;
     status.focus();
   }
@@ -95,7 +99,28 @@
     return seed.length > 0 && !/[^A-Z2-7]/.test(seed);
   }
 
-  function buildForm(data) {
+  // The trusted session carries the packaged Unicode14 table, not the browser UCD.
+  // Pin the canonical payload so omitted, changed or malformed ranges fail closed.
+  async function unicodeContract(data) {
+    if (!data || Object.keys(data).sort().join(',') !== 'forbidden_ranges,version' || data.version !== 'unicode-14.0.0-C-Zl-Zp-v1' || !Array.isArray(data.forbidden_ranges)) throw new Error('invalid_response');
+    const canonical = JSON.stringify({forbidden_ranges: data.forbidden_ranges, version: data.version});
+    const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical));
+    if (Array.from(new Uint8Array(hash), x => x.toString(16).padStart(2, '0')).join('') !== 'e83baed34ac406005cd17ef0433d0bee688fa67f6a3e6e807998555b7849acba') throw new Error('invalid_response');
+    return data.forbidden_ranges;
+  }
+
+  function validTargetValue(value) {
+    if ([...value].length !== targetPolicy.exact_length) return false;
+    if (targetPolicy.charset === 'ascii_digits') return /^[0-9]+$/.test(value);
+    if (targetPolicy.charset === 'ascii_printable_no_space') return /^[!-~]+$/.test(value);
+    return [...value].every(c => {
+      if (c === '\n') return targetPolicy.multiline;
+      const cp = c.codePointAt(0);
+      return c !== '\r' && !targetPolicy.forbiddenRanges.some(([lo, hi]) => lo <= cp && cp <= hi);
+    });
+  }
+
+  async function buildForm(data) {
     if (!data || typeof data.label !== "string" || !Array.isArray(data.keys) || !data.keys.length) {
       throw new Error("invalid_response");
     }
@@ -111,7 +136,14 @@
       operationSummary.hidden = false;
       submit.textContent = 'Run operation';
     }
-    if (codeMode && (data.keys.length !== 1 || data.keys[0] !== 'Verification code')) throw new Error('invalid_response');
+    if (codeMode && data.target) {
+      const t = data.target, v = t.validation;
+      if (t.version !== 1 || t.purpose !== 'transient_code' || t.confirmation_required !== true || !v || !Number.isInteger(v.exact_length) || v.exact_length < 1 || v.exact_length > 100 || typeof v.multiline !== 'boolean' || !['ascii_digits','ascii_printable_no_space','unicode_text'].includes(v.charset)) throw new Error('invalid_response');
+      if (!['single', 'ordered_cells', 'indexed_cells'].includes(t.layout) || !Number.isInteger(t.count) || t.count < 1 || t.count > 100 || (t.layout === 'single' ? t.count !== 1 : v.exact_length !== t.count) || (v.multiline && (t.layout !== 'single' || v.charset !== 'unicode_text'))) throw new Error('invalid_response');
+      const forbiddenRanges = v.charset === 'unicode_text' ? await unicodeContract(t.unicode_contract) : null;
+      targetPolicy = {...v, forbiddenRanges};
+    }
+    if (codeMode && (data.keys.length !== 1 || data.keys[0] !== (targetPolicy ? 'Transient verification code' : 'Verification code'))) throw new Error('invalid_response');
     // Accept the legacy two-field answer as well: during a deploy the assets can be newer than the
     // loaded backend, and the form must keep working until the gateway restarts.
     const expectedKeys = vault && data.keys.length === 2 ? VAULT_KEYS.slice(0, 2) : VAULT_KEYS;
@@ -123,9 +155,9 @@
       const wrapper = document.createElement("div");
       wrapper.className = "field";
       const label = document.createElement("label");
-      const input = document.createElement("input");
+      const input = document.createElement(targetPolicy?.multiline ? "textarea" : "input");
       input.id = `secret-${index}`;
-      input.type = (vault && index === 0) || (paymentMode && index !== 0 && index !== 4) ? "text" : "password";
+      if (input.tagName === 'INPUT') input.type = (vault && index === 0) || (paymentMode && index !== 0 && index !== 4) ? "text" : "password";
       input.name = `secret-${index}`;
       // This is a one-time transfer form, not account registration on this host.
       // new-password can open Chrome's password generator and intercept navigation.
@@ -142,9 +174,16 @@
         if (index === 3) input.pattern = '[0-9]{4}';
         if (index === 4) { input.minLength = 3; input.pattern = '[0-9]{3,4}'; }
       }
-      if (codeMode) { input.minLength = 4; input.maxLength = 16; input.pattern = '[!-~]{4,16}'; }
+      if (codeMode) {
+        input.minLength = targetPolicy ? targetPolicy.exact_length : 4;
+        input.maxLength = targetPolicy ? targetPolicy.exact_length * (targetPolicy.charset === 'unicode_text' ? 2 : 1) : 16;
+        if (!targetPolicy) input.pattern = '[!-~]{4,16}';
+        else if (targetPolicy.charset === 'ascii_digits') input.pattern = '[0-9]{'+targetPolicy.exact_length+'}';
+        else if (targetPolicy.charset === 'ascii_printable_no_space') input.pattern = '[!-~]{'+targetPolicy.exact_length+'}';
+      }
       label.htmlFor = input.id;
       label.textContent = key;
+      controls.push(input);
       wrapper.append(label, input);
       if (optional && vault) {
         const hint = document.createElement("p");
@@ -165,8 +204,16 @@
       fields.append(wrapper);
     });
     intro.textContent = paymentMode ? "Save a payment card for this exact HTTPS origin. Card number and CVC are encrypted in the native Vault. Cardholder name and billing postal code are optional. Enter digits only for number, month, four-digit year and CVC. Saving does not fill a checkout or authorize any payment; later native filling requires your separate confirmation. Anyone with this link can submit it. Never send card details in chat." : operationMode ? "Review the operation and target below. Enter the secret only if you intend to authorize this exact action. Anyone with this link can execute it; this page cannot verify who opened the link. The secret is not saved by this form." : codeMode ? "Enter only the one-time code from email, SMS, or your authenticator app. The code fills the captured browser page; this does not submit the site's form. Never type it in chat. Anyone with this link can use it." : vault ? "Save a login for this exact site. Anyone with this link can submit it. Saving does not fill the browser or sign in. Enter credentials only here, never in chat." : "Enter your secrets. They are sent directly to the server, not through chat. This page does not store them in browser storage.";
+    if (targetPolicy) {
+      operationSummary.textContent = `Transient verification code; ${data.target.layout}; ${data.target.count} retained field(s); exactly ${targetPolicy.exact_length} Unicode scalars; ${targetPolicy.charset}. ${targetPolicy.multiline ? 'Multiline entry is visible, not password-masked. LF is preserved.' : 'Single-line entry.'} Filling can trigger site actions; no Submit is clicked.`;
+      operationSummary.hidden = false;
+      const wrapper = document.createElement('label');
+      confirmation = document.createElement('input'); confirmation.type = 'checkbox'; confirmation.required = true;
+      wrapper.append(confirmation, document.createTextNode(' I confirm this is the transient verification code for the exact site shown above, not a password, card, API key or recovery seed. Filling may trigger site input handlers; no Submit is clicked.'));
+      fields.append(wrapper);
+    }
     form.hidden = false;
-    form.querySelector("input").focus();
+    controls[0].focus();
   }
 
   async function initialize() {
@@ -175,7 +222,7 @@
       capability = launch.token;
       initData = launch.initData;
       const data = await post("/session", { token: capability, initData });
-      buildForm(data);
+      await buildForm(data);
     } catch (_) {
       capability = "";
       initData = "";
@@ -186,8 +233,9 @@
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (terminal) return;
-    const inputs = [...form.querySelectorAll("input")];
+    const inputs = controls;
     const values = inputs.map((input) => input.value);
+    if (targetPolicy && (!confirmation?.checked || !validTargetValue(values[0]))) { values.fill(''); status.textContent = 'Confirm the transient-code purpose and enter the declared exact length and format.'; return; }
     if (vault && inputs.length === VAULT_KEYS.length && !looksLikeAuthenticatorKey(values[VAULT_KEYS.length - 1])) {
       // Keep the one-time link usable: a typo in the optional field must not burn the capability.
       values.fill("");
@@ -202,7 +250,7 @@
     submit.disabled = true;
     status.textContent = operationMode ? "Running…" : codeMode ? "Filling…" : "Saving…";
     try {
-      const response = await post("/submit", { token: capability, initData, values });
+      const response = await post("/submit", { token: capability, initData, values, ...(targetPolicy ? {confirmed: confirmation.checked} : {}) });
       if (codeMode && response.filled !== true) throw new Error('fill_unconfirmed');
       if (paymentMode && response.saved !== true) throw new Error('save_unconfirmed');
       if (operationMode && response.completed !== true) throw new Error('operation_unconfirmed');

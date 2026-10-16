@@ -254,12 +254,17 @@ class IngressRuntime:
                 profile = profile_name_for_home(self.home) or 'default'
                 code_mode = claim.group_id in self._code_groups
                 payment_mode = claim.group_id in self._payment_groups
-                return {'label': target.label + ' — ' + target.origin + ' — Profile: ' + profile,
+                response = {'label': target.label + ' — ' + target.origin + ' — Profile: ' + profile,
                         'keys': list(CODE_KEYS if code_mode else PAYMENT_KEYS if payment_mode else VAULT_LOGIN_KEYS),
                         'kind': 'browser_code' if code_mode else 'browser_payment' if payment_mode else 'browser_vault'}
+                if code_mode and getattr(target, 'target_spec', None) is not None:
+                    from .exact_code import descriptor
+                    response['target'] = descriptor(target.target_spec)
+                    response['keys'] = ['Transient verification code']  # Old clients refuse before secret collection.
+                return response
             return {'label': claim.profile_name, 'keys': list(claim.allowed_keys)}
 
-    def submit(self, token, init_data, values):
+    def submit(self, token, init_data, values, *, confirmed=None):
         with self._lock:
             if self._closed:
                 raise HTTPError(403, 'invalid_session')
@@ -276,7 +281,7 @@ class IngressRuntime:
                          (self._vault_binding is None or self._vault_binding[0] != claim.group_id))):
                     raise HTTPError(410, 'invalid_session')
                 if claim.group_id in self._code_groups:
-                    return bound_context[1].copy().run(self._submit_code, token, claim, resolved, values)
+                    return bound_context[1].copy().run(self._submit_code, token, claim, resolved, values, confirmed)
                 return bound_context[1].copy().run(self._submit_vault, token, claim, resolved, values)
             if not isinstance(resolved, OperationTarget):
                 consumed = self._store.consume(token, mode=claim.mode, platform=claim.platform,
@@ -354,7 +359,7 @@ class IngressRuntime:
                 if self._operation_inflight is not None and self._operation_inflight[0] == group_id:
                     self._operation_inflight = None
 
-    def _submit_code(self, token, claim, target, values):
+    def _submit_code(self, token, claim, target, values, confirmed=None):
         consumed = self._store.consume(token, mode=claim.mode, platform=claim.platform,
             user_id=claim.user_id, hermes_home=self.home, profile_name='browser_vault_code',
             allowed_keys=CODE_KEYS, target_id=(id(target), os.getuid()))
@@ -362,29 +367,44 @@ class IngressRuntime:
             raise HTTPError(410, 'invalid_session')
         self._targets.pop(claim.group_id, None)
         self._code_groups.discard(claim.group_id)
-        if (not isinstance(values, list) or len(values) != 1 or
-                not isinstance(values[0], str) or len(values[0]) > 16 or
-                any(not 33 <= ord(ch) <= 126 for ch in values[0]) or len(values[0]) < 4):
+        from .exact_code import policy
+        spec = getattr(target, 'target_spec', None)
+        valid = isinstance(values, list) and len(values) == 1 and isinstance(values[0], str)
+        if valid:
+            valid = (confirmed is True and policy(spec).accepts(values[0])) if spec is not None else (
+                confirmed is None and 4 <= len(values[0]) <= 16 and all(33 <= ord(ch) <= 126 for ch in values[0]))
+        if not valid:
             self._finish_completion('rejected', claim.group_id)
             raise HTTPError(400, 'invalid_values')
-        try:
-            assert_profile_home(self.home)
-            if time.monotonic() >= claim.expires_at:
-                self._finish_completion('expired', claim.group_id)
-                raise HTTPError(410, 'invalid_session')
-            from .vault_ingress import fill_verification_code
-            filled = fill_verification_code(target, values[0], expires_at=claim.expires_at)
-        except HTTPError:
-            raise
-        except Exception:
-            # A CDP timeout can occur after the page has already received the code.
-            self._finish_completion('unknown', claim.group_id)
-            raise HTTPError(409, 'fill_unconfirmed') from None
-        if not filled:
-            self._finish_completion('unknown', claim.group_id)
-            raise HTTPError(409, 'fill_unconfirmed')
-        self._finish_completion('filled', claim.group_id, origin=target.origin)
-        return {'filled': True}
+        from .bound_cdp import fill_diagnostic_scope, fill_diagnostic, log_fill_diagnostic
+        with fill_diagnostic_scope() as diagnostic:
+            try:
+                fill_diagnostic(reason='profile_refused')
+                assert_profile_home(self.home)
+                if time.monotonic() >= claim.expires_at:
+                    fill_diagnostic(reason='expired')
+                    self._finish_completion('expired', claim.group_id)
+                    raise HTTPError(410, 'invalid_session')
+                from .vault_ingress import fill_verification_code
+                fill_diagnostic('revalidate')
+                filled = fill_verification_code(target, values[0], expires_at=claim.expires_at)
+            except HTTPError:
+                raise
+            except Exception:
+                # Dispatch can act before transport failure; diagnostics never authorize retry.
+                if diagnostic['reason'] == 'unconfirmed':
+                    fill_diagnostic(reason='exception')
+                self._finish_completion('unknown', claim.group_id)
+                raise HTTPError(409, 'fill_unconfirmed') from None
+            else:
+                if not filled:
+                    self._finish_completion('unknown', claim.group_id)
+                    raise HTTPError(409, 'fill_unconfirmed')
+                fill_diagnostic('completion', 'filled')
+                self._finish_completion('filled', claim.group_id, origin=target.origin)
+                return {'filled': True}
+            finally:
+                log_fill_diagnostic(diagnostic)
 
     def _submit_vault(self, token, claim, target, values):
         payment_mode = claim.group_id in self._payment_groups

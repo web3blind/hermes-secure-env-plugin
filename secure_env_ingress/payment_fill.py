@@ -658,6 +658,9 @@ def discover(task, parent, origin):
 
 
 def assert_target(target):
+    from .exact_card import CardTarget, assert_target as card_assert
+    if isinstance(target, CardTarget):
+        return card_assert(target)
     sup = _supervisor(target.task)
     parent_sid = target.parent_session.check() if target.parent_session is not None else _parent(sup, target.parent)
     if not target.supervisor.valid() or time.monotonic() >= target.expires or parent_sid != target.parent_sid:
@@ -688,6 +691,9 @@ def _close_object(sup, sid, obj, *, inspection=False):
 
 
 def release(target):
+    from .exact_card import CardTarget, release as card_release
+    if isinstance(target, CardTarget):
+        return card_release(target)
     for sid, obj in ((target.parent_sid, target.parent_guard), (target.child_sid, target.child_guard)):
         _close_object(target.supervisor, sid, obj)
     if target.attachment is not None:
@@ -699,6 +705,11 @@ def release(target):
 def approved_fill(target, handle, scope_guard, resume_existing=False):
     from .bound_cdp import dispatch_scope
     with dispatch_scope(target.expires):
+        from .exact_card import CardTarget, approved_fill as card_fill
+        if isinstance(target, CardTarget):
+            if resume_existing:
+                return {'success': False, 'status': 'target_refused', 'stage': 'preflight'}
+            return card_fill(target, handle, scope_guard)
         from tools.browser_vault_tool import _confirm_payment_fill, _bot_desktop_browser_session
         from agent.redact import register_vault_redaction_value
         started = False
@@ -710,11 +721,8 @@ def approved_fill(target, handle, scope_guard, resume_existing=False):
             meta = backend.get_meta(handle)
             assert_target(target)
             stage = 'consent'
-            # Retained exact parent identity, not the provider/iframe origin or
-            # a fresh URL lookup after approval. Never disclose URL paths/query.
             merchant = target.parent_session.origin
-            if not _confirm_payment_fill(meta.label,
-                    f'payment frame {target.origin}; merchant page {merchant}'):
+            if not _confirm_payment_fill(meta.label, f'payment frame {target.origin}; merchant page {merchant}'):
                 return {'success': False, 'status': 'payment_declined'}
             stage = 'revalidation'
             scope_guard()
@@ -805,8 +813,11 @@ class PaymentSelection:
         with self._lock:
             self._drop([k for k, v in self._entries.items() if v[4] is batch])
 
-    def choose(self, scope, task, parent, origin, handle, selection=None, *, batch=None):
+    def choose(self, scope, task, parent, origin, handle, selection=None, *, batch=None, target_spec=None):
         from .bound_cdp import acquisition_scope
+        if target_spec is not None:
+            from .exact_card import validate_spec
+            target_spec = validate_spec(target_spec, parent)
         batch = batch if batch is not None else threading.Event()
         with self._lock:
             if self._closed or batch.is_set():
@@ -814,6 +825,8 @@ class PaymentSelection:
             now = time.monotonic()
             self._drop([k for k, v in self._entries.items() if v[0] <= now])
             binding = (task, parent, origin, handle)
+            if target_spec is not None:
+                binding += (json.dumps(target_spec, sort_keys=True),)
             if selection is not None:
                 entry = self._entries.get(selection)
                 if entry is None or entry[1:3] != (scope, binding):
@@ -829,7 +842,11 @@ class PaymentSelection:
                 return target, None
         # Neither shutdown nor cancellation waits behind CDP discovery.
         with acquisition_scope(batch):
-            targets = discover(task, parent, origin)
+            if target_spec is None:
+                targets = discover(task, parent, origin)
+            else:
+                from .exact_card import discover as card_discover
+                targets = card_discover(task, parent, origin, target_spec)
         with self._lock:
             if self._closed or batch.is_set():
                 for t in targets:

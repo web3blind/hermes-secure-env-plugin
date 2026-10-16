@@ -49,11 +49,11 @@ class _CodeChoice:
         self.finished = self.cancelled = False
         self.result = None
 
-    def run(self, *args):
+    def run(self, *args, **kwargs):
         # Never return the target through the cancellable asyncio wrapper.
         result = None
         try:
-            result = self.selection.choose(*args, batch=self.batch)
+            result = self.selection.choose(*args, batch=self.batch, **kwargs)
         finally:
             with self.lock:
                 self.finished = True
@@ -392,13 +392,18 @@ def register(ctx):
                 value = var.get()
                 return None if value is sc._UNSET else value
             if (closed or not isinstance(args, dict) or
-                    (not {'origin', 'label'}.issubset(args) or set(args) - {'origin', 'label', 'mode', 'selection', 'parent', 'field_selector'}) or
+                    (not {'origin', 'label'}.issubset(args) or set(args) - {'origin', 'label', 'mode', 'selection', 'parent', 'field_selector', 'target_spec'}) or
                     args.get('mode', 'login') not in ('login', 'code', 'payment')):
                 raise ValueError('invalid request')
             code_mode = args.get('mode', 'login') == 'code'
             payment_mode = args.get('mode', 'login') == 'payment'
             if 'parent' in args and (not code_mode or not isinstance(args['parent'], str) or not 1 <= len(args['parent']) <= 100):
                 raise ValueError('invalid code parent')
+            if 'target_spec' in args:
+                from .exact_code import validate_spec
+                if not code_mode or 'field_selector' in args:
+                    raise ValueError('invalid target spec')
+                validate_spec(args['target_spec'], args.get('parent'))
             if 'field_selector' in args:
                 from .code_targets import validate_field_selector
                 if not code_mode or args['field_selector'] is None:
@@ -433,7 +438,7 @@ def register(ctx):
                 scope = (str(home), sid, skey, owner_text, str(chat), str(thread))
                 batch = threading.Event()
                 ownership = _CodeChoice(code_selection, batch)
-                choice = asyncio.create_task(asyncio.to_thread(ownership.run, scope, args['origin'], args['label'], task_id, args.get('selection'), args.get('parent'), args.get('field_selector')))
+                choice = asyncio.create_task(asyncio.to_thread(ownership.run, scope, args['origin'], args['label'], task_id, args.get('selection'), args.get('parent'), args.get('field_selector'), **({'target_spec': args['target_spec']} if 'target_spec' in args else {})))
                 try:
                     await asyncio.shield(choice)
                     target, response = ownership.take()
@@ -514,7 +519,7 @@ def register(ctx):
                 if outcome['status'] == 'saved':
                     return json.dumps({'success': True, 'status': 'saved', 'saved': True,
                         'filled': False, 'handle': outcome['handle'], 'origin': outcome['origin'],
-                        'next': ('Recheck page and exact origin, list native Vault with browser_vault(action="list") and call native browser_vault(action="fill", handle=...), or browser_vault_list/browser_vault_fill on legacy Hermes >=0.21.7, which requires human payment-fill confirmation. Never retry a decline. Filling is not permission to click Pay; sites may act on input.' if payment_mode else 'Recheck current browser page and origin, then use native browser_vault(action="list"), type the identifier with the browser input tool and call native browser_vault(action="fill", handle=...); on legacy Hermes >=0.21.7 use browser_vault_list/browser_vault_fill. Saving did not fill or sign in.')})
+                        'next': ('Recheck page and exact origin, list native Vault and call native browser_vault(action="fill", handle=...) (legacy: browser_vault_fill), which requires human payment-fill confirmation. Never retry a decline. Filling is not permission to click Pay; sites may act on input.' if payment_mode else 'Recheck current browser page and origin, then use native browser_vault(action="list") (legacy: browser_vault_list), type the identifier with browser_type and call native browser_vault(action="fill", handle=...) (legacy: browser_vault_fill). Saving did not fill or sign in.')})
                 if code_mode and outcome['status'] == 'filled':
                     return json.dumps({'success': True, 'status': 'filled', 'saved': False,
                         'filled': True, 'origin': outcome['origin'],
@@ -672,10 +677,15 @@ def register(ctx):
             guard()
             vault_binding = bind_vault_home(home)
             if (not isinstance(args, dict) or not {'handle', 'parent', 'origin'} <= set(args)
-                    or set(args) - {'handle', 'parent', 'origin', 'selection', 'resume_existing'}
+                    or set(args) - {'handle', 'parent', 'origin', 'selection', 'resume_existing', 'target_spec'}
                     or type(args.get('resume_existing', False)) is not bool
-                    or any(not isinstance(v, str) or not 1 <= len(v) <= 200 for k, v in args.items() if k != 'resume_existing')):
+                    or any(not isinstance(v, str) or not 1 <= len(v) <= 200 for k, v in args.items() if k not in ('resume_existing', 'target_spec'))):
                 raise ValueError('invalid request')
+            if 'target_spec' in args:
+                from .exact_card import validate_spec
+                args = dict(args, target_spec=validate_spec(args['target_spec'], args['parent']))
+                if args.get('resume_existing', False) or args.get('selection'):
+                    raise ValueError('explicit card target cannot resume or select')
         except Exception:
             return json.dumps({'success': False, 'status': 'session_binding'})
         scope = (str(home), task_id, bound(sc._SESSION_KEY), bound(sc._SESSION_USER_ID),
@@ -690,7 +700,8 @@ def register(ctx):
                 payment_backend(args['handle'], args['origin'])
                 stage = 'selection'
                 target, response = payment_selection.choose(scope, task_id, args['parent'],
-                    args['origin'], args['handle'], args.get('selection'), batch=cancelled)
+                    args['origin'], args['handle'], args.get('selection'), batch=cancelled,
+                    **({'target_spec': args['target_spec']} if 'target_spec' in args else {}))
                 if response is not None:
                     return response
                 from .bound_cdp import acquisition_scope
@@ -713,12 +724,14 @@ def register(ctx):
             await asyncio.shield(worker)
             raise
 
+    from .exact_card import schema as exact_card_schema
     ctx.register_tool(name='secure_payment_fill', toolset='browser',
-        schema={'name': 'secure_payment_fill', 'description': 'Secure ENV: protected payment iframe fill from a saved native Vault handle. Additive tool, not a replacement for native browser_vault(action="fill") (legacy: browser_vault_fill). Requires an explicitly task-selected parent target, with exact task-owner/browser-generation proof for a private attachment when the supervisor is on another page, exact HTTPS frame origin matching the saved card, and separate native human confirmation identifying card label/origin. No card values, arbitrary selectors, endpoints or JS arguments. Multiple direct child frames/forms return bounded opaque selections; Hermes chooses using task context. No Pay click, registration or form submission; sites may act on input. Never retry payment_declined or unknown automatically. Native local payment entries only; no manager unlocking. Optional resume_existing preserves all matching nonempty selected fields only after fresh confirmation; mismatched/masked fields refuse before writes. No value matching details before consent. Load secure-env-ingress:usage for supported field formats and refusal boundaries.',
+        schema={'name': 'secure_payment_fill', 'description': 'Secure ENV: protected card fill from a saved native Vault handle, never card values in arguments. Additive tool, not browser_vault_fill replacement. Requires exact task-selected parent/owner/browser generation and HTTPS provider origin bound to the saved card. Optional closed target_spec purpose=payment_card maps explicit role/selector/original-frame/fixed-format descriptors for standard input, textarea or simple text-node-only plaintext-only/true editing hosts: top-level, bounded nested/shadow and same-provider multi-frame targets, independent of visual geometry. Simple ID/class selectors only, retained original nodes/forms/roots/frame owners; no first-match fallback, executable JS, formatter or secret arguments. Explicit native protected human confirmation displays card label AND merchant/provider origins before secret resolution. No-spec legacy direct child discovery and native consent remain unchanged; multiple candidates return opaque selections. No Pay click, registration or form submission; sites may act on input. Never retry payment_declined or unknown automatically. Native local payment entries only, no manager unlocking. resume_existing applies only to legacy no-spec targets and requires fresh consent. Load secure-env-ingress:usage for closed formats and refusal limits.',
             'parameters': {'type': 'object', 'properties': {
                 'handle': {'type': 'string', 'description': 'Native vault_ payment handle from Vault listing, never card values'},
                 'parent': {'type': 'string', 'description': 'Exact task-selected parent page target ID; a different supervisor page requires host creation-owner proof; never globally auto-picked'},
                 'origin': {'type': 'string', 'description': 'Exact HTTPS origin of payment child frame, matching native Vault binding'},
+                'target_spec': exact_card_schema(),
                 'resume_existing': {'type': 'boolean', 'default': False, 'description': 'Explicit opt-in to preserve existing fields only if all match the saved card internally after fresh native consent; mismatched/masked fields refuse before any write. No submit.'},
                 'selection': {'type': 'string', 'description': 'Opaque selection returned for this task, parent, origin and handle; consumed within 120 seconds'}},
                 'required': ['handle', 'parent', 'origin'], 'additionalProperties': False}},
@@ -733,13 +746,15 @@ def register(ctx):
                     'parameters': {'type': 'object', 'description': 'Nonsensitive operation parameters, never a password'}},
                     'required': ['operation', 'parameters'], 'additionalProperties': False}},
         handler=operation_tool, is_async=True)
+    from .exact_code import schema as exact_code_schema
     ctx.register_tool(name='secure_env_vault', toolset='browser',
-        schema={'name': 'secure_env_vault', 'description': 'Secure ENV: Telegram HTTPS form for login, username, password, optional TOTP setup key, payment card storage, or verification code/passcode. Use mode=login (default) to SAVE credentials for an HTTPS origin in encrypted profile Vault; no open browser required, no automatic filling or sign-in. Later fill the matching site through native Vault tools. Use mode=code to FILL a recognized code/passcode field in an attached browser, without Vault storage or explicit site-form submission. Optional parent enables bounded nested iframe discovery under the task-selected page; input can auto-submit or authorize including 3-D Secure. Accepts 4-16 printable ASCII characters including punctuation, no whitespace. A native secret prompt returning prompt_unavailable does NOT establish that this plugin is unavailable: use the matching mode here in an authorized Telegram session. Payment mode saves card fields including CVC in encrypted native Vault for an exact HTTPS origin; no browser required, no fill, no payment authorization. Later native fill needs explicit human payment-fill confirmation; for supported exact hosted-card iframes discover secure_payment_fill, the additive protected plugin path with the same native human consent. Never retry a decline. No mode needs a site-specific registered operation. Never put secrets in arguments or chat. Links grant access to chat readers. For workflow and failure diagnosis load the plugin usage skill.',
+        schema={'name': 'secure_env_vault', 'description': 'Secure ENV: Telegram HTTPS form for login, username, password, optional TOTP setup key, payment card storage, or verification code/passcode. Use mode=login (default) to SAVE credentials for an HTTPS origin in encrypted profile Vault; no open browser required, no automatic filling or sign-in. Later fill the matching site through native Vault tools. Use mode=code to FILL a recognized code/passcode field in an attached browser, without Vault storage or explicit site-form submission. Optional parent enables bounded nested iframe discovery under the task-selected page; input can auto-submit or authorize including 3-D Secure. Legacy autodiscovery accepts 4-16 printable ASCII characters including punctuation, no whitespace. With exact task-owned parent, target_spec provides an additive retained single input/textarea/plaintext-only editor or explicit ordered/indexed group of up to 100 cells, with versioned exact-length validation and a separate protected human transient-code-purpose confirmation. No passwords, keys, card or recovery credentials; no executable JS or target attribute changes. A native secret prompt returning prompt_unavailable does NOT establish that this plugin is unavailable: use the matching mode here in an authorized Telegram session. Payment mode saves card fields including CVC in encrypted native Vault for an exact HTTPS origin; no browser required, no fill, no payment authorization. Later native fill needs explicit human payment-fill confirmation; for supported exact hosted-card iframes discover secure_payment_fill, the additive protected plugin path with the same native human consent. Never retry a decline. No mode needs a site-specific registered operation. Never put secrets in arguments or chat. Links grant access to chat readers. For workflow and failure diagnosis load the plugin usage skill.',
                 'parameters': {'type': 'object', 'properties': {'origin': {'type': 'string', 'description': 'Exact HTTPS origin to store credentials for; for code mode, the exact code document origin (may differ from the parent). No path or trailing slash.'},
                     'label': {'type': 'string', 'description': 'Short public site label'},
                     'selection': {'type': 'string', 'description': 'Code mode only: opaque candidate returned by selection_required. Hermes chooses using its login context; repeat the exact parent if supplied; never ask the user to identify a tab.'},
                     'parent': {'type': 'string', 'description': 'Code mode only: exact task-selected parent target ID for bounded nested iframe discovery. A different supervisor page requires host creation-owner proof for a private exact attachment. Origin must be the actual code document HTTPS origin. Omit for unchanged top-level discovery. Input may auto-submit/authorize including 3-D Secure; development approval is not banking authorization.'},
                     'field_selector': {'type': 'string', 'minLength': 1, 'maxLength': 256, 'description': 'Code mode only; requires exact task-owned parent. CSS discovery-only hint for one permissible original input across matching-origin documents. Unknown fields require name=code, a form, numeric inputmode and maxlength 4–16. No password/payment/promo controls, shadow traversal or fill-time selector lookup; all protected HTTPS owner/target guards remain. Repeat unchanged when selecting.'},
+                    'target_spec': exact_code_schema(),
                     'mode': {'type': 'string', 'enum': ['login', 'code', 'payment'], 'description': 'login (default): save username/password and optional TOTP key without a browser. code: fill an attached verification-code/passcode field, no storage. payment: save a card including CVC, no browser, fill or payment authorization.'}}, 'required': ['origin', 'label'], 'additionalProperties': False}},
         handler=vault_tool, is_async=True)
     ctx.register_skill('setup', Path(__file__).parent / 'setup' / 'SKILL.md',

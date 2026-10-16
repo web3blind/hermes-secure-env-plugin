@@ -16,13 +16,21 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_native_and_plugin_names_are_independent(tmp_path, monkeypatch, runtime_only):
     home = tmp_path / 'home'
     destination = home / 'plugins' / 'secure-env-ingress'
-    destination.mkdir(parents=True)
+    home.mkdir(parents=True)
     if runtime_only:
         shutil.copytree(ROOT / 'secure_env_ingress', destination, dirs_exist_ok=True)
-    else:
+    elif (ROOT / 'plugin.yaml').is_file():
+        destination.mkdir(parents=True)
         for name in ('plugin.yaml', '__init__.py'):
             shutil.copy2(ROOT / name, destination / name)
         shutil.copytree(ROOT / 'secure_env_ingress', destination / 'secure_env_ingress')
+    else:
+        # Wheels intentionally ship the package entrypoint, not the checkout's
+        # root directory-plugin shim. Exercise that real distribution surface.
+        from importlib.metadata import entry_points
+        entrypoint = next(ep for ep in entry_points(group='hermes_agent.plugins')
+                          if ep.name == 'secure-env-ingress')
+        assert Path(entrypoint.load().__file__).resolve().is_relative_to(ROOT)
     (home / 'config.yaml').write_text('plugins:\n  enabled: [secure-env-ingress]\n  entries:\n    secure-env-ingress:\n      settings:\n        allowed_telegram_user_ids: [7]\n')
     monkeypatch.setenv('HERMES_HOME', str(home))
     # Import registers the real native tool(s), not a fake placeholder.

@@ -1,0 +1,39 @@
+[
+  {
+    "package": "react",
+    "version": "18.3.1",
+    "license": "MIT",
+    "tarball": "https://registry.npmjs.org/react/-/react-18.3.1.tgz",
+    "integrity": "sha512-wS+hAgJShR0KhEvPJArfuPVN1+Hz1t0Y6n5jLrGQbkb4urgPE/0Rve+1kMB1v/oWgHgm4WIcV+i7F2pTVj+2iQ==",
+    "source_member": "package/umd/react.production.min.js",
+    "fixture": "react-18.3.1.production.min.js",
+    "sha256": "d949f1c3687aedadcedac85261865f29b17cd273997e7f6b2bfc53b2f9d4c4dd",
+    "bytes": 10751,
+    "byte_equal": true
+  },
+  {
+    "package": "react-dom",
+    "version": "18.3.1",
+    "license": "MIT",
+    "tarball": "https://registry.npmjs.org/react-dom/-/react-dom-18.3.1.tgz",
+    "integrity": "sha512-5m4nQKp+rZRb09LNH59GM4BxTh9251/ylbKIbpe7TpGxfJ+9kv6BLkLBXIjjspbgbnIBNqlI23tRnTWT0snUIw==",
+    "source_member": "package/umd/react-dom.production.min.js",
+    "fixture": "react-dom-18.3.1.production.min.js",
+    "sha256": "35f4f974f4b2bcd44da73963347f8952e341f83909e4498227d4e26b98f66f0d",
+    "bytes": 131835,
+    "byte_equal": true
+  },
+  {
+    "package": "@privy-io/react-auth",
+    "version": "3.49.0",
+    "license": "Apache-2.0",
+    "tarball": "https://registry.npmjs.org/@privy-io/react-auth/-/react-auth-3.49.0.tgz",
+    "integrity": "sha512-euep1/fzlelGR97ymE89gIguAD6Yib8yO8hE88p/WR1F7aV0t1fZfP8oY/bT74yXN6Q8aFaHpc2JP33Kpyr8Ag==",
+    "source_members": [
+      "package/dist/cjs/AwaitingPasswordlessCodeScreen-BpE4_nMg.js"
+    ],
+    "fixture": "privy-public-code-handler.js",
+    "handler_verbatim": true,
+    "notice_files": []
+  }
+]

@@ -13,7 +13,7 @@ def nested():
     from pathlib import Path
     assert Path(codes.__file__).resolve().parents[1] == Path(__file__).resolve().parents[1]
     # Playwright owns this fresh process. Its browser-level CDP session exposes
-    # the same private transport the registered handler uses.
+    # the host's real public captured-CDP seam used by registered handlers.
 
     from types import SimpleNamespace
     # Use a separate websocket-enabled isolated process, not the user's browser.
@@ -217,21 +217,30 @@ def test_registered_nested_https(nested, sites, split, tmp_path, monkeypatch, at
     sent = []
     synthetic = synthetic_code or ('Q!7&z=' if split else 'Q!7&z=R9')
 
+    pending_submissions = []
     class Adapter:
         async def send(self, chat_id, content, metadata=None):
+            # Delivery acknowledgement precedes the human HTTPS submission.
+            pending_submissions.append(asyncio.create_task(self.submit(chat_id, content, metadata)))
+            return SimpleNamespace(success=True)
+
+        async def submit(self, chat_id, content, metadata=None):
             sent.append(True)
             assert 'authorize' in content and '3-D Secure' in content
             token = urlsplit(content.split('form: ', 1)[1].split(' for ', 1)[0]).fragment
             if attack:
                 codes._evaluate(nested.capture(), nested.sup._page_session_id, attack)
             status, body = await asyncio.to_thread(post, settings, root, '/submit', {
-                'token': token, 'initData': '', 'values': [synthetic]}, timeout=20)
-            # Guarded split/OOPIF/private-parent CDP fills can exceed three
+                'token': token, 'initData': '', 'values': [synthetic]}, timeout=120)
+            # Guarded split/OOPIF/exact-parent CDP fills can exceed three
             # seconds. This is only the fixture client's HTTPS read timeout;
             # production target/authorization TTL and cancellation are unchanged.
             assert status == (409 if refusal else 200)
             assert body == ({'error': 'fill_unconfirmed'} if refusal else {'filled': True})
             return SimpleNamespace(success=True)
+
+    async def drained_submissions():
+        await asyncio.gather(*pending_submissions)
 
     with running_gateway_loop() as loop, registered(monkeypatch, home, settings=settings) as (_, gateway), _profile_runtime_scope(home, {}):
         gateway._gateway_loop = loop
@@ -241,6 +250,7 @@ def test_registered_nested_https(nested, sites, split, tmp_path, monkeypatch, at
         tokens = sc.set_session_vars(platform='telegram', user_id='7', chat_id='-600', chat_type='group', session_id=nested.sup.task_id, session_key='key', cron_session='')
         try:
             raw = registry.dispatch('secure_env_vault', {'origin': origin, 'label': 'Synthetic', 'mode': 'code', 'parent': nested.parent, **({'field_selector': field_selector} if field_selector is not None else {})}, task_id=nested.sup.task_id, session_id=nested.sup.task_id)
+            asyncio.run_coroutine_threadsafe(drained_submissions(), loop).result(timeout=180)
             result = json.loads(raw)
             assert result['status'] == ('unknown' if refusal else 'filled') and len(sent) == 1, result
             assert synthetic not in raw and 'https://' not in raw.replace(origin, '')
