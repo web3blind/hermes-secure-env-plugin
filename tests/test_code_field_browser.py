@@ -39,7 +39,8 @@ def test_ru_sources_real(nested, attr, parent):
     else:
         markup = f'<form><input name="Code" {attr}="Введите код подтверждения"></form>'
     leaf.evaluate('(html)=>document.body.innerHTML=html', markup)
-    targets = codes.discover(origin, 'Synthetic', nested.sup.task_id, **({'parent': nested.parent} if parent else {}))
+    # Both top-level and nested forms use the same explicit selected page.
+    targets = codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent)
     assert len(targets) == 1
     try:
         assert codes.fill(targets[0], 'A!7&z=R9', time.monotonic()+20)

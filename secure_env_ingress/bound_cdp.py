@@ -323,6 +323,7 @@ def fill_diagnostic(stage=None, reason=None, *, attempted=False, confirmed=False
                'write_unconfirmed', 'guard_refused', 'filled', 'cancelled',
                'parent_changed', 'loop_unavailable', 'socket_closed', 'cdp_timeout',
                'cdp_error', 'context_refused', 'attachment_abandoned', 'ownership_refused',
+               'document_focus_lost', 'unexpected_focus',
                'browser_unavailable', 'profile_changed', 'parent_session_changed')
     if stage is not None and stage not in stages or reason is not None and reason not in reasons:
         raise ValueError('invalid diagnostic')

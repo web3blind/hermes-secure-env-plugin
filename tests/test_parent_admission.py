@@ -24,15 +24,13 @@ def test_default_matching_parent_invalid_admission(transport, monkeypatch, info)
         ps.ParentSession(host.handle, 'other')
 
 
-def test_stock_optional_ownership_refuses_without_attachment(transport, monkeypatch, tmp_path):
+def test_stock_optional_ownership_unnecessary(transport, monkeypatch, tmp_path):
     host, wire, _, sessions = transport
-    # Remove only the fixture's proof override, not any real host API.
-    monkeypatch.setattr(ps, '_proof', STOCK_PROOF)
-    with pytest.raises(ValueError, match='parent ownership unavailable'):
-        ps.ParentSession(host.handle, 'parent')
-    assert not any(c['method'] == 'Target.attachToTarget' for c in wire.commands)
+    parent = ps.ParentSession(host.handle, 'parent')
+    try:
+        assert parent.check() == parent.sid
+        assert sessions[parent.sid] == 'parent'
+    finally:
+        parent.drop(None)
     assert set(sessions) == {'default', 'sibling'}
     assert not (tmp_path / 'browser_tabs.sqlite').exists()
-
-
-STOCK_PROOF = ps._proof

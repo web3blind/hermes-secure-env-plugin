@@ -8,17 +8,17 @@ A profile-scoped, on-demand HTTPS form for adding missing `.env` keys. `/senv` a
 
 YAML configuration uses bounded `ruamel.yaml>=0.18.16,<0.19`; PyYAML is not a plugin runtime dependency. Setup preserves the historical implicit scalar grammar and rejects duplicate keys, including collisions through YAML merges. Optional consumer config-read failures disable consumer discovery only; ordinary ingress config reads remain strict. A fresh-wheel registration and strict-YAML check is available in `tests/wheel_yaml_smoke.py`, run outside the checkout with an unmodified ruamel-based Hermes host on `PYTHONPATH`, an isolated `HOME`/`HERMES_HOME`, and `SENV_WHEEL_ROOT` pointing to the clean wheel environment.
 
-**0.8.2 requires Hermes >=0.21.7.** Stable Hermes v0.21.7 ships the public captured-CDP seam (#133552) and dispatch/lossless-wait follow-up (#135499). This establishes the transport floor, not arbitrary parent ownership or catalog acceptance. Runtime requires Python 3.11+, POSIX ownership/modes, `flock`, `O_NOFOLLOW`, OpenSSL and the bounded dependencies in `pyproject.toml` / `uv.lock`.
+**0.8.3 requires Hermes >=0.22.2**, the stock host tested for this candidate. Its public captured-CDP dispatch seam is required; this does not establish catalog acceptance or universal browser-startup compatibility. Runtime requires Python 3.11+, POSIX ownership/modes, `flock`, `O_NOFOLLOW`, OpenSSL and the bounded dependencies in `pyproject.toml` / `uv.lock`.
 
 0.8.2 names the plugin tool `secure_env_vault` to avoid colliding with Hermes' native unified `browser_vault(action=...)`. There is no plugin `browser_vault` alias. Native Vault filling/listing remains separate; legacy Hermes >=0.21.7 exposes `browser_vault_list` / `browser_vault_fill`.
 
-### Browser transport requirements (0.8.2)
+### Browser transport requirements (0.8.3)
 
-The plugin's browser-writing paths — `secure_env_vault(mode="code")` (top-level and nested) and `secure_payment_fill` — require the host supervisor registry's public `registry.capture(task_id)` / `SUPERVISOR_REGISTRY.capture(task_id)` API. Its captured handle must support public `call(..., timeout=None, before_send=...)`: `timeout=None` waits for the actual command outcome rather than timing out locally while a secret write can still run; a **synchronous trusted `before_send` callback** runs on supervisor dispatch immediately before sending, to enforce the plugin's cancellation, expiry and binding checks. These are trusted in-process callbacks, not model-supplied code. A host with only the initial capture seam but without this dispatch follow-up is insufficient.
+The plugin's browser-writing paths — `secure_env_vault(mode="code")` (top-level and nested) and `secure_payment_fill`, plus `secure_login_fill` — require the host supervisor registry's public `registry.capture(task_id)` / `SUPERVISOR_REGISTRY.capture(task_id)` API. Its captured handle must support public `call(..., timeout=None, before_send=...)`: `timeout=None` waits for the actual command outcome rather than timing out locally while a secret write can still run; a **synchronous trusted `before_send` callback** runs on supervisor dispatch immediately before sending, to enforce the plugin's cancellation, expiry and binding checks. These are trusted in-process callbacks, not model-supplied code. A host with only the initial capture seam but without this dispatch follow-up is insufficient.
 
 Commands, exact-target CDP attachments and late cleanup use the **original captured handle only**. There is no private supervisor transport fallback, raw-socket send or automatic reconnect/recapture onto a replacement connection. Reconnect, stop or registry replacement invalidates the handle; refuse or report an uncertain attempted write, inspect the site without reading secrets, and rediscover only for a fresh request. Capturing transport does not grant origin permission, human consent or task-to-target ownership.
 
-The declared minimum applies to this plugin release; older Hermes cores are unsupported. Independent ENV ingress, login/password/TOTP storage, payment-card storage and trusted `secure_operation` consumers do not require browser capture, but remain subject to the declared host floor and their existing authorization, HTTPS, native Vault and consumer requirements. Native Vault filling is a separate host feature, not a plugin transport fallback. Exact-parent attachment when the supervisor is attached elsewhere additionally requires the optional `tools.browser_tab_lifecycle` ownership API. Stock v0.21.7 does not supply that independent authority: mismatching parents refuse with `parent_ownership`, even if visible in CDP. Already-attached exact HTTPS pages remain supported; payment consent names both the retained merchant top-page origin and the payment-frame origin, never URL paths or query strings. Parent navigation during consent refuses before secret resolution. Do not invent settings or ownership evidence to bypass missing capabilities.
+Every browser-writing route requires an explicit existing parent selected by the authorized agent from its browser context. The human is never asked for tab IDs. Tab creator and creation history are irrelevant: no ownership module, browser_tabs.sqlite or replacement registry is used. The plugin attaches its own exact parent session through one original public capture and freezes target/session, profile, human-control lease epoch, HTTPS origin and URL. A different supervisor default page is not a refusal. There is no origin-based sibling fallback, supervisor refocus, recapture or native stock fill/enter_code fallback. Missing parent refuses before any secret prompt. Reconnect, profile/lease change, navigation or document/control replacement invalidates the retained request. `allowed_owners` still authorizes the human, not tab creation. Storage remains browser-independent. Public capture unavailable is a browser capability failure, not a session authorization failure; this plugin does not repair host browser startup.
 
 Hermes catalog submissions target the runtime-only `secure_env_ingress/` subdirectory, which has its own manifest and bounded dependencies. The root `scripts/` administrative TLS helpers are not part of the catalog install. Catalog installations use their reviewed SHA pin; repository releases can be newer than that pin. Alternatively, use either reviewed installation method below.
 
@@ -116,9 +116,25 @@ This distinct mode saves a card without an open browser or checkout. The authori
 
 Native `VaultStore.add_item('payment', ...)` appends an encrypted entry with canonical `card_number`, `cardholder_name`, `exp_month`, `exp_year`, `cvc`, `billing_postal_code` fields. CVC storage is deliberately supported by the native contract; this is a personal Vault feature, **not a PCI-compliance claim** or merchant card-processing service. Empty optional fields are omitted. Exact HTTPS origin/profile are bound at issuance and never taken from submitted values. Storage does not consult a browser, request payment-fill consent, fill checkout fields, submit a site form or authorize payment. `saved` is reported only after native metadata readback; no card value or last-four value is returned. Links retain the login flow's at-most-240-second TTL, one-use, cancel/supersession and safe unknown-write handling. Duplicate requests append entries, never overwrite.
 
-After saving, recheck the intended checkout and its exact origin, use native Vault listing, and call native `browser_vault(action="fill", handle=...)` (legacy Hermes >=0.21.7: `browser_vault_fill`). **Native filling requires a separate human confirmation**, routed by Hermes to the active approval surface (Telegram gateway callback or interactive CLI). Missing/unresolved/declined approval fails closed; never retry a decline automatically. This confirmation permits field filling, not a later Pay click. Some sites react to input automatically: verify the page and payment intent before filling. The native fill is not implemented or weakened by this plugin. Cross-origin hosted-payment iframes are outside the native top-document fill path; do not bypass origin checks, read card details back or manually inject them. Use the additive `secure_payment_fill` path below for its explicitly supported iframe cases; other checkout controls still require a supported integration.
+After saving, recheck the intended checkout, exact merchant/provider origins and native Vault metadata. Use `secure_payment_fill` for supported retained destinations with the exact selected parent; top-level or explicit field layouts require its closed `target_spec`. **The plugin preserves the separate native human payment-fill confirmation**, routed by Hermes to the active approval surface. Missing/unresolved/declined approval fails closed, before secret resolution; never retry a decline or unknown result automatically. This confirms field filling, not a Pay click. Sites may react to input. Native stock `browser_vault(action="fill")` remains a separate host feature with its own limits, not an exact-parent fallback or a way to bypass a plugin refusal. Never read card details back or manually inject them; unsupported destinations require a supported integration.
 
 Never put card details in chat/tool arguments, `.env`, logs, or ordinary browser inputs. Use a public nonsensitive label without card numbers. `unknown` means inspect native metadata before retrying, not proof of either success or failure. This release does not unlock third-party managers or resume secret forms after restart.
+
+## Retained login/password and saved TOTP (0.8.3)
+
+List the native Vault first; handles and public identifiers are metadata, not secrets. Reuse a matching login. Type the public username separately **before** binding, including username-first flows. Then use the plugin route, not stock native fill:
+
+```json
+{"handle":"vault_example","parent":"EXACT_EXISTING_SELECTED_PAGE_ID","origin":"https://example.com","mode":"login"}
+```
+
+This is `secure_login_fill`, distinct from storage-only `secure_env_vault`. It accepts no password, code, endpoint or executable JS. Ordinary passwords use the native login classifier, never transient-code semantics; a unique current-password field is retained across top-level, bounded nested/OOPIF and open/closed custom Shadow documents. Password-only pages are supported. The original public identifier value is retained alongside the password control; focus handlers cannot silently switch accounts before the setter. Unrelated hidden service documents, including opaque sandboxed frames, remain metadata-only refusal canaries instead of automatically denying ordinary login; they never confer secret-destination authority. Optional `field_selector` and login-only original `frame` are discovery descriptors, not setter destinations. Ambiguous forms refuse; identifiers are not forced into a new page.
+
+For a saved authenticator key, call the same `secure_login_fill` with `mode:"totp"`. The native backend's metadata origin/allowed_origins must match the retained exact OTP document **before** `resolve_otp` (and before `resolve_password` for login). A wrong-origin handle never resolves a secret or invokes a setter. TOTP uses the existing retained OTP guard, not native `enter_code`; absent stored code refuses and must not fall back to an unbound prompt. Standalone human-entered codes still use `secure_env_vault(mode="code",parent=...)`. For an explicit code target_spec, clicking the purpose-labelled **Fill verification code** submit button confirms the displayed transient-code purpose; there is no separate confirmation checkbox. Merely typing a value does not dispatch a fill.
+
+Dynamic LOGIN support is deliberately bounded. Synchronous handlers may reflect the exact selected password value, update supported validation/state classes and enable the same-form submit button; controlled React passwords and the retained public input-updater transaction are covered. Original account values (including restored changes observed at beforeinput/input/change boundaries), controls, form association/action and selected iframe visibility/inert ancestry remain guarded. Arbitrary or asynchronous name/type/class changes, unsafe or scoped CSS dependencies and unsupported reconciliation still refuse rather than redirecting a secret.
+
+Locked/unavailable manager providers refuse without resolver access. Unlock only with the native supported unlock flow and its surface constraints, then start a new exact-parent request; this plugin never bypasses an unavailable prompt. Metadata is rechecked before secret resolution. Redaction is registered before secret dispatch, and results contain only fixed outcomes/metadata. Navigation, clone/reparent, form action changes, focus redirection, cancellation/expiry, reconnect and profile/human-lease epoch changes refuse. Each setter targets the original retained control after focus validation; no retry, recapture, native fallback or form submission occurs. Sites may act on input. An `unknown` result may be partial and must not be retried automatically. This is not a browser-wide atomicity or compromised-right-origin-script guarantee.
 
 ## Browser Vault login entry (0.6.5)
 
@@ -133,7 +149,7 @@ Login storage requires an interactive Telegram owner/session/profile, but is ind
 1. A one-time HTTPS form link is sent using the shared delivery setting, without returning the capability URL to the model.
 2. The form identifies the site and profile. The user enters a username/email, password and optional authenticator setup key directly into the form, never chat. Raw TOTP keys and supported `otpauth://totp/` URIs are validated through the native code generator before storage; invalid keys save no item and consume the submitted capability.
 3. The password is stored with native encrypted `VaultStore` in the bound profile, not in `.env` or a separate password store. The tool waits for a terminal outcome; `saved` requires native metadata readback and returns the handle and origin with `filled: false`.
-4. The agent rechecks the page, reads identifier metadata through native `browser_vault(action="list")` (legacy: `browser_vault_list`), enters the identifier, and invokes native `browser_vault(action="fill", handle=...)` (legacy: `browser_vault_fill`). Saving, filling and successful sign-in are separate results; this plugin does not submit the site's login form.
+4. The agent rechecks the page, reads identifier metadata through native `browser_vault(action="list")` (legacy: `browser_vault_list`), enters the identifier, and invokes `secure_login_fill` with the saved handle, exact existing parent and HTTPS destination origin. Saving, filling and successful sign-in are separate results; this plugin does not submit the site's login form.
 
 Browser Vault requests use at most 240 seconds even when configured TTL is higher, leaving headroom below the native dispatch timeout. Ordinary `.env` retains its configured TTL. Expiry, cancellation, supersession, rejection and uncertain post-write results are distinct; an uncertain write must be checked through native metadata before retrying. New saves append native items rather than overwrite an existing login.
 
@@ -143,7 +159,7 @@ The owner/session, profile context and exact HTTPS origin are bound to the stora
 
 The plugin ships the runtime skill `secure-env-ingress:usage` (separate from installation `setup`). Its tool descriptions explicitly cover **login/username/password** as well as **verification codes/passcodes**, so discovery need not depend on this README or another conversation's memory.
 
-- **Save login/password and optional TOTP setup key:** `secure_env_vault` with `mode="login"` (or omit mode). No browser required. Saving is not filling or signing in. Afterwards list the native Vault, enter only the public username, and use native password filling on the verified origin. Reuse matching saved entries; support username-first/password-only pages without treating them as OTP forms.
+- **Save login/password and optional TOTP setup key:** `secure_env_vault` with `mode="login"` (or omit mode). No browser required. Saving is not filling or signing in. Afterwards list the native Vault, enter only the public username, and use `secure_login_fill` on the verified exact destination. Reuse matching saved entries; support username-first/password-only pages without treating them as OTP forms.
 - **Save payment card:** `secure_env_vault` with `mode="payment"`; no browser required. Card/CVC encrypted storage is separate from native approved checkout filling and payment authorization.
 - **Fill a recognized standalone code/passcode field:** `secure_env_vault` with `mode="code"`, using the current task's supported browser connection. No Vault storage or automatic site submission. The agent resolves multiple candidates, not the user.
 - **Write an ENV secret:** `/senv <profile> <FIELD1,FIELD2>`. Do not use this to read secrets back and manually fill a browser.
@@ -153,7 +169,7 @@ Native Vault prompts and this plugin's Telegram HTTPS forms are different paths.
 
 On `expired`, reissue only when the user is ready. On `unknown`, inspect the browser without reading the secret before retrying. On `runtime_preflight`, diagnose the failed preparation step: that label is not a root cause. Never loop identical failed calls or claim all secret entry is unavailable based on another tool's error. Login/payment/code links last at most 240 seconds, possibly less by configuration.
 
-These instructions do not change field recognition, origin/form guards or native login filling. The plugin requires the public host capabilities described above for code/payment browser writes; it does not patch the core or emulate missing APIs. Tool descriptions/skill registration take effect when the plugin is reloaded; an already-running conversation can still contain older guidance. This improves discovery, not a guarantee of every model's choice or every site's compatibility.
+These instructions preserve origin/form guards and separate password classification from transient-code mode. The plugin requires the public host capabilities described above for login/TOTP/code/payment browser writes; it does not patch the core or emulate missing APIs. Tool descriptions/skill registration take effect when the plugin is reloaded; an already-running conversation can still contain older guidance. This improves discovery, not a guarantee of every model's choice or every site's compatibility.
 
 ## Conservative code discovery and explicit field hint
 
@@ -170,12 +186,12 @@ semantic fix; its actual current DOM was not inspected or cloned.
 If automatic discovery cannot recognize an intended OTP-shaped control:
 
 ```json
-{"origin":"https://example.com","label":"Example verification","mode":"code","parent":"EXACT_TASK_OWNED_PARENT_TARGET_ID","field_selector":"input[name=Code]"}
+{"origin":"https://example.com","label":"Example verification","mode":"code","parent":"EXACT_TASK_SELECTED_PARENT_TARGET_ID","field_selector":"input[name=Code]"}
 ```
 
 `field_selector` is optional, code-only, a 1–256-character CSS **discovery hint**,
 not executable code or permission to enter any secret. It requires the explicit
-owned parent and exactly one match across all matching-origin documents under
+selected parent and exactly one match across all matching-origin documents under
 that parent (including the parent document itself). Invalid selectors, multiple
 matches, hidden/disabled/readonly/non-input controls, promo/password/payment
 semantics and non-OTP autocomplete refuse before requesting the secret.
@@ -192,7 +208,7 @@ Changing the selector requires fresh discovery, never retargeting a issued form.
 
 Code discovery refusals retain `reason=browser_binding` and add a fixed `detail`:
 `document_depth`, `document_capacity`, `document_shadow`, `document_unsupported`,
-`selector_ambiguous`, `selector_inadmissible`, `parent_ownership`, `parent_binding`,
+`selector_ambiguous`, `selector_inadmissible`, `parent_binding`,
 `browser_unavailable`, `browser_changed`, `selection_invalid`, `form_ambiguous`,
 `target_changed` or generic `binding_refused`. Depth/size refusals do not
 permit bypassing limits; selector ambiguity requires a unique selector, not a retry
@@ -203,7 +219,7 @@ The selector never resolves a fill destination after discovery. Mutation guards
 may test newly inserted elements against the hint only to refuse ambiguity; they
 never assign authority to those elements. Discovery retains the
 original isolated-world document/input/form/attributes and the existing sticky
-mutation/navigation, origin/ownership/generation/captured-wire/ancestor/focus
+mutation/navigation, origin/authorization/generation/captured-wire/ancestor/focus
 fences. Navigation, replacement or form mutation refuses; no alternate control
 is searched or filled. Selection lineage includes the exact hint if supplied.
 The protected HTTPS form still requires separate authorized owner/session,
@@ -225,7 +241,7 @@ false-positive masking. Incompatible/failed redaction registration refuses.
 
 When the already-attached browser page asks for an email, SMS or authenticator one-time code without a new username/password, use the same plugin tool with `{"origin":"https://example.com","label":"Example verification","mode":"code"}`. The owner receives a single-use HTTPS form with one masked **Verification code** field. Enter the code there (4–16 printable ASCII characters, including punctuation; no spaces or control characters), never in chat or tool arguments. No saved login or authenticator seed is required. The code is not stored in Vault, `.env`, or on disk; the form submits it to the live HTTPS runtime, which inspects the existing page and fills its unambiguous code control over the captured supervisor's CDP WebSocket. The site form is **not** explicitly submitted; some sites auto-submit on input. The tool reports `filled` only after the supervisor returns an exact fill count; uncertain outcomes require checking the page before retrying. The link expires within 240 seconds and cancellation, supersession, replay, changed page/origin/profile, or missing/ambiguous controls fail closed. Numeric and alphanumeric codes are supported, including standard adjacent one-character boxes.
 
-Without `parent`, code mode discovers top-level forms through the existing task-owned CDP supervisor transport, without using its focused page or a patched `focus_page`. Explicit `parent` opts into the nested flow below. One form is selected automatically. Multiple forms return `selection_required` with expiring opaque candidates; Hermes chooses using its login context and calls again with `selection` and the same origin/label. Do not ask the user to identify remote tabs. No secret is requested before selection. Candidate metadata excludes input values, query/fragment, arbitrary page text and non-allowlisted path segments. Models cannot supply a CDP endpoint or executable. Tokens are profile/owner/conversation/task scoped. Before filling, the plugin rechecks the selected document, exact HTTPS origin and stamped fields; navigation/closure never silently redirects to another candidate. Browser restart requires rediscovery. A shared CDP endpoint can expose tabs from other browser contexts; task-scoped selection tokens do not provide browser-context isolation. Use appropriately isolated endpoints when that boundary is required. This uses the public captured transport and dispatch capabilities described above, with no private transport fallback; stock older cores without them are unsupported for code entry. Isolated Chromium tests cover two tabs with the same URL, two forms on one page, registered-tool HTTPS filling, automatic selection, stale selections, changed origin and replaced fields. These tests are not blanket live-account acceptance.
+Code mode requires an explicit exact existing `parent`, supplied by Hermes from its browser context before requesting the code. No origin-based top-level page scan is permitted. One retained form is automatic; multiple forms return expiring opaque selections chosen by Hermes, not the user. No secret is requested until that selection is fixed.
 
 ## ENV profile compatibility fix (0.6.4)
 
@@ -248,20 +264,7 @@ This release also recognizes localized verification inputs such as `name="code"`
 
 ## Protected nested verification-code frames (0.7.6)
 
-For a code form inside an iframe, call `secure_env_vault` with `mode="code"`,
-`parent` equal to the exact **task-selected page target ID**, and
-`origin` equal to the code document's exact HTTPS origin (not necessarily the
-parent origin). No global page guessing or arbitrary selectors/CDP endpoints.
-If the supervisor is attached elsewhere, a plugin-owned exact-parent CDP session
-on the original captured handle requires read-only host creation-ledger proof of
-the same profile/task owner and immutable browser generation through the optional
-`tools.browser_tab_lifecycle` API. Without that API, this path refuses with
-`parent_ownership`; public transport capture is not ownership proof. Merely
-visible or pre-existing unrecorded tabs refuse. This
-does not refocus the supervisor or retarget an already issued capability.
-Omitting `parent` preserves the existing top-level discovery path. The parameter
-is rejected for login/card storage. Multiple candidates return one-use opaque
-selection tokens; repeat the same parent, origin and label when choosing.
+For nested codes, supply the exact existing task-selected `parent` and actual destination `origin`. The plugin retains a private exact attachment on the original captured handle even when the supervisor default is elsewhere. Omitting `parent` refuses before a secret prompt. `parent` is not accepted for login/card storage. Multiple candidates return one-use opaque selection tokens; repeat the exact parent, origin and label when choosing.
 
 The plugin traverses same-process, OOPIF and mixed iframe chains, retaining each
 iframe owner, complete DOM ancestry, containing document, origin/navigation and
@@ -326,7 +329,7 @@ A narrow plugin-only fallback recognizes the missing `creditCardHolder` name AND
 
 Synthetic registered Chromium resume checks preserve captured Computop naming and PAN focus/blur masking hooks. Resuming an already unmasked matching PAN completes name, MM/YY expiry (2031 → 31) and CVC without any PAN event/write in same-process and OOPIF children. The minimal 0.7.4 DIV fixture without a proven reserve remains unsupported for fresh toggles; the actual captured-CSS empty form is supported by the additive 0.7.5 contract above. No consent checkbox or Pay/submit is touched. Synthetic acceptance is not a live provider guarantee, installed activation or device approval round-trip.
 
-Failure diagnostics use fixed static `stage` values only: preflight, selection, consent, revalidation, mapping, format, existing, focus, write, completion. They never contain exception text, page values or per-field matching details. Before native consent only broad preflight/selection stages are exposed; they are not root causes. Selection-stage refusal may include missing exact-parent ownership authority. No global tab scan, ownership claim or supervisor refocus is used to overcome a mismatch. Private attachments are disposed on cancellation, expiry and completion; issued targets are never reattached after reconnect. Never retry decline/unknown automatically.
+Failure diagnostics use fixed static `stage` values only: preflight, selection, consent, revalidation, mapping, format, existing, focus, write, completion. They never contain exception text, page values or per-field matching details. Before native consent only broad preflight/selection stages are exposed; they are not root causes. Selection-stage refusal may indicate an unavailable exact parent or browser capture. No global tab scan or supervisor refocus is used to overcome a mismatch. Private attachments are disposed on cancellation, expiry and completion; issued targets are never reattached after reconnect. Never retry decline/unknown automatically.
 
 ## Protected payment iframe fill (0.7.1)
 
@@ -336,9 +339,9 @@ For a hosted card form, discover `secure_payment_fill` (`Secure ENV payment ifra
 {"handle":"vault_example","parent":"EXACT_TASK_SELECTED_PARENT_TARGET_ID","origin":"https://payments.example.com"}
 ```
 
-Use native Vault listing first. The saved entry must be kind `payment` and bound to the **actual child frame's exact HTTPS origin**, not the merchant/top-page origin. Do not edit/rebind a card to get around a refusal. Select the intended parent page explicitly using the browser task's context and its target ID; an already-attached parent retains the existing admission path; if the supervisor is attached to a different page, Secure ENV uses a plugin-owned exact-target CDP session on the original captured handle only after read-only host creation-ledger proof of this profile's task owner and immutable browser generation. A shared CDP endpoint is not isolation or permission to auto-pick another tab. This plugin does not refocus/switch the supervisor or launch a browser. A mismatch without that independent ownership proof still fails closed, including pre-existing or other-task tabs merely visible through CDP. A proven explicit parent is attached exactly and rechecked without changing supervisor selection; the plugin never silently targets the first checkout it finds. The intended parent must be foreground/focused for focus callbacks to run before writes; the plugin will not activate a background tab.
+Use native Vault listing first. The saved entry must be kind `payment` and bound to the actual provider HTTPS origin, not the merchant/top-page origin. Hermes supplies the exact selected existing parent automatically; tab creator and supervisor default are irrelevant. Do not edit/rebind a card to overcome refusal. No global checkout scan, supervisor refocus or automatic fallback is used. The selected destination must be foreground/focused before setters; the plugin never activates background tabs. Merchant/provider consent and all exact form/control/history guards remain required.
 
-A mismatching supervisor requires independent creation provenance from a compatible host ownership API. The plugin checks availability of the optional `tools.browser_tab_lifecycle`; without it, exact-parent attachment refuses with `parent_ownership`. Stock Hermes builds lacking this API cannot gain it through a configuration flag, and the public CDP `capture()` transport is not ownership proof. Merely seeing a page through CDP, a pre-existing/unrecorded tab, or proof in another profile does not suffice. Commands and late-attachment cleanup use only the original public captured handle, never private transport or a replacement connection. Candidate batches expire autonomously; cancelling a request retires only its own batch, leaving separate live leases and the supervisor's default session intact.
+A mismatching supervisor default does not change admission. Existing, popup and manually opened selected pages are supported without creation provenance. The original captured connection and exact parent attachment remain fixed; late cleanup uses only that connection and never detaches unrelated sessions. Cancellation/expiry/completion retire private attachments.
 
 Only direct child iframe documents of that selected parent are inspected. Cross-origin/OOPIF and same-process children use exact CDP frame owners and isolated-world document/control references, not the parent's default JS context. One complete candidate is automatic; multiple sibling frames or forms return `selection_required` with at most 20 opaque candidates containing only parent/frame IDs, exact origin and form index. Hermes selects using its browser context and repeats the same handle/parent/origin plus `selection`. Do not ask the user to identify tabs. Choices are scoped to profile/owner/task/conversation/chat/thread, consumed, expire in at most 120 seconds, and are capped globally within this plugin instance. No values, page text, label heuristics or URL paths/queries are exposed in candidates.
 
@@ -386,14 +389,14 @@ is not permission to retarget or ignore navigation.
 ## Explicit retained transient-code targets
 
 When a legitimate transient verification-code control is not recognized by
-legacy autodiscovery, use code-only `target_spec` with an exact task-owned
+legacy autodiscovery, use code-only `target_spec` with an exact task-selected
 `parent`. This is not an account-password/API-key/recovery-seed/card fallback.
 Conflicting credential, payment and promo semantics refuse before requesting a
 secret. Unknown fields require the human to confirm the transient-code purpose
 in the protected HTTPS form; caller purpose alone grants no authority.
 
 ```json
-{"origin":"https://example.com","label":"Verification","mode":"code","parent":"EXACT_TASK_OWNED_TARGET","target_spec":{"version":1,"purpose":"transient_code","layout":"single","fields":[{"selector":"#challenge"}],"validation":{"charset":"ascii_printable_no_space","exact_length":17,"multiline":false}}}
+{"origin":"https://example.com","label":"Verification","mode":"code","parent":"EXACT_TASK_SELECTED_TARGET","target_spec":{"version":1,"purpose":"transient_code","layout":"single","fields":[{"selector":"#challenge"}],"validation":{"charset":"ascii_printable_no_space","exact_length":17,"multiline":false}}}
 ```
 
 The closed version-1 contract supports:
@@ -432,7 +435,7 @@ submission never gains a newline exception.
 
 Discovery is value-free and nonmutating, including legacy discovery: no
 attribute stamps, maxlength/type/autocomplete changes or document-owned target
-properties. Existing ownership, composed ancestry, history, effective form
+properties. Existing human authorization, composed ancestry, history, effective form
 origin/action/method, original identities, focus and callback/readback guards
 remain. Explicit targets conservatively refuse any observed child-list change,
 unselected attribute change or newly discovered root while waiting; arbitrary
@@ -451,7 +454,7 @@ provide all card values, with separate native human consent binding both merchan
 and provider before resolution. Top/nested/shadow/multi-frame same-provider
 targets support text/tel inputs, textarea and simple child-markup-free
 plaintext-only/true editing hosts. All original identities, effective forms,
-history, focus, ownership and lease fences remain; LF/card-purpose conflicts,
+history, focus, authorization and lease fences remain; LF/card-purpose conflicts,
 rich editors, ambiguous/changed targets and nonempty fields refuse. No Pay click
 or submit is performed. See the bundled usage skill for the complete mapping.
 `target_spec` remains rejected for login/card storage. Existing no-spec payment

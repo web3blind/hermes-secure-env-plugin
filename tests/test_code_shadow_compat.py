@@ -13,7 +13,7 @@ def test_shadow_code_fill(nested, mode, hosted, explicit_parent):
         nested.page.goto(origin+'/leaf')
         leaf = nested.page
     leaf.evaluate('([mode,hosted])=>{const h=document.createElement("div");document.body.append(h);const r=h.attachShadow({mode});r.innerHTML=hosted?"<form><input id=challenge autocomplete=one-time-code></form>":"<span>Tooltip</span>";if(hosted)document.querySelector("form").remove();window.fixtureRoot=r}', [mode, hosted])
-    target = codes.discover(origin, 'Synthetic', nested.sup.task_id, **({'parent':nested.parent} if explicit_parent else {}))[0]
+    target = codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent)[0]
     try:
         assert codes.fill(target, 'Q!7&z=R9', time.monotonic()+20)
         assert leaf.evaluate('(hosted)=>(hosted?window.fixtureRoot:document).querySelector("input").value==="Q!7&z=R9"', hosted)
@@ -67,13 +67,14 @@ def test_registered_shadow_https(nested, mode, explicit, split, tmp_path, monkey
         shadow_mode=mode, field_selector='input' if explicit and not split else None)
 
 
-def test_top_level_refusal_preserves_false_result(nested):
+def test_explicit_top_level_clone_refuses_before_write(nested):
     origin, _ = setup_chain(nested)
     nested.page.goto(origin+'/leaf')
-    target = codes.discover(origin, 'Synthetic', nested.sup.task_id)[0]
+    target = codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent)[0]
     try:
         nested.page.evaluate('document.querySelector("input").replaceWith(document.querySelector("input").cloneNode(true))')
-        assert not codes.fill(target, 'Q!7&z=R9', time.monotonic()+20)
+        with pytest.raises(ValueError):
+            codes.fill(target, 'Q!7&z=R9', time.monotonic()+20)
         assert nested.page.locator('input').input_value() == ''
     finally:
         codes.release(target)

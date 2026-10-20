@@ -28,12 +28,12 @@ manager = PluginManager(scope_key=str(home))
 manager.discover_and_load()
 assert 'senv' in manager._plugin_commands, manager._plugin_commands
 assert manager._hooks.get('pre_gateway_dispatch')
-for name in ('secure_env_vault', 'secure_payment_fill', 'secure_operation'):
+for name in ('secure_env_vault', 'secure_payment_fill', 'secure_login_fill', 'secure_operation'):
     assert registry.get_entry(name, scope=str(home)), name
 for name, entry in native_entries.items():
     assert registry.get_entry(name, scope=str(home)) is entry
 manager.unload()
-for name in ('secure_env_vault', 'secure_payment_fill', 'secure_operation'):
+for name in ('secure_env_vault', 'secure_payment_fill', 'secure_login_fill', 'secure_operation'):
     assert registry.get_entry(name, scope=str(home)) is None
 for name, entry in native_entries.items():
     assert registry.get_entry(name, scope=str(home)) is entry

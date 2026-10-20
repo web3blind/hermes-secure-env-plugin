@@ -259,11 +259,8 @@ def discover(task, parent, origin, spec):
     spec = validate_spec(spec, parent)
     strict_origin(origin)
     parent_session = ParentSession(_supervisor(task), parent)
-    try:
-        parent_session.transport = _CardCDP(parent_session.sup, parent_session.home, task)
-    except BaseException:
-        parent_session.drop(None)
-        raise
+    # ParentSession already freezes the original profile/human lease epoch.
+    # Replacing its transport would silently re-admit a changed epoch.
     sup, psid = parent_session.transport, parent_session.sid
     lease = nc._Lease(sup)
     lease.parent_session = parent_session

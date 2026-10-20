@@ -180,7 +180,7 @@ def test_previous_value_tamper_stops_later_write(nested):
 
 @pytest.mark.parametrize('sites', [('parent.test', 'parent.test'), ('middle.test', 'leaf.test'), ('parent.test', 'leaf.test'), ('middle.test', 'middle.test')])
 @pytest.mark.parametrize('split', [False, True])
-def test_registered_nested_https(nested, sites, split, tmp_path, monkeypatch, attack=None, focus_exit=None, wrongsite_hook=None, field_selector=None, markup=None, shadow_mode=None, setup_hook=None, synthetic_code=None, completion_check=None):
+def test_registered_nested_https(nested, sites, split, tmp_path, monkeypatch, attack=None, focus_exit=None, wrongsite_hook=None, field_selector=None, markup=None, shadow_mode=None, setup_hook=None, synthetic_code=None, completion_check=None, expect_unknown=False):
     import asyncio
     from types import SimpleNamespace
     from urllib.parse import urlsplit
@@ -206,7 +206,7 @@ def test_registered_nested_https(nested, sites, split, tmp_path, monkeypatch, at
     if focus_exit:
         nested.page.evaluate('document.body.insertAdjacentHTML("beforeend", "<button id=exit>Elsewhere</button>")')
         leaf.evaluate('(event)=>document.querySelector("input").addEventListener(event,()=>top.document.querySelector("#exit").focus(),{once:true})', focus_exit)
-    refusal = bool(attack or focus_exit)
+    refusal = bool(attack or focus_exit or expect_unknown)
     sample, settings, home, root = make_runtime(tmp_path, mini=False)
     sample.close()
     monkeypatch.setenv('HERMES_HOME', str(home))

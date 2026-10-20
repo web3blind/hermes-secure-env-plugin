@@ -1,4 +1,4 @@
-"""Exact owner/generation/cancel/expiry and frozen true-origin human lease."""
+"""Exact retained connection/cancel/expiry and frozen true-origin human lease."""
 
 import time
 import pytest
@@ -61,8 +61,7 @@ def test_terminal_before_resolve(nested, tmp_path, monkeypatch, change):
     assert captured["target"].lease.closed
 
 
-@pytest.mark.parametrize("proof", ["owned", "foreign", "retired"])
-def test_registered_captured_original_parent(nested, tmp_path, monkeypatch, proof):
+def test_registered_captured_original_parent(nested, tmp_path, monkeypatch):
     from test_wrongsite_parent import authorize, wrongsite
 
     state = {}
@@ -70,28 +69,17 @@ def test_registered_captured_original_parent(nested, tmp_path, monkeypatch, proo
 
     def setup(home):
         state["other"], state["sid"] = wrongsite(nested)
-        ledger, token = authorize(
-            tmp_path,
-            monkeypatch,
-            nested.sup,
-            nested.parent,
-            home=home,
-            owner_task="foreign" if proof == "foreign" else None,
-        )
-        if proof == "retired":
-            c = ledger.call(token)
-            assert ledger.retire(c["owner"], c["generation"], evidence="synthetic-terminal")
+        authorize(tmp_path, monkeypatch, nested.sup, nested.parent, home=home)
+        assert not (home / "browser_tabs.sqlite").exists()
 
     try:
         result, seen, resolved = registered_fill(
             nested, tmp_path, monkeypatch, origin, s, setup_hook=setup
         )
-        assert result["status"] == (
-            "filled" if proof == "owned" else "target_refused"
-        ), result
-        assert bool(seen) == bool(resolved) == (proof == "owned")
+        assert result["status"] == "filled", result
+        assert len(seen) == len(resolved) == 1
         assert nested.sup._page_session_id == state["sid"]
-        assert leaf.evaluate("window.writes") == (4 if proof == "owned" else 0)
+        assert leaf.evaluate("window.writes") == 4
         assert leaf.evaluate("!window.clicked&&!window.submitted")
     finally:
         if "other" in state:

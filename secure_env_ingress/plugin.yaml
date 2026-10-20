@@ -1,6 +1,6 @@
 name: secure-env-ingress
-version: 0.8.2
-requires_hermes: ">=0.21.7"
+version: 0.8.3
+requires_hermes: ">=0.22.2"
 description: "Secure ENV: Telegram HTTPS forms for login/password, TOTP keys, payment card storage/protected iframe fill, verification codes/passcodes, .env secrets and trusted operations."
 author: web3blind
 python_dependencies:
@@ -10,6 +10,7 @@ python_dependencies:
   - "ruamel.yaml>=0.18.16,<0.19"
 provides_tools:
   - secure_env_vault
+  - secure_login_fill
   - secure_payment_fill
   - secure_operation
 provides_hooks:

@@ -1,20 +1,31 @@
-"""Exact private attachment for an explicitly requested, creation-owned page.
+"""Exact explicit-parent attachments on one original public captured connection.
 
-The host supervisor's default page is not Browser Use's selected page. A mismatch
-may use a separate session, never change supervisor focus or infer ownership from
-CDP visibility. Ownership authority is read-only and profile/browser-generation
-bound. Existing already-attached pages keep their historical admission contract.
+Tab creation is irrelevant. Human/session authorization is enforced by callers;
+this module never scans siblings, changes supervisor focus, or recaptures.
 """
 from pathlib import Path
 import threading
 from urllib.parse import urlsplit
 
-from .code_targets import _call, _supervisor
-from .bound_cdp import BoundCDP
+from .code_targets import _call
+from .exact_card import _CardCDP
+
+
+class ParentCDP(_CardCDP):
+    """Frozen profile and human lease epoch, re-admitted at public before_send."""
+    def __init__(self, raw, home):
+        super().__init__(raw, home, raw.task_id)
+        self.home, self.scope_guard = home, lambda: None
+
+    def check(self):
+        super().check()
+        from hermes_constants import get_hermes_home
+        if Path(get_hermes_home()).resolve() != self.home:
+            raise ValueError('parent profile changed')
+        self.scope_guard()
 
 
 def _page_origin(info, parent):
-    """Only a canonical public HTTPS origin may enter a consent prompt."""
     from agent.vault_store import normalize_origin
     from .vault_ingress import strict_origin
     url = info.get('url', '')
@@ -25,38 +36,22 @@ def _page_origin(info, parent):
     return strict_origin(normalize_origin(url))
 
 
-def _proof(task, browser, parent, home):
-    try:
-        from tools.browser_tab_lifecycle import Authority, readonly
-    except ImportError:
-        # Optional host capability, not a setting users can create on stock core.
-        raise ValueError('parent ownership unavailable') from None
-    owner, generation = Authority(home).owner(task, task)
-    if owner.startswith('unknown:'):
-        raise ValueError('parent ownership unavailable')
-    with readonly(home / 'browser_tabs.sqlite') as db:
-        row = db.execute('SELECT t.call_token FROM targets t JOIN owners o USING(owner,generation) '
-            'JOIN calls c ON c.token=t.call_token WHERE t.browser=? AND t.target=? '
-            'AND t.owner=? AND t.generation=? AND o.terminal=0 AND t.pending_close=0 '
-            'AND c.browser=t.browser AND c.owner=t.owner AND c.generation=t.generation '
-            "AND c.state='drained'", (browser, parent, owner, generation)).fetchone()
-    if row is None:
-        raise ValueError('explicit parent not owned by task')
-    return owner, generation, row['call_token']
-
-
-class TopSession:
-    """Legacy no-parent tab admission, with a retained captured-wire session.
-
-    This does not confer explicit-parent creation ownership. It preserves the
-    historical same-origin page scan without extending it to nested frames.
-    """
+class ParentSession:
+    """Own only our attachment, never the tab or another actor's session."""
     def __init__(self, sup, parent):
         from hermes_constants import get_hermes_home
+        if not isinstance(parent, str) or not 1 <= len(parent) <= 100:
+            raise ValueError('invalid parent')
         self.sup, self.parent = sup, parent
         self.home = Path(get_hermes_home()).resolve()
-        self.transport = BoundCDP(sup)
-        self.closed = False
+        self.browser = sup.cdp_url
+        self.transport = ParentCDP(sup, self.home)
+        self.lock, self.refs, self.closed = threading.Lock(), {None}, False
+        self.private, self.sid = True, None
+        # Resolve ONLY the caller-selected existing target, on the original wire.
+        info = _call(self.transport, 'Target.getTargetInfo', {'targetId': parent})['result']['targetInfo']
+        self.origin = _page_origin(info, parent)
+        self._url = info['url']
         self.sid = _call(self.transport, 'Target.attachToTarget',
                          {'targetId': parent, 'flatten': True})['result']['sessionId']
         try:
@@ -70,63 +65,7 @@ class TopSession:
         if (self.closed or not self.sup.is_valid()
                 or Path(get_hermes_home()).resolve() != self.home):
             raise ValueError('parent connection changed')
-        info = _call(self.transport, 'Target.getTargetInfo', {}, self.sid)['result']['targetInfo']
-        if info['targetId'] != self.parent or info['type'] != 'page':
-            raise ValueError('parent session changed')
-        return self.sid
-
-    def drop(self, key):
-        if not self.closed:
-            self.closed = True
-            self.transport.dispose(self.sid, wait=True)
-
-
-class ParentSession:
-    """Captured connection/session; never reattach a capability after reconnect."""
-    def __init__(self, sup, parent):
-        from hermes_constants import get_hermes_home
-        if not isinstance(parent, str) or not 1 <= len(parent) <= 100:
-            raise ValueError('invalid parent')
-        self.sup, self.parent = sup, parent
-        self.home = Path(get_hermes_home()).resolve()
-        self.browser = sup.cdp_url
-        self.transport = BoundCDP(sup)
-        self.lock, self.refs, self.closed = threading.Lock(), {None}, False
-        self.private, self.proof, self.sid = False, None, None
-        sid = sup.page_session_id
-        info = _call(self.transport, 'Target.getTargetInfo', {}, sid)['result']['targetInfo'] if sid else None
-        if info is not None and info.get('targetId') == parent:
-            self.origin = _page_origin(info, parent)
-            self._url = info['url']
-            self.sid = sid
-        else:
-            # Only pinned browser websockets, no endpoint discovery or new browser.
-            url = urlsplit(self.browser)
-            if url.scheme not in ('ws', 'wss') or not url.path.startswith('/devtools/browser/'):
-                raise ValueError('browser generation unavailable')
-            self.proof = _proof(sup.task_id, self.browser, parent, self.home)
-            info = _call(self.transport, 'Target.getTargetInfo', {'targetId': parent})['result']['targetInfo']
-            self.origin = _page_origin(info, parent)
-            self._url = info['url']
-            self.sid = _call(self.transport, 'Target.attachToTarget', {'targetId': parent, 'flatten': True})['result']['sessionId']
-            self.private = True
-        try:
-            self.check()
-        except BaseException:
-            self.drop(None)
-            raise
-
-    def check(self):
-        from hermes_constants import get_hermes_home
-        sup = _supervisor(self.sup.task_id)
-        if (self.closed or not self.sup.is_valid()
-                or sup.cdp_url != self.browser or Path(get_hermes_home()).resolve() != self.home):
-            raise ValueError('parent connection changed')
-        if self.private:
-            if _proof(sup.task_id, self.browser, self.parent, self.home) != self.proof:
-                raise ValueError('parent ownership changed')
-        elif sup.page_session_id != self.sid:
-            raise ValueError('parent attachment changed')
+        self.transport.check()
         info = _call(self.transport, 'Target.getTargetInfo', {}, self.sid)['result']['targetInfo']
         if _page_origin(info, self.parent) != self.origin or info['url'] != self._url:
             raise ValueError('parent session changed')
@@ -144,5 +83,11 @@ class ParentSession:
             if self.refs or self.closed:
                 return
             self.closed = True
-            if self.private:
+            if self.sid:
                 self.transport.dispose(self.sid, wait=True)
+
+
+class TopSession:
+    """No origin-based top-level fallback: require an explicit selected parent."""
+    def __init__(self, *_args, **_kwargs):
+        raise ValueError('explicit parent required')

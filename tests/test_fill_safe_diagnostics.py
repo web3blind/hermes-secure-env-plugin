@@ -45,13 +45,13 @@ def faulting_diagnostic_logger():
     ('fault_timeout', 1, 0, 'write', 'write_unconfirmed'),
     ('delayed', 6, 6, 'completion', 'filled'),
     ('focus_zero', 0, 0, 'focus', 'focus_refused'),
-    ('focus_one', 1, 1, 'readback', 'write_unconfirmed'),
-    ('focus_three', 3, 3, 'readback', 'write_unconfirmed'),
+    ('focus_one', 1, 1, 'readback', 'document_focus_lost'),
+    ('focus_three', 3, 3, 'readback', 'document_focus_lost'),
     ('lost_receipt', 1, 0, 'write', 'write_unconfirmed'),
     ('cancelled', 0, 0, 'revalidate', 'cancelled'),
     ('profile', 0, 0, 'acquire', 'profile_refused'),
     ('invalid_ui', 6, 6, 'completion', 'filled'),
-    ('navigation', 6, 6, 'readback', 'write_unconfirmed'),
+    ('navigation', 6, 6, 'readback', 'guard_refused'),
 ])
 def test_registered_diagnostic(nested, tmp_path, monkeypatch, caplog,
                                case, attempted, confirmed, stage, reason):
@@ -221,7 +221,7 @@ def test_diagnostic_allowlist_and_context_isolation():
     assert bound_cdp._fill_diagnostic.get() is None
 
 
-def test_swallowed_top_level_valueerror_retains_diagnostic(nested, monkeypatch, tmp_path):
+def test_explicit_parent_cancellation_retains_diagnostic(nested, monkeypatch, tmp_path):
     import threading
     from secure_env_ingress import code_targets as codes
     setup_chain(nested)
@@ -230,13 +230,14 @@ def test_swallowed_top_level_valueerror_retains_diagnostic(nested, monkeypatch, 
     batch = threading.Event()
     selection = codes.CodeSelection()
     target, response = selection.choose(('synthetic',), 'https://parent.test',
-        'Synthetic', nested.sup.task_id, batch=batch)
-    assert response is None and not target.explicit_parent
+        'Synthetic', nested.sup.task_id, parent=nested.parent, batch=batch)
+    assert response is None and target.explicit_parent
     try:
         batch.set()
         with bound_cdp.fill_diagnostic_scope() as state:
-            # Real no-parent ValueError is swallowed by code_targets.fill.
-            assert not codes.fill(target, '123456', __import__('time').monotonic()+20)
+            # Cancellation refuses the retained explicit target before a setter.
+            with pytest.raises(ValueError):
+                codes.fill(target, '123456', __import__('time').monotonic()+20)
             assert state['reason'] == 'cancelled'
             assert state['writes_attempted'] == state['writes_confirmed'] == 0
         assert nested.page.evaluate('Array.from(document.querySelectorAll("input")).every(e=>e.value==="")')

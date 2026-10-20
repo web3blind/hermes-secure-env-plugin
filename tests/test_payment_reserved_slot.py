@@ -142,9 +142,19 @@ def test_provider_button_cosmetic_exception_does_not_grant_activation(provider, 
 ])
 def test_button_cosmetic_exception_requires_all_actual_bounded_subjects(provider, css):
     provider.add_style_tag(content=css)
+    if 'font-size:1000px' in css:
+        # The byte-exact provider stylesheet has transition:all .2s. Verify
+        # the intended oversized font has settled, rather than racing
+        # the original 16px -> 1000px transition and testing a harmless first frame.
+        provider.wait_for_function("getComputedStyle(document.querySelector('button')).fontSize==='1000px'")
     bind(provider)
     provider.evaluate("brand_visa.style.display='flex'")
-    assert provider.evaluate('guard.valid()') is False
+    assert provider.evaluate('guard.valid()') is False, provider.evaluate('''() => {
+      const e=document.querySelector('button'),s=getComputedStyle(e),r=document.createRange();
+      r.selectNodeContents(e);const t=r.getBoundingClientRect(),b=e.getBoundingClientRect();
+      return {font:s.fontSize,lineHeight:s.lineHeight,textHeight:t.height,buttonHeight:b.height,
+              textWidth:t.width,buttonWidth:b.width,invalid:e.form.matches(':invalid')};
+    }''')
 
 
 def test_button_cosmetic_exception_does_not_cover_descendant_paint(provider):

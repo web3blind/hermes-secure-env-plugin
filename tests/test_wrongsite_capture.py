@@ -1,7 +1,8 @@
-"""Real host Browser Use capture; no manufactured ownership proof."""
+"""Stock Browser Harness selection → owner-free exact parent → registered tools."""
 import asyncio
 from contextlib import contextmanager
 import json
+import importlib.util
 import os
 from pathlib import Path
 import shutil
@@ -20,26 +21,13 @@ from secure_env_ingress import code_targets as codes, payment_fill as pf
 nested = chromium_fixture
 
 
-def installed_cli():
-    found = shutil.which('browser-use')
-    if found:
-        return found
-    archive = Path.home() / '.cache/uv/archive-v0'
-    cached = [p for p in archive.glob('*/bin/browser-use')
-              if (p.parent.parent / 'lib/python3.11/site-packages/browser_harness/helpers.py').is_file()]
-    if not cached:
-        pytest.skip('Browser Use CLI unavailable; no install permitted')
-    return str(max(cached, key=lambda p: p.stat().st_mtime))
-
-
 @contextmanager
-def captured_parent(nested, tmp_path, monkeypatch, home, html, *, capture=True):
+def captured_parent(nested, tmp_path, monkeypatch, home, html):
     from gateway.run import _profile_runtime_scope
     from hermes_state import SessionDB
     from hermes_constants import get_hermes_home
-    life = pytest.importorskip("tools.browser_tab_lifecycle", reason="stock release lacks optional independent parent ownership authority")
+    assert importlib.util.find_spec("tools.browser_tab_lifecycle") is None
     from tools import browser_use_cli as host
-    from tools.browser_tab_lifecycle import readonly
     unrelated = tmp_path / 'process-home'
     unrelated.mkdir(exist_ok=True)
     monkeypatch.setenv('HERMES_HOME', str(unrelated))
@@ -47,7 +35,7 @@ def captured_parent(nested, tmp_path, monkeypatch, home, html, *, capture=True):
     db = SessionDB(db_path=home / 'state.db')
     db.create_session(task, 'telegram')
     db.close()
-    (home / 'config.yaml').write_text(yaml.safe_dump({'browser': {'tab_cleanup_enabled': capture}}))
+    (home / 'config.yaml').write_text(yaml.safe_dump({'browser': {'tab_cleanup_enabled': False}}))
     private = Path(tempfile.mkdtemp(prefix='bh-', dir=os.environ['TMPDIR']))
     env = dict(PATH=os.environ['PATH'], HOME=str(private), LANG='C.UTF-8',
                BU_CDP_WS=nested.sup.cdp_url, BH_HOME=str(private),
@@ -55,28 +43,27 @@ def captured_parent(nested, tmp_path, monkeypatch, home, html, *, capture=True):
                BH_AGENT_WORKSPACE=str(private / 'workspace'), BH_RECORD='0',
                BH_TAB_MARKER='0', DO_NOT_TRACK='1', ANONYMIZED_TELEMETRY='false',
                TMPDIR=str(private))
-    monkeypatch.setattr(host, '_find_cli', lambda: [installed_cli()])
+    assert host._find_cli(), 'stock Browser Harness dependency must be installed'
     monkeypatch.setattr(host, '_base_subprocess_env', lambda: env.copy())
-    page, other, daemon = None, None, None
+    page, other, sibling, daemon = None, None, None, None
     default = nested.context.browser.contexts[0]
     try:
         with _profile_runtime_scope(home, {}):
             assert get_hermes_home() == home and home != unrelated
             request_code = "from browser_harness import helpers; print('CAPTURE_PID=' + str(helpers._send({'meta': 'ping'})['pid'])); print('CAPTURE_TARGET=' + helpers._send({'meta': 'current_tab'})['targetId'])"
-            if not capture:
-                request_code = "switch_tab(cdp('Target.createTarget', url='about:blank')['targetId'])\n" + request_code
-            result = json.loads(host.browser_exec(request_code, task_id=task, session_id=task, timeout_s=30))
+            # The page predates this Harness call; no creator/owner authority.
+            existing = default.new_page()
+            session = default.new_cdp_session(existing)
+            existing_id = session.send("Target.getTargetInfo")["targetInfo"]["targetId"]
+            session.detach()
+            request_code = "switch_tab(" + repr(existing_id) + ")\n" + request_code
+            result = json.loads(host.browser_exec(request_code, task_id=task, timeout_s=30))
             assert result['success'], json.dumps(result)
             pid = int(next(line.split('=', 1)[1] for line in result['output'].splitlines() if line.startswith('CAPTURE_PID=')))
             daemon = (pid, (Path('/proc') / str(pid) / 'stat').read_text().rsplit(')', 1)[1].split()[19])
             parent = next(line.split('=', 1)[1] for line in result['output'].splitlines() if line.startswith('CAPTURE_TARGET='))
-            if capture:
-                with readonly(home / 'browser_tabs.sqlite') as db:
-                    row = db.execute('SELECT t.*, c.state,c.inflight,c.daemon_pid,c.daemon_start FROM targets t JOIN calls c ON c.token=t.call_token WHERE t.target=?', (parent,)).fetchone()
-                    assert row and row['browser'] == nested.sup.cdp_url, {'parent': parent, 'rows': [dict(r) for r in db.execute('SELECT target,browser,owner,generation FROM targets')]}
-                    assert row['owner'] == 'session:' + task and row['generation'] == task
-                    assert row['state'] == 'drained' and row['inflight'] == 0
-                    assert (row['daemon_pid'], row['daemon_start']) == daemon and not row['pending_close']
+            assert parent == existing_id
+            assert not (home / 'browser_tabs.sqlite').exists()
             assert not (unrelated / 'browser_tabs.sqlite').exists()
             deadline = time.monotonic() + 3
             while page is None and time.monotonic() < deadline:
@@ -97,31 +84,34 @@ def captured_parent(nested, tmp_path, monkeypatch, home, html, *, capture=True):
             default.route('https://capture.test/**', lambda route: route.fulfill(body=html.get(route.request.url, ''), content_type='text/html'))
             page.goto('https://capture.test/root')
             page.frames[-1].wait_for_selector('input')
-            if capture:
-                selected = json.loads(host.browser_exec("from browser_harness import helpers; print('CAPTURE_TARGET=' + helpers._send({'meta': 'current_tab'})['targetId'])", task_id=task, session_id=task, timeout_s=30))
-                assert selected['success'] and 'CAPTURE_TARGET=' + parent in selected['output']
+            selected = json.loads(host.browser_exec("from browser_harness import helpers; print('CAPTURE_TARGET=' + helpers._send({'meta': 'current_tab'})['targetId'])", task_id=task, timeout_s=30))
+            assert selected['success'] and 'CAPTURE_TARGET=' + parent in selected['output']
+            sibling = default.new_page()
+            sibling.goto('https://capture.test/root')
+            sibling.frames[-1].wait_for_selector('input')
             other = nested.context.new_page()
             other.goto('https://other.test/root')
             assert nested.sup.focus_page('https://other.test')['ok']
             previous = nested.sup._page_session_id
             page.bring_to_front()
             yield SimpleNamespace(parent=parent, page=page, leaf=page.frames[-1], previous=previous, unrelated=unrelated)
+            assert sibling.frames[-1].evaluate('Array.from(document.querySelectorAll("input")).every(e=>!e.value)')
+            assert not (home / 'browser_tabs.sqlite').exists()
     finally:
+        if sibling:
+            sibling.close()
         if other:
             other.close()
         if page:
             page.close()
         default.unroute('https://capture.test/**')
-        handle = life._handles.pop(str(home.resolve()), None)
-        if handle:
-            handle.cancel()
         if daemon:
             pid, start = daemon
             proc = Path('/proc') / str(pid)
             try:
                 if proc.joinpath('stat').read_text().rsplit(')', 1)[1].split()[19] == str(start):
                     os.kill(pid, signal.SIGTERM)
-            except ProcessLookupError:
+            except (ProcessLookupError, FileNotFoundError):
                 pass
         shutil.rmtree(private, ignore_errors=True)
 
@@ -198,45 +188,94 @@ def test_captured_registered_nested_https(nested, tmp_path, monkeypatch):
         assert not (home / 'vault').exists() and not (captured.unrelated / 'vault').exists()
 
 
-@pytest.mark.parametrize('bad', ['missing-capture', 'unrecorded', 'foreign-profile'])
+@pytest.mark.parametrize('bad', ['missing-parent', 'closed-parent', 'wrong-origin'])
 @pytest.mark.parametrize('adapter', ['payment', 'code'])
-def test_real_capture_negative_authority(nested, tmp_path, monkeypatch, bad, adapter):
+def test_real_capture_negative_destination(nested, tmp_path, monkeypatch, bad, adapter):
     from gateway.run import _profile_runtime_scope
-    from hermes_state import SessionDB
     from secure_env_ingress.bound_cdp import BoundCDP
     home = tmp_path / 'capture-home'
     home.mkdir()
     html = {'https://capture.test/root': '<iframe src="https://capture.test/code"></iframe>',
             'https://capture.test/code': '<form><input autocomplete="one-time-code"></form>'}
-    with captured_parent(nested, tmp_path, monkeypatch, home, html, capture=bad != 'missing-capture') as captured:
-        target, unknown = captured.parent, None
-        selected_home = home
-        if bad == 'foreign-profile':
-            selected_home = tmp_path / 'foreign'
-            selected_home.mkdir()
-            db = SessionDB(db_path=selected_home / 'state.db')
-            db.create_session(nested.sup.task_id, 'telegram')
-            db.close()
-        elif bad == 'unrecorded':
-            unknown = nested.context.new_page()
-            unknown.goto('https://unrecorded.test/root')
-            session = nested.context.new_cdp_session(unknown)
-            target = session.send('Target.getTargetInfo')['targetInfo']['targetId']
-            session.detach()
+    if adapter == 'payment':
+        html['https://capture.test/code'] = ('<form><input autocomplete="cc-name">'
+            '<input autocomplete="cc-number"><input autocomplete="cc-exp" placeholder="MM/YY">'
+            '<input autocomplete="cc-csc"></form>')
+    with captured_parent(nested, tmp_path, monkeypatch, home, html) as captured:
+        target = None if bad == 'missing-parent' else captured.parent
+        if bad == 'closed-parent':
+            captured.page.close()
+        origin = 'https://wrong.test' if bad == 'wrong-origin' else 'https://capture.test'
         sent = []
         original = BoundCDP.call
         def observe(self, method, *args, **kwargs):
             sent.append(method)
             return original(self, method, *args, **kwargs)
         monkeypatch.setattr(BoundCDP, 'call', observe)
-        try:
-            with _profile_runtime_scope(selected_home, {}), pytest.raises(Exception):
+        def discover():
+            if adapter == 'code':
+                return codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=target)
+            return pf.discover(nested.sup.task_id, target, origin)
+        with _profile_runtime_scope(home, {}):
+            if bad == 'wrong-origin':
+                # Prove an actual candidate exists before testing the origin fence.
                 if adapter == 'code':
-                    codes.discover('https://capture.test', 'Synthetic', nested.sup.task_id, parent=target)
+                    valid = codes.discover('https://capture.test', 'Synthetic', nested.sup.task_id, parent=target)
+                    release = codes.release
                 else:
-                    pf.discover(nested.sup.task_id, target, 'https://capture.test')
+                    valid = pf.discover(nested.sup.task_id, target, 'https://capture.test')
+                    release = pf.release
+                try:
+                    assert len(valid) == 1
+                finally:
+                    for candidate in valid:
+                        release(candidate)
+                assert not discover()  # A complete census finds no authorized destination.
+            else:
+                with pytest.raises(ValueError):
+                    discover()
+        if bad == 'missing-parent':
             assert 'Target.attachToTarget' not in sent
-            assert nested.sup._page_session_id == captured.previous
+        assert nested.sup._page_session_id == captured.previous
+        assert not (home / 'browser_tabs.sqlite').exists()
+
+
+@pytest.mark.parametrize('change', ['profile', 'reconnect', 'navigation', 'replacement'])
+def test_harness_retained_code_lifecycle(nested, tmp_path, monkeypatch, change):
+    from gateway.run import _profile_runtime_scope
+    home = tmp_path / 'capture-home'
+    home.mkdir()
+    html = {'https://capture.test/root': '<iframe src="https://capture.test/code"></iframe>',
+            'https://capture.test/code': '<form><input autocomplete="one-time-code"></form>'}
+    with captured_parent(nested, tmp_path, monkeypatch, home, html) as captured:
+        targets = codes.discover('https://capture.test', 'Synthetic', nested.sup.task_id, parent=captured.parent)
+        assert len(targets) == 1
+        try:
+            codes.assert_target(targets[0])
+            if change == 'profile':
+                foreign = tmp_path / 'foreign-profile'
+                foreign.mkdir()
+                with _profile_runtime_scope(foreign, {}), pytest.raises(ValueError):
+                    codes.assert_target(targets[0])
+            else:
+                if change == 'reconnect':
+                    nested.sup.stop()
+                    nested.sup.start()
+                elif change == 'navigation':
+                    captured.page.goto('https://capture.test/changed')
+                else:
+                    captured.leaf.evaluate('const e=document.querySelector("input");e.replaceWith(e.cloneNode(true))')
+                with pytest.raises(ValueError):
+                    codes.assert_target(targets[0])
+            if change == 'profile':
+                with _profile_runtime_scope(foreign, {}), pytest.raises(ValueError, match='parent connection changed or discovery cancelled'):
+                    codes.fill(targets[0], '654321', time.monotonic() + 10)
+            else:
+                reason = 'invalid code fields' if change == 'replacement' else 'parent connection changed or command refused'
+                with pytest.raises(ValueError, match=reason):
+                    codes.fill(targets[0], '654321', time.monotonic() + 10)
+            if change != 'navigation':
+                assert captured.leaf.evaluate('Array.from(document.querySelectorAll("input")).every(e=>!e.value)')
         finally:
-            if unknown:
-                unknown.close()
+            for target in targets:
+                codes.release(target)

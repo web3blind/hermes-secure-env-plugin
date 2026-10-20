@@ -98,8 +98,6 @@ def transport(monkeypatch, tmp_path):
             reconnect()
         def capture(self):
             return capture(registry, sup.task_id)
-    monkeypatch.setattr(ps, '_supervisor', lambda task: capture(registry, task))
-    monkeypatch.setattr(ps, '_proof', lambda *a: ('owner', 'generation', 'call'))
     yield Facade(), wire, replacement, sessions
     async def stop():
         pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]

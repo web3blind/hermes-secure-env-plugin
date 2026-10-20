@@ -28,15 +28,15 @@ def test_real_entry_client(nested, tmp_path, monkeypatch, multiline):
         page.goto(links['url'])
         editor = page.locator('#secret-0')
         editor.wait_for(state='visible')
-        assert page.locator('input[type=checkbox]').is_checked() is False
+        assert page.locator('input[type=checkbox]').count() == 0
+        assert page.locator('#submit').inner_text() == 'Fill verification code'
         assert editor.evaluate('(e)=>e.tagName') == ('TEXTAREA' if multiline else 'INPUT')
         editor.fill(value)
-        assert not page.locator('#secret-form').evaluate('(e)=>e.checkValidity()')
+        assert page.locator('#secret-form').evaluate('(e)=>e.checkValidity()')
+        assert not links['completion'].done()  # Entering a value alone sends nothing.
         page.keyboard.press('Tab')
-        assert page.locator('input[type=checkbox]').evaluate('(e)=>document.activeElement===e')
-        page.keyboard.press('Space')
-        assert page.locator('input[type=checkbox]').is_checked()
-        page.locator('#submit').click()
+        assert page.locator('#submit').evaluate('(e)=>document.activeElement===e')
+        page.keyboard.press('Enter')
         page.wait_for_function('()=>document.querySelector("#status").textContent.startsWith("Code filled")', timeout=120000)
         assert editor.input_value() == '' and editor.is_disabled()
         assert links['completion'].result(timeout=5)['status'] == 'filled'

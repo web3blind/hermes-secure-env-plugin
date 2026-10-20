@@ -230,18 +230,9 @@ _GUARD = r'''function(nodes, inspection=false, strictMutations=inspection) {
           'background-attachment':'scroll','background-origin':'padding-box',
           'background-clip':'border-box','box-shadow':'none'};
         return allSubjects().length>0 && !/::/.test(raw) && allSubjects().every(e=> {
-          if(e.tagName!=='BUTTON' || !e.classList.contains('custom-button-red') ||
-             !e.form || !nodes.some(n=>n.form===e.form) || e.children.length || !noPseudo(e)) return false;
-          const s=getComputedStyle(e),b=e.getBoundingClientRect(),f=e.form.getBoundingClientRect();
-          const range=doc.createRange();range.selectNodeContents(e);
-          const text=range.getBoundingClientRect();
-          return ['static','relative'].includes(s.position) && boundedPaint(s) &&
-            s.outlineStyle==='none' && s.textShadow==='none' && s.webkitTextStrokeWidth==='0px' &&
-            (!e.textContent.trim() || (text.left>=b.left-1 && text.right<=b.right+1 && text.top>=b.top-1 && text.bottom<=b.bottom+1)) &&
-            ['transform','translate','rotate','scale','filter','backdropFilter','boxShadow','offsetPath','animationName']
-              .every(k=>s[k]==='none') && ['1','normal'].includes(s.zoom) &&
-            b.width>0 && b.width<=Math.min(f.width,doc.defaultView.innerWidth) && b.height>0 && b.height<=64 &&
-            b.left>=f.left-1 && b.right<=f.right+1 && b.top>=f.top-1 && b.bottom<=f.bottom+1;
+          if(!buttonPaintSafe(e)) return false;
+          livePaintButtons.add(e);
+          return true;
         }) && Array.from(r.style).every(k=> {
           const v=r.style.getPropertyValue(k);
           return ['color','background-color'].includes(k) ? CSS.supports('color',v) && !/^(?:inherit|initial|unset|revert)/.test(v) :
@@ -397,9 +388,24 @@ _GUARD = r'''function(nodes, inspection=false, strictMutations=inspection) {
     return JSON.stringify([...Array.from(doc.styleSheets),...Array.from(doc.adoptedStyleSheets || [])].map(rows));
   };
   const cssAtBinding=slots.size ? cssIdentity() : null;
-  // State-stripped selectors and immutable CSS/DOM authority make this verdict
-  // visibility-independent. Cache the costly recursive analysis; do not scan
-  // thousands of Bootstrap rules once per mutation within a bounded CDP call.
+  // Only rule/selector analysis is immutable. Transitioned computed paint and
+  // text rectangles remain live authority even when CSS identity is unchanged.
+  const livePaintButtons=new Set();
+  const buttonPaintSafe=e=> {
+    if(!e.isConnected || e.tagName!=='BUTTON' || !e.classList.contains('custom-button-red') ||
+       !e.form || !nodes.some(n=>n.form===e.form) || e.children.length || !noPseudo(e)) return false;
+    const s=getComputedStyle(e),b=e.getBoundingClientRect(),f=e.form.getBoundingClientRect();
+    const range=doc.createRange();range.selectNodeContents(e);
+    const text=range.getBoundingClientRect();
+    return ['static','relative'].includes(s.position) && boundedPaint(s) &&
+      s.outlineStyle==='none' && s.textShadow==='none' && s.webkitTextStrokeWidth==='0px' &&
+      (!e.textContent.trim() || (text.left>=b.left-1 && text.right<=b.right+1 && text.top>=b.top-1 && text.bottom<=b.bottom+1)) &&
+      ['transform','translate','rotate','scale','filter','backdropFilter','boxShadow','offsetPath','animationName']
+        .every(k=>s[k]==='none') && ['1','normal'].includes(s.zoom) &&
+      b.width>0 && b.width<=Math.min(f.width,doc.defaultView.innerWidth) && b.height>0 && b.height<=64 &&
+      b.left>=f.left-1 && b.right<=f.right+1 && b.top>=f.top-1 && b.bottom<=f.bottom+1;
+  };
+  // Cache the costly recursive CSS analysis, not its mutable paint conditions.
   const slotCssSafe=slots.size ? decorationSafe() : null;
   const labelsWithinControls=()=>nodes.every(n=>Array.from(n.labels || []).every(l=>{
     const s=getComputedStyle(l),r=l.getBoundingClientRect(),b=n.getBoundingClientRect();
@@ -437,7 +443,8 @@ _GUARD = r'''function(nodes, inspection=false, strictMutations=inspection) {
   const equal=(a,b)=>a.length===b.length && a.every((e,i)=>e===b[i]);
   const valid=()=> {
     observe(observer.takeRecords());
-    if(slots.size && (cssIdentity()!==cssAtBinding || !labelsWithinControls())) changed=true;
+    if(slots.size && (cssIdentity()!==cssAtBinding || !labelsWithinControls() ||
+      !Array.from(livePaintButtons).every(buttonPaintSafe))) changed=true;
     return !changed && document===doc && location.href===href && self.origin===origin &&
       authority.every(s=>attrs(s.e)===s.attributes && style(s.e)===s.style) &&
       positions.every(s=>geometry(s.e)===s.geometry) &&
@@ -661,7 +668,7 @@ def assert_target(target):
     from .exact_card import CardTarget, assert_target as card_assert
     if isinstance(target, CardTarget):
         return card_assert(target)
-    sup = _supervisor(target.task)
+    sup = target.supervisor
     parent_sid = target.parent_session.check() if target.parent_session is not None else _parent(sup, target.parent)
     if not target.supervisor.valid() or time.monotonic() >= target.expires or parent_sid != target.parent_sid:
         raise ValueError('stale target')

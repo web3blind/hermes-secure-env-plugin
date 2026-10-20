@@ -16,7 +16,7 @@ from .grouped_otp import GROUP_JS
 
 # Retained references, including composed shadow ancestry, are authority.
 # Unrelated UI changes are not authority changes.
-_GUARD = r'''function(nodes, inspection=false, roots=[document], selector=null, spec=null) {
+_GUARD = r'''function(nodes, inspection=false, roots=[document], selector=null, spec=null, reconcileCode=false) {
   const doc=document, href=location.href, origin=self.origin;
   const path=e=>{const p=[];for(;e;e=e.parentNode||(e instanceof ShadowRoot?e.host:null))p.push(e);return p};
   const attrs=e=>JSON.stringify(Array.from(e.attributes||[],a=>[a.name,a.value]));
@@ -125,8 +125,352 @@ _GUARD = r'''function(nodes, inspection=false, roots=[document], selector=null, 
   navigation.addEventListener('navigate',dirty);
   addEventListener('popstate',dirty);addEventListener('hashchange',dirty);
   const filled=new Map();
-  const mutationsBad=records=>{
-    if(spec&&records.some(r=>r.type==='childList'||r.type==='characterData'||(r.type==='attributes'&&!protectedNodes.has(r.target))))return true;
+  // Direct name bindings cannot depend on a sibling button's disabled state.
+  // Keep original buttons only; never relax selected/ancestor/label objects.
+  const directNames=!group&&spec?.layout==='ordered_cells'&&nodes.length===spec.fields.length&&
+    nodes.every(n=>n.tagName==='INPUT')&&spec.fields.every(f=>/^input\[name="[A-Za-z_][A-Za-z0-9_-]*"\]$/.test(f.selector));
+  const uiButtons=new Map();
+  if(directNames){
+    const buttons=roots.flatMap(r=>Array.from(r.querySelectorAll('button')));
+    if(buttons.length<=200)for(const b of buttons){
+      const a=b.getAttribute('disabled');
+      if((a===null||a==='')&&!protectedNodes.has(b)&&!inLabel(b)&&!sourceRelated(b))
+        uiButtons.set(b,{attribute:a,dataDisabled:b.getAttribute('data-disabled'),attrs:attrs(b),path:path(b)});
+    }
+  }
+  // Reconciliation is metadata acknowledgement, never a fresh destination.
+  // Only direct names have proven selector dependencies; metadata-only frame
+  // and discovery views retain the same census without acquiring setters.
+  const directBinding=s=>/^input\[name="[A-Za-z_][A-Za-z0-9_-]*"\]$/.test(s);
+  const reconcileView=reconcileCode&&!group&&selector===null&&(
+    spec ? spec.layout==='ordered_cells'&&spec.validation?.charset==='ascii_digits'&&
+      spec.fields.every(f=>directBinding(f.selector)) :
+      inspection||nodes.every(e=>e.matches('iframe,frame')));
+  const numericMetadata=new Map();
+  if(reconcileView)for(const e of query('input')){
+    if(e.getAttribute('type')!=='text'||e.autocomplete!=='one-time-code'||
+      e.inputMode!=='numeric'||!['[0-9]*','[0-9]','[0-9]{1}'].includes(e.pattern)||
+      !/^code-?\d+$/.test(e.name)||e.hasAttribute('value')||
+      e.hasAttribute('maxlength')||e.matches(':disabled')||e.readOnly||
+      inLabel(e)||sourceRelated(e)||Array.from(e.attributes,a=>a.value).some(v=>
+        /password|credential|credit|payment|cardnumber|cc-number|username|email|recovery|coupon|promo/i.test(v)))continue;
+    numericMetadata.set(e,{name:e.name,attrs:attrs(e),path:path(e),form:e.form,root:e.getRootNode()});
+  }
+  // Patch precisely one attribute in each frozen representation. In particular,
+  // never refresh a complete snapshot from a node with accompanying bad attrs.
+  const patchAttribute=(a,key,value)=>{
+    const entries=JSON.parse(a),i=entries.findIndex(x=>x[0]===key);
+    if(value===null){if(i>=0)entries.splice(i,1)}
+    else if(i>=0)entries[i][1]=value;else entries.push([key,value]);
+    return JSON.stringify(entries);
+  };
+  const declaration=value=>{
+    // Parse complete states off-document. Reject syntax whose loss/merging by
+    // CSSOM would make the historical declaration stream ambiguous.
+    const text=String(value||'');
+    if(/[\\{}/*]/.test(text))return null;
+    const parts=text.split(';').map(x=>x.trim()).filter(Boolean), names=new Set(), expanded=new Set();
+    const style=doc.createElement('span').style;
+    for(const part of parts){
+      const match=/^([a-zA-Z-]+)\s*:\s*(.+)$/.exec(part);if(!match)return null;
+      const key=match[1].startsWith('--')?match[1]:match[1].toLowerCase();
+      if(names.has(key))return null;names.add(key);
+      const single=doc.createElement('span').style;
+      single.setProperty(key,match[2].replace(/\s*!important\s*$/i,''),/!important\s*$/i.test(match[2])?'important':'');
+      if(!single.getPropertyValue(key)||Array.from(single).some(k=>expanded.has(k)))return null;
+      for(const k of single){expanded.add(k);style.setProperty(k,single.getPropertyValue(k),single.getPropertyPriority(k))}
+    }
+    // Shorthand/longhand overlaps and unsupported declarations are ambiguous.
+    if(style.length!==expanded.size)return null;
+    return Array.from(style,k=>[k,style.getPropertyValue(k),style.getPropertyPriority(k)]);
+  };
+  const literalColor=value=>CSS.supports('color',value)&&
+    !/^(?:inherit|initial|unset|revert|revert-layer)$/i.test(value.trim())&&
+    !/(?:var|env|attr|url)\s*\(/i.test(value);
+  const caretState=(value,e,m)=>{
+    const state=declaration(value);if(!state||!m.caretColors)return null;
+    const caret=state.find(x=>x[0]==='caret-color');if(!caret)return null;
+    const color=caret[1].trim(),variable=/^var\(\s*(--[A-Za-z0-9_-]+)\s*\)$/.exec(color);
+    if(variable){
+      const original=m.caretColors.get(variable[1]);
+      if(!original||getComputedStyle(e).getPropertyValue(variable[1])!==original)return null;
+    }else if(color!=='auto'&&!literalColor(color))return null;
+    return JSON.stringify(state.map(x=>x[0]==='caret-color'?[x[0],'caret',x[2]]:x));
+  };
+  const patchFrozen=(e,key,value)=>{
+    const snap=snapshots.find(s=>s[0]===e);if(snap)snap[1]=patchAttribute(snap[1],key,value);
+    const retained=saved.find(s=>s.e===e);if(retained)retained.attrs=patchAttribute(retained.attrs,key,value);
+  };
+  const paint=new Map();
+  const tokens=value=>{
+    const t=String(value||'').trim().split(/\s+/).filter(Boolean);
+    return t.every(x=>/^[a-zA-Z_][\w-]*$/.test(x))&&new Set(t).size===t.length?t:null;
+  };
+  const conflict=value=>/password|credential|payment|credit|card|login|username|email|promo|coupon|recovery|secret|token|otp|code|pin/i.test(value);
+  const cssWitness=()=>{
+    try{
+      const sheets=[...doc.styleSheets,...doc.adoptedStyleSheets];
+      // Shadow styling needs its own cascade proof; it remains unsupported.
+      if(roots.some(r=>r!==doc)||sheets.length>64)return null;
+      const rules=[], sheetStates=[], visiting=new Set();
+      let textSize=0;
+      const walkSheet=(sheet,ancestry,eligible,depth)=>{
+        if(depth>12||sheetStates.length>=64||visiting.has(sheet))throw Error();
+        visiting.add(sheet);
+        const media=sheet.media?.mediaText||'';
+        sheetStates.push([sheet,sheet.disabled,media,sheet.ownerNode,sheet.href]);
+        walk(sheet.cssRules,ancestry,eligible&&!sheet.disabled&&!media,depth);
+        visiting.delete(sheet);
+      };
+      const walk=(list,ancestry,eligible,depth)=>{
+        if(depth>12)throw Error();
+        for(const rule of list){
+          if(rules.length>=4096)throw Error();
+          const text=rule.cssText, selector=rule.selectorText;
+          textSize+=text.length;if(textSize>2097152)throw Error();
+          const children=rule.cssRules;
+          // A group's own prelude must be checked separately from its children.
+          const header=children?text.slice(0,text.indexOf('{')):text;
+          const layer=rule.constructor?.name==='CSSLayerBlockRule'&&/^@layer\s*(?:[\w.-]+\s*)?\{$/.test(header+'{');
+          rules.push([rule,text,selector,eligible,ancestry.slice(),header]);
+          if(rule.type===CSSRule.IMPORT_RULE){
+            // Read imports even when conditional: an opaque dependency is not
+            // evidence of absence. Import references are conservatively ineligible.
+            if(!rule.styleSheet)throw Error();
+            walkSheet(rule.styleSheet,[...ancestry,rule],false,depth+1);
+          }
+          if(children)walk(children,[...ancestry,rule],eligible&&layer,depth+1);
+        }
+      };
+      for(const sheet of sheets)walkSheet(sheet,[],true,0);
+      return {sheets,rules,sheetStates};
+    }catch{return null}
+  };
+  const sameCSS=w=>{
+    const now=cssWitness();return now&&now.sheets.length===w.sheets.length&&
+      now.sheets.every((s,i)=>s===w.sheets[i])&&now.rules.length===w.rules.length&&
+      now.sheetStates.length===w.sheetStates.length&&
+      now.sheetStates.every((s,i)=>s.every((v,j)=>v===w.sheetStates[i][j]))&&
+      now.rules.every((r,i)=>r[0]===w.rules[i][0]&&r[1]===w.rules[i][1]&&
+        r[3]===w.rules[i][3]&&r[4].length===w.rules[i][4].length&&
+        r[4].every((a,j)=>a===w.rules[i][4][j]));
+  };
+  const geometry=e=>{
+    const c=getComputedStyle(e),r=e.getBoundingClientRect();
+    if(!e.isConnected||!e.getClientRects().length||c.display==='none'||c.visibility!=='visible'||
+      !Number.isFinite(Number(c.opacity))||Number(c.opacity)<=0||Number(c.opacity)>1||
+      c.contentVisibility==='hidden'||r.width<=0||r.height<=0)return null;
+    return JSON.stringify([r.x,r.y,r.width,r.height,c.display,c.visibility,c.opacity,c.transform,c.clipPath,c.overflow]);
+  };
+  const boundedShadow=value=>{
+    if(value==='none')return true;
+    // One ordinary sRGB shadow; bound every resolved length, not variable names.
+    const rest=value.replace(/rgba?\([\d.,\s]+\)/g,'').trim().replace(/(?<![\w.])0(?![\w.])/g,'0px');
+    if(!/^-?[\d.]+px\s+-?[\d.]+px\s+[\d.]+px\s+-?[\d.]+px$/.test(rest))return false;
+    const lengths=rest.split(/\s+/).map(parseFloat);
+    return lengths.every(Number.isFinite)&&lengths.every(v=>Math.abs(v)<=4)&&lengths[2]>=0;
+  };
+  const shadowSafe=e=>boundedShadow(getComputedStyle(e).boxShadow);
+  const css= numericMetadata.size?cssWitness():null;
+  // A style attribute change must not activate other CSS rules or labels.
+  // Consider conditional/group preludes too; opaque syntax fails closed.
+  const caretIndependent=!!css&&!css.rules.some(([rule,,selector,,,header])=>{
+    const dependency=typeof selector==='string'?selector:header;
+    return /\\|\[[^\]]*\bstyle\b/i.test(dependency)||/attr\(\s*style\b/i.test(rule.cssText);
+  });
+  if(caretIndependent)for(const [e,m] of numericMetadata){
+    const computed=getComputedStyle(e),colors=new Map();
+    if(computed.length<=8192)for(const key of computed){
+      if(!/^--[A-Za-z0-9_-]+$/.test(key))continue;
+      const value=computed.getPropertyValue(key);
+      if(value.trim()&&literalColor(value))colors.set(key,value);
+    }
+    m.caretColors=colors;
+  }
+  const admissibleSpan=(span,e)=>{
+    return !(span?.tagName!=='SPAN'||span.getRootNode()!==doc||inLabel(span)||sourceRelated(span)||
+      span.closest('label')||span.querySelectorAll('input').length!==1||
+      Array.from(span.querySelectorAll('a,button,select,textarea,iframe,frame,object,embed,details,summary,audio,video,label,[contenteditable],[tabindex],[role]')).some(n=>n!==e)||
+      Array.from(span.attributes).some(a=>!['class','style'].includes(a.name)&&!a.name.startsWith('data-'))||
+      conflict(span.className)||!tokens(span.className)||!geometry(span)||!geometry(e));
+  };
+  // These facts are used only during this synchronous constructor. Never reuse
+  // admission results for validation, where labels and sources are rechecked.
+  const originalSpans=new Map();
+  if(css)for(const e of numericMetadata.keys()){
+    const span=e.parentElement?.closest('span');
+    originalSpans.set(e,{span,admissible:admissibleSpan(span,e),tokens:span&&tokens(span.className)});
+  }
+  if(css)for(const [e,m] of numericMetadata){
+    const initial=originalSpans.get(e),span=initial.span;
+    if(!initial.admissible)continue;
+    const candidates=[];
+    for(const [rule,,selectorText,eligible] of css.rules){
+      if(!eligible||typeof selectorText!=='string')continue;
+      const match=/^\.([a-zA-Z_][\w-]*)$/.exec(selectorText);if(!match||conflict(match[1]))continue;
+      const token=match[1],d=rule.style;
+      if(rule.cssRules?.length)continue;
+      // Authority comes from an original class, or the one originally focused
+      // sibling with exactly the same immutable core. Never predict new tokens.
+      const core=tokens(span.className).filter(t=>t!==token);
+      const anchors=[...numericMetadata.keys()].filter(n=>{
+        const candidate=originalSpans.get(n),s=candidate.span,t=candidate.tokens;
+        return s&&t&&candidate.admissible&&t.includes(token)&&(s===span||
+          (doc.activeElement===n&&
+           (s.parentNode===span.parentNode||(n.form!==null&&n.form===e.form))&&core.length>0&&
+           t.filter(x=>x!==token).join(' ')===core.join(' ')));
+      });
+      if(!anchors.length)continue;
+      const declared=d.cssText.split(';').map(x=>x.trim()).filter(Boolean).map(x=>x.split(':')[0].trim());
+      if(declared.length!==2||!declared.includes('border-color')||!declared.includes('box-shadow')||
+        declared.some(k=>d.getPropertyPriority(k)))continue;
+      // Any other reference, including class-attribute selectors, could alter
+      // descendants or layout. No selector inference from today's DOM.
+      if(css.rules.some(([r,,sel,,,header])=>{
+        if(r===rule)return false;
+        const dependency=typeof sel==='string'?sel:header;
+        // Escapes and generic class attributes cannot prove token independence.
+        // Unrelated pseudo selectors are harmless to this token-specific proof.
+        return dependency.includes(token)||/\\|\[\s*(?:[\w*-]+\|)?class\b/i.test(dependency)||
+          /attr\(\s*class\b/i.test(r.cssText);
+      }))continue;
+      const vars=[...rule.cssText.matchAll(/var\(\s*(--[\w-]+)\s*\)/g)].map(x=>x[1]);
+      const stripped=rule.cssText.replace(/var\(\s*--[\w-]+\s*\)/g,'0');
+      if(/var\(|env\(|attr\(|url\(/i.test(stripped))continue;
+      const values=vars.map(v=>[v,getComputedStyle(span).getPropertyValue(v)]);
+      // Dependencies must resolve to plain colors/lengths, never further CSS
+      // dependencies, animations or fallback branches.
+      if(values.some(([,v])=>!v.trim()||/[();{}]/.test(v)&&!/^\s*rgba?\([\d.,\s]+\)\s*$/.test(v)))continue;
+      const resolved=value=>value.replace(/var\(\s*(--[\w-]+)\s*\)/g,(_,key)=>values.find(x=>x[0]===key)?.[1]||'');
+      const shadow=resolved(d.getPropertyValue('box-shadow'));
+      // Validate the inactive rule too: add/remove within one batch cannot
+      // conceal an oversized transient shadow.
+      const parser=doc.createElement('span').style;
+      parser.boxShadow=shadow;
+      if(!parser.boxShadow||!boundedShadow(parser.boxShadow)||
+        !CSS.supports('border-color',resolved(d.getPropertyValue('border-color'))))continue;
+      candidates.push({token,rule,values,anchors:anchors.map(n=>{
+        const s=n.parentElement.closest('span');
+        return {e:n,span:s,path:path(s),core:tokens(s.className).filter(t=>t!==token),
+          attrs:patchAttribute(attrs(s),'class',null)};
+      })});
+    }
+    // A single original rule is necessary; runtime class changes choose none.
+    if(candidates.length!==1)continue;
+    const witness=candidates[0],core=tokens(span.className).filter(t=>t!==witness.token);
+    const linked=(e.getAttribute('aria-labelledby')||'').split(/\s+/).filter(Boolean).map(id=>doc.getElementById(id));
+    if(linked.some(n=>!n))continue;
+    const related=[...path(e).slice(0,path(e).indexOf(span)+1),...Array.from(e.labels||[]),...linked];
+    if(related.some(n=>!geometry(n))||!shadowSafe(span))continue;
+    paint.set(span,{...witness,core,css,attrs:attrs(span),path:path(span),e,
+      geometry:related.map(n=>[n,geometry(n)])});
+  }
+  const paintValid=(span,w,cssOK)=>
+    (cssOK===undefined?sameCSS(w.css):cssOK)&&span.isConnected&&
+    path(span).length===w.path.length&&path(span).every((n,i)=>n===w.path[i])&&
+    span.contains(w.e)&&span.querySelectorAll('input').length===1&&
+    !sourceRelated(span)&&!inLabel(span)&&
+    w.anchors.every(a=>a.span.isConnected&&a.span.contains(a.e)&&
+      path(a.span).length===a.path.length&&path(a.span).every((n,i)=>n===a.path[i])&&
+      patchAttribute(attrs(a.span),'class',null)===a.attrs&&
+      tokens(a.span.className)?.filter(t=>t!==w.token).join(' ')===a.core.join(' '))&&
+    w.values.every(([v,value])=>getComputedStyle(span).getPropertyValue(v)===value)&&
+    w.geometry.every(([n,g])=>geometry(n)===g)&&shadowSafe(span);
+  const reconcile=records=>{
+    const accepted=new Set();
+    let caretCSSOK;
+    for(const [e,m] of numericMetadata){
+      const own=records.filter(r=>r.type==='attributes'&&r.target===e);
+      const bookkeeping=own.filter(r=>r.attributeName==='name'||r.attributeName==='type');
+      // Every observer delivery must contain a full transaction. A partial or
+      // reverted conflicting transaction reaches the ordinary sticky refusal.
+      if(bookkeeping.length&&bookkeeping.length%3===0){
+        let exact=true;
+        for(let i=0;i<bookkeeping.length;i+=3){
+          const [a,b,c]=bookkeeping.slice(i,i+3);
+          if(a.attributeName!=='name'||a.oldValue!==m.name||
+            b.attributeName!=='type'||b.oldValue!=='text'||
+            c.attributeName!=='name'||c.oldValue!=='')exact=false;
+        }
+        if(exact&&e.getAttribute('name')===m.name&&e.getAttribute('type')==='text')
+          for(const r of bookkeeping)accepted.add(r);
+      }
+      const styles=own.filter(r=>r.attributeName==='style');
+      if(styles.length){
+        const before=JSON.parse(m.attrs).find(a=>a[0]==='style')?.[1]??null;
+        if(caretCSSOK===undefined)caretCSSOK=caretIndependent&&sameCSS(css);
+        if(caretCSSOK&&styles[0].oldValue===before&&
+          caretState(before,e,m)!==null&&styles.every(r=>caretState(r.oldValue,e,m)===caretState(before,e,m))&&
+          caretState(e.getAttribute('style'),e,m)===caretState(before,e,m)){
+          for(const r of styles)accepted.add(r);
+          const value=e.getAttribute('style');
+          m.attrs=patchAttribute(m.attrs,'style',value);
+          patchFrozen(e,'style',value);
+        }
+      }
+    }
+    for(const [span,w] of paint){
+      const changes=records.filter(r=>r.type==='attributes'&&r.target===span&&r.attributeName==='class');
+      if(!changes.length)continue;
+      const original=JSON.parse(w.attrs).find(a=>a[0]==='class')?.[1]??null;
+      const states=[...changes.map(r=>r.oldValue),span.getAttribute('class')];
+      const allowed=value=>{const t=tokens(value);return t&&
+        t.filter(x=>x!==w.token).join(' ')===w.core.join(' ')};
+      // Only the one proven paint token may toggle. Other attribute histories
+      // remain in the original guard, including reverted style/role changes.
+      if(states[0]!==original||!states.every(allowed)||!paintValid(span,w))continue;
+      for(const r of changes)accepted.add(r);
+      w.attrs=patchAttribute(w.attrs,'class',span.getAttribute('class'));
+      patchFrozen(span,'class',span.getAttribute('class'));
+    }
+    // Unsupported class changes on an OTP ancestor must refuse even in
+    // metadata-only views where that ancestor isn't a protected setter path.
+    if(records.some(r=>r.type==='attributes'&&r.attributeName==='class'&&
+      [...numericMetadata.keys()].some(e=>path(e).includes(r.target))&&!accepted.has(r)))bad=true;
+    return records.filter(r=>!accepted.has(r));
+  };
+  const cssOwners=new Set(css?css.sheetStates.map(s=>s[3]).filter(Boolean):[]);
+  const styleElement=n=>n?.nodeType===1&&['style','link'].includes(n.localName);
+  const carriesStyle=n=>n?.nodeType===1&&(styleElement(n)||!!n.querySelector('style,link'));
+  const stylesheetMutation=r=>styleElement(r.target)||[...cssOwners].some(n=>n.contains(r.target))||
+    (r.type==='childList'&&[...r.addedNodes,...r.removedNodes].some(carriesStyle));
+  // Head title text is presentation, not an OTP receiver. Retain its exact
+  // original identity and nonempty single-text topology so even :empty CSS
+  // dependencies cannot change. Attribute/source/structural histories refuse.
+  const titleHead=doc.head;
+  const titleElements=titleHead?Array.from(titleHead.children).filter(e=>
+    e.namespaceURI==='http://www.w3.org/1999/xhtml'&&e.localName==='title'):[];
+  const quietTitle=titleElements.length===1&&titleElements[0].attributes.length===0?
+    titleElements[0]:null;
+  const titleText=n=>n?.nodeType===3&&n.length>0&&n.length<=512;
+  let titleNode=quietTitle?.childNodes.length===1&&titleText(quietTitle.firstChild)?quietTitle.firstChild:null;
+  const withoutTitleText=records=>{
+    if(!titleNode||!quietTitle.isConnected||doc.head!==titleHead||quietTitle.parentNode!==titleHead||
+      quietTitle.attributes.length||quietTitle.childNodes.length!==1||!titleText(quietTitle.firstChild)||
+      protectedNodes.has(quietTitle)||sourceRelated(quietTitle)||inLabel(quietTitle)||
+      Array.from(titleHead.children).filter(e=>e.namespaceURI==='http://www.w3.org/1999/xhtml'&&e.localName==='title').length!==1)return records;
+    const nodes=new Set([titleNode]);
+    for(const r of records)if(r.type==='childList'&&r.target===quietTitle)
+      for(const n of [...r.addedNodes,...r.removedNodes])nodes.add(n);
+    const related=records.filter(r=>r.target===quietTitle||(r.type==='characterData'&&nodes.has(r.target)));
+    if(!related.length)return records;
+    if(getComputedStyle(titleHead).display!=='none'||getComputedStyle(quietTitle).display!=='none'||
+      path(quietTitle).some(n=>n.nodeType===1&&n.getAttribute('dir')?.trim().toLowerCase()==='auto'))return records;
+    let cursor=titleNode;
+    for(const r of related){
+      if(r.type==='characterData'){
+        if(r.target!==cursor||typeof r.oldValue!=='string'||r.oldValue.length===0||
+          r.oldValue.length>512||!titleText(r.target))return records;
+      }else if(r.type==='childList'&&r.addedNodes.length===1&&r.removedNodes.length===1&&
+        r.removedNodes[0]===cursor&&titleText(cursor)&&titleText(r.addedNodes[0])&&
+        r.previousSibling===null&&r.nextSibling===null)cursor=r.addedNodes[0];
+      else return records;
+    }
+    if(cursor!==quietTitle.firstChild)return records;
+    titleNode=cursor;
+    return records.filter(r=>!related.includes(r));
+  };
+  const learnHistory=records=>{
     collectSources();
     // Detached subtree links still resolve in the mutation's observed root.
     // Learn every nested dependency before evaluating any historical record.
@@ -149,6 +493,15 @@ _GUARD = r'''function(nodes, inspection=false, roots=[document], selector=null, 
       const ids=sourceIds.get(r.target.getRootNode());
       if(ids&&[r.oldValue,r.target.id].some(id=>id&&ids.has(id)))sources.add(r.target);
     }
+  };
+  const mutationsBad=records=>{
+    learnHistory(records);
+    records=withoutTitleText(records);
+    if(caretIndependent&&records.some(stylesheetMutation))bad=true;
+    if(paint.size&&records.some(r=>r.type==='characterData'||r.type==='childList'||
+      (r.type==='attributes'&&[...paint.values()].some(w=>w.path.includes(r.target))&&r.attributeName!=='class')))bad=true;
+    records=reconcile(records);
+    if(spec&&records.some(r=>r.type==='childList'||r.type==='characterData'||(r.type==='attributes'&&!protectedNodes.has(r.target))))return true;
     return records.some(relevant);
   };
   const observer=new MutationObserver(r=>{if(mutationsBad(r))bad=true});
@@ -158,6 +511,12 @@ _GUARD = r'''function(nodes, inspection=false, roots=[document], selector=null, 
   const valid=()=>{
     if(mutationsBad(observer.takeRecords()))bad=true;
     if(snapshots.some(([n,a])=>attrs(n)!==a))bad=true;
+    const currentCSS=(paint.size||caretIndependent)?sameCSS(css):null;
+    if(caretIndependent&&!currentCSS)bad=true;
+    for(const [span,w] of paint)if(attrs(span)!==w.attrs||!paintValid(span,w,currentCSS))bad=true;
+    for(const [e,m] of numericMetadata)if(!e.isConnected||e.ownerDocument!==doc||
+      e.getRootNode()!==m.root||e.form!==m.form||attrs(e)!==m.attrs||
+      path(e).length!==m.path.length||path(e).some((n,i)=>n!==m.path[i]))bad=true;
     if(selector!==null&&!inspection){const matches=roots.filter(r=>r===doc||r.host.isConnected).flatMap(r=>Array.from(r.querySelectorAll(selector)));
       if(matches.length!==selected.length||matches.some((e,i)=>e!==selected[i]))bad=true;}
     if(spec&&bindings.some((s,i)=>{const matches=query(s);return matches.length!==bound[i].length||matches.some((e,j)=>e!==bound[i][j]);}))bad=true;
@@ -174,13 +533,15 @@ _GUARD = r'''function(nodes, inspection=false, roots=[document], selector=null, 
         !path(s.e).some(n=>n.nodeType===1&&n.hasAttribute('inert'))&&s.e.getClientRects().length&&
         getComputedStyle(s.e).display!=='none'&&getComputedStyle(s.e).visibility==='visible')));
   };
+  let lastChecks=null;
   return Object.freeze({document:doc,valid,
+    lastWriteChecks(){return lastChecks},
     accepts(value){return valid()&&(!group||(value.length===nodes.length&&(!group.numeric||/^[0-9]+$/.test(value))))},
     censusRoot(root){if(!roots.includes(root)){roots.push(root);observe(root);if(spec)bad=true;
       if(Array.from(root.querySelectorAll('*')).some(n=>semantic(n)||groupPotential(n)))bad=true;}return valid()},
     censusNode(n){if(authority(n))bad=true;return valid()},
-    close(){closed=true;observer.disconnect();navigation.removeEventListener('navigate',dirty);
-    removeEventListener('popstate',dirty);removeEventListener('hashchange',dirty);filled.clear();selected.length=0;saved.length=0;nodes.length=0;roots.length=0;protectedNodes.clear();labels.clear();sources.clear();sourceIds.clear();snapshots.length=0},
+    close(){closed=true;lastChecks=null;observer.disconnect();navigation.removeEventListener('navigate',dirty);
+    removeEventListener('popstate',dirty);removeEventListener('hashchange',dirty);filled.clear();uiButtons.clear();numericMetadata.clear();paint.clear();originalSpans.clear();cssOwners.clear();selected.length=0;saved.length=0;nodes.length=0;roots.length=0;protectedNodes.clear();labels.clear();sources.clear();sourceIds.clear();snapshots.length=0},
     focus(i){if(!valid())return false;saved[i].e.focus();return valid()&&doc.hasFocus()&&focused(saved[i].e)},
     write(i,value){if(!valid()||!doc.hasFocus()||!focused(saved[i].e))return {written:false,valid:false};
       const e=saved[i].e, previousCanonical=group?.canonical?.value;
@@ -204,6 +565,52 @@ _GUARD = r'''function(nodes, inspection=false, roots=[document], selector=null, 
       }else return {written:false,valid:false};
       filled.set(i,value);
       e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));
+      if(uiButtons.size){
+        const records=observer.takeRecords();
+        // Learn the whole history before acknowledging even unchanged metadata.
+        learnHistory(records);
+        const buttonRecords=records.filter(r=>r.type==='attributes'&&
+          ['disabled','data-disabled'].includes(r.attributeName));
+        const noops=new Set();
+        if(buttonRecords.length&&new Set(buttonRecords.map(r=>r.target)).size===1){
+          const b=buttonRecords[0].target,s=uiButtons.get(b);
+          const disabledRecords=buttonRecords.filter(r=>r.attributeName==='disabled');
+          const dataRecords=buttonRecords.filter(r=>r.attributeName==='data-disabled');
+          const mirror=v=>v===null||v==='false'?false:v===''||v==='true'?true:undefined;
+          const strip=v=>patchAttribute(patchAttribute(v,'disabled',null),'data-disabled',null);
+          if(s&&[null,'','true','false'].includes(s.dataDisabled)&&
+            b.isConnected&&b.ownerDocument===doc&&!protectedNodes.has(b)&&!inLabel(b)&&!sourceRelated(b)&&
+            path(b).length===s.path.length&&path(b).every((n,j)=>n===s.path[j])&&
+            strip(attrs(b))===strip(s.attrs)&&disabledRecords.length<=1&&dataRecords.length<=1&&
+            buttonRecords.every(r=>r.oldValue===(r.attributeName==='disabled'?s.attribute:s.dataDisabled))){
+            const a=b.getAttribute('disabled'),d=b.getAttribute('data-disabled');
+            const unchanged=a===s.attribute&&d===s.dataDisabled;
+            // A mirrored flag may change only alongside the already-supported
+            // single native disabled transition, with coherent before/after states.
+            const paired=disabledRecords.length===1&&dataRecords.length===1&&
+              (a===null||a==='')&&a!==s.attribute&&
+              mirror(s.dataDisabled)===(s.attribute!==null)&&mirror(d)===(a!==null);
+            if(unchanged||paired)for(const r of buttonRecords)noops.add(r);
+          }
+        }
+        const allowed=r=>{
+          if(noops.has(r))return true;
+          if(r.type!=='attributes'||r.attributeName!=='disabled')return false;
+          const b=r.target,s=uiButtons.get(b),a=b.getAttribute('disabled');
+          return !!s&&(a===null||a==='')&&a!==s.attribute&&r.oldValue===s.attribute&&
+            records.filter(x=>x.type==='attributes'&&x.attributeName==='disabled').length===1&&
+            b.isConnected&&b.ownerDocument===doc&&!protectedNodes.has(b)&&!inLabel(b)&&!sourceRelated(b)&&
+            path(b).length===s.path.length&&path(b).every((n,j)=>n===s.path[j]);
+        };
+        const accepted=records.filter(allowed);
+        if(mutationsBad(records.filter(r=>!accepted.includes(r))))bad=true;
+        for(const r of accepted){
+          const s=uiButtons.get(r.target),value=r.target.getAttribute(r.attributeName);
+          if(r.attributeName==='disabled')s.attribute=value;
+          else if(r.attributeName==='data-disabled')s.dataDisabled=value;
+          s.attrs=patchAttribute(s.attrs,r.attributeName,value);
+        }
+      }
       if(group){
         const final=i===saved.length-1&&filled.size===saved.length;
         const records=observer.takeRecords();
@@ -237,7 +644,9 @@ _GUARD = r'''function(nodes, inspection=false, roots=[document], selector=null, 
       // part of synchronous verification; earlier focus exits still refuse.
       const finalBlur = finalNumeric && filled.size === saved.length && doc.activeElement === doc.body;
       const expectedFocus=(group||(spec&&spec.layout!=='single'))?(finalBlur||completed||focused(saved[Math.min(i+1,saved.length-1)].e)||focused(e)):focused(e);
-      return {written:true,valid:valid()&&doc.hasFocus()&&expectedFocus};}
+      const guardOK=valid(),documentFocus=doc.hasFocus();
+      lastChecks={guard:guardOK,documentFocus,targetFocus:expectedFocus===true};
+      return {written:true,valid:guardOK&&documentFocus&&expectedFocus};}
   });
 }'''.replace('__GROUP__', GROUP_JS)
 
@@ -432,7 +841,7 @@ def _inspection_js(nonce, selector, generic=False):
         row.splitContainer=nodes.indexOf(Array.from(e.parentElement?.children||[]).find(n=>n.matches('input,select')));
         row.splitSize=group&&!group.forbidden?group.digits.length:Array.from(e.parentElement?.children||[]).filter(n=>n.matches('input')&&n.maxLength===1).length;
       }
-      const raw=JSON.stringify(rows);const guard=(''' + _GUARD + r''')(nodes.slice(),true,roots.slice(),selector);
+      const raw=JSON.stringify(rows);const guard=(''' + _GUARD + r''')(nodes.slice(),true,roots.slice(),selector,null,''' + json.dumps(generic) + r''');
       return {raw,rows,nodes,roots,selector,matchCount:matches.length,href:location.href,guard,close(){guard.close()}};
     }'''
 
@@ -451,7 +860,7 @@ def discover(origin, label, task, parent, field_selector=None, *, top_only=False
     selector_matches = []
     deadline = time.monotonic() + 120
 
-    def visit(sid, frame, ancestry, depth):
+    def visit(sid, frame, ancestry, depth, scope_ancestry=()):
         if time.monotonic() >= deadline or depth > 8 or frame in visited or len(visited) >= 40:
             raise ValueError('nested traversal capacity')
         visited.add(frame)
@@ -476,10 +885,10 @@ def discover(origin, label, task, parent, field_selector=None, *, top_only=False
             if field_selector is not None or target_spec is not None:
                 selector_matches.append(_invoke(sup, sid, inspector, 'function(){return this.matchCount}').get('value'))
                 scope = lease.keep(sid, _invoke(sup, sid, inspector,
-                    'function(spec){if(!this.guard.valid())throw Error();return (' + _GUARD + ')([],false,this.roots.slice(),this.selector,spec)}', (target_spec,), False)['objectId'])
+                    'function(spec){if(!this.guard.valid())throw Error();return (' + _GUARD + ')([],false,this.roots.slice(),this.selector,spec,true)}', (target_spec,), False)['objectId'])
                 lease.censuses[scope] = (shadows, census)
                 lease.contexts[scope] = context
-                lease.scopes.append((sid, scope, ancestry))
+                lease.scopes.append((sid, scope, scope_ancestry))
             groups = {}
             root_indices = {r['index']: r['rootIndex'] for r in rows}
             rows_by_index = {r['index']: r for r in rows}
@@ -523,7 +932,7 @@ def discover(origin, label, task, parent, field_selector=None, *, top_only=False
                 if _invoke(sup, sid, inspector, 'function(){return this.guard.valid()}').get('value') is not True:
                     raise ValueError('inspection changed')
                 guard = lease.keep(sid, _invoke(sup, sid, inspector,
-                    'function(indices,spec){if(!this.guard.valid())throw Error();return (' + _GUARD + ')(indices.map(i=>this.nodes[i]),false,this.roots.slice(),this.selector,spec)}',
+                    'function(indices,spec){if(!this.guard.valid())throw Error();return (' + _GUARD + ')(indices.map(i=>this.nodes[i]),false,this.roots.slice(),this.selector,spec,!!spec)}',
                     ([c.control.index for c in controls], target_spec), False)['objectId'])
                 lease.censuses[guard] = (shadows, census)
                 lease.contexts[guard] = context
@@ -550,10 +959,20 @@ def discover(origin, label, task, parent, field_selector=None, *, top_only=False
             if not child or _call(sup, 'DOM.getFrameOwner', {'frameId': child}, sid)['result']['backendNodeId'] != owner:
                 raise ValueError('orphan frame')
             guard = lease.keep(sid, _invoke(sup, sid, owner_obj,
-                'function(){if(this.hasAttribute("sandbox")&&!this.sandbox.contains("allow-same-origin"))throw Error();return (' + _GUARD + ')([this],false,[document,this.getRootNode()].filter((r,i,a)=>a.indexOf(r)===i))}', (), False)['objectId'])
+                'function(){if(this.hasAttribute("sandbox")&&!this.sandbox.contains("allow-same-origin"))throw Error();return (' + _GUARD + ')([this],false,[document,this.getRootNode()].filter((r,i,a)=>a.indexOf(r)===i),null,null,' + json.dumps(target_spec is not None) + ')}', (), False)['objectId'])
             lease.censuses[guard] = (shadows, census)
             lease.contexts[guard] = context
-            visit(sid, child, ancestry + ((sid, frame, child, owner, guard),), depth + 1)
+            next_scope_ancestry = ()
+            if field_selector is not None or target_spec is not None:
+                # A refusal-only canary is not a write destination. Retain its
+                # identity/history fences even when a service frame is hidden.
+                # Actual selected ancestors keep the strict guard above.
+                canary = lease.keep(sid, _invoke(sup, sid, owner_obj,
+                    'function(){return (' + _GUARD + ')([this],true,[document,this.getRootNode()].filter((r,i,a)=>a.indexOf(r)===i),null,null,' + json.dumps(target_spec is not None) + ')}', (), False)['objectId'])
+                lease.censuses[canary] = (shadows, census)
+                lease.contexts[canary] = context
+                next_scope_ancestry = scope_ancestry + ((sid, frame, child, owner, canary),)
+            visit(sid, child, ancestry + ((sid, frame, child, owner, guard),), depth + 1, next_scope_ancestry)
 
     try:
         root = _call(sup, 'Page.getFrameTree', {}, psid)['result']['frameTree']['frame']['id']
@@ -612,8 +1031,10 @@ def _check_census(target, sid, guard, current=None):
 
 
 def assert_target(target):
-    sup = _supervisor(target.task)
-    if (not target.supervisor.valid() or target.lease.closed or time.monotonic() >= target.expires
+    # The original capture already pins supervisor/task/profile validity; do not
+    # acquire a second capture at every barrier or substitute another handle.
+    sup = target.supervisor
+    if (not sup.valid() or target.lease.closed or time.monotonic() >= target.expires
             or (target.lease.parent_session.check() if target.lease.parent_session is not None
                 else _parent(sup, target.parent)) != target.parent_sid):
         raise ValueError('stale nested target')
@@ -741,6 +1162,23 @@ def fill(target, code, expires_at):
             fill_diagnostic('readback', 'write_unconfirmed',
                             confirmed=isinstance(result, dict) and result.get('written') is True)
             if not isinstance(result, dict) or result != {'written': True, 'valid': True}:
+                # Fixed booleans from the original write boundary only. No values,
+                # exception strings, retargeting or retry after a partial setter.
+                if isinstance(result, dict) and result.get('written') is True:
+                    try:
+                        checks = _invoke(target.supervisor, target.leaf_sid, target.leaf_guard,
+                            'function(){return this.lastWriteChecks()}').get('value')
+                    except Exception:
+                        checks = None
+                    if (isinstance(checks, dict) and
+                            set(checks) == {'guard', 'documentFocus', 'targetFocus'} and
+                            all(type(v) is bool for v in checks.values())):
+                        if not checks['guard']:
+                            fill_diagnostic(reason='guard_refused')
+                        elif not checks['documentFocus']:
+                            fill_diagnostic(reason='document_focus_lost')
+                        elif not checks['targetFocus']:
+                            fill_diagnostic(reason='unexpected_focus')
                 return False
             fill_diagnostic('revalidate', 'guard_refused')
             assert_target(target)

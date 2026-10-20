@@ -274,7 +274,8 @@ def test_registered_code_tool_https_delivery_and_completion(tmp_path, monkeypatc
                 profile='', cron_session='')
             try:
                 raw = registry.dispatch('secure_env_vault',
-                    {'origin': target.origin, 'label': target.label, 'mode': 'code'},
+                    {'origin': target.origin, 'label': target.label, 'mode': 'code',
+                     'parent': 'selected-fixture-page'},
                     task_id='sid', session_id='sid')
             finally:
                 sc.clear_session_vars(tokens)

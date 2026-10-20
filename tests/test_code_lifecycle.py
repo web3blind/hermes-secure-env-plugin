@@ -14,16 +14,16 @@ from test_code_selection import target
 def test_close_terminal_and_queued_chooser(monkeypatch):
     picker = c.CodeSelection()
     calls = []
-    monkeypatch.setattr(c, 'discover', lambda *a: calls.append(True) or [target()])
+    monkeypatch.setattr(c, 'discover', lambda *a, **k: calls.append(True) or [target()])
     picker.close()
     with pytest.raises(ValueError):
-        picker.choose(('scope',), 'https://example.test', 'Fixture', 'task')
+        picker.choose(('scope',), 'https://example.test', 'Fixture', 'task', parent='p')
     assert not calls
 
     picker = c.CodeSelection()
     candidates = [target(), target('B')]
-    monkeypatch.setattr(c, 'discover', lambda *a: candidates)
-    picker.choose(('scope',), candidates[0].origin, 'Fixture', 'task')
+    monkeypatch.setattr(c, 'discover', lambda *a, **k: candidates)
+    picker.choose(('scope',), candidates[0].origin, 'Fixture', 'task', parent='p')
     ready, proceed, attempted = threading.Event(), threading.Event(), threading.Event()
     retired, errors = [], []
     def release(candidate):
@@ -37,7 +37,7 @@ def test_close_terminal_and_queued_chooser(monkeypatch):
     def queued():
         attempted.set()
         try:
-            picker.choose(('scope',), candidates[0].origin, 'Fixture', 'task')
+            picker.choose(('scope',), candidates[0].origin, 'Fixture', 'task', parent='p')
         except ValueError:
             errors.append(True)
     chooser = threading.Thread(target=queued)
@@ -54,7 +54,7 @@ def test_close_during_discovery_retires_exact_result(monkeypatch):
     ready, proceed = threading.Event(), threading.Event()
     retired, errors = [], []
     candidate = target()
-    def discover(*a):
+    def discover(*a, **k):
         ready.set()
         assert proceed.wait(5)
         return [candidate]
@@ -62,7 +62,7 @@ def test_close_during_discovery_retires_exact_result(monkeypatch):
     monkeypatch.setattr(c, 'release', retired.append)
     def run():
         try:
-            picker.choose(('scope',), candidate.origin, candidate.label, 'task')
+            picker.choose(('scope',), candidate.origin, candidate.label, 'task', parent='p')
         except ValueError:
             errors.append(True)
     worker = threading.Thread(target=run)
@@ -83,10 +83,10 @@ def test_abandoned_batch_expires_without_another_call(monkeypatch):
     picker.ttl_seconds = .05
     candidates = [target(), target('B')]
     retired = []
-    monkeypatch.setattr(c, 'discover', lambda *a: candidates)
+    monkeypatch.setattr(c, 'discover', lambda *a, **k: candidates)
     monkeypatch.setattr(c, 'release', retired.append)
     try:
-        _, response = picker.choose(('scope',), candidates[0].origin, 'Fixture', 'task')
+        _, response = picker.choose(('scope',), candidates[0].origin, 'Fixture', 'task', parent='p')
         assert len(response['candidates']) == 2
         deadline = time.monotonic() + 2
         while len(retired) < 2 and time.monotonic() < deadline:
@@ -103,16 +103,16 @@ def test_old_cancel_never_retires_newer_batch(monkeypatch):
     a, b = [target(), target('A2')], [target('B'), target('B2')]
     retired = []
     results = iter([a, b])
-    monkeypatch.setattr(c, 'discover', lambda *a: next(results))
+    monkeypatch.setattr(c, 'discover', lambda *a, **k: next(results))
     monkeypatch.setattr(c, 'release', retired.append)
     try:
-        picker.choose(('scope',), a[0].origin, 'Fixture', 'task', batch=old)
-        _, response = picker.choose(('scope',), b[0].origin, 'Fixture', 'task', batch=newer)
+        picker.choose(('scope',), a[0].origin, 'Fixture', 'task', batch=old, parent='p')
+        _, response = picker.choose(('scope',), b[0].origin, 'Fixture', 'task', batch=newer, parent='p')
         assert retired == a
         picker.cancel_batch(old)
         assert retired == a and len(picker._entries) == 2
         monkeypatch.setattr(c, 'assert_target', lambda t: None)
-        selected, _ = picker.choose(('scope',), b[0].origin, 'Fixture', 'task', response['candidates'][0]['selection'])
+        selected, _ = picker.choose(('scope',), b[0].origin, 'Fixture', 'task', response['candidates'][0]['selection'], parent='p')
         assert selected is b[0]
         c.release(selected)
     finally:
@@ -322,7 +322,7 @@ def test_dispatcher_cancel_selected_worker_after_loop_closed(tmp_path, monkeypat
             scope = (str(home), 'task', 'key', '7', '7', '')
             old, newer = threading.Event(), threading.Event()
             _, response = picker.choose(scope, targets[0].origin, 'Synthetic', 'task', parent='p', batch=old)
-            picker.choose(('new-scope',), newer_targets[0].origin, 'Fixture', 'task', batch=newer)
+            picker.choose(('new-scope',), newer_targets[0].origin, 'Fixture', 'task', batch=newer, parent='p')
             handler = registry.get_entry('secure_env_vault', scope=str(home)).handler
             async def run():
                 await handler(dict(origin=targets[0].origin, label='Synthetic', mode='code', parent='p',

@@ -108,9 +108,11 @@ def test_real_frontend_cross_version_and_policy_refusal(tmp_path):
                     # For those vectors expose the raw synthetic value to the real
                     # handler as well; neither Unicode nor confirmation is mocked.
                     page.evaluate('units => {const e=document.querySelector("#secret-0");const raw=String.fromCharCode(...units);if(e.value!==raw) Object.defineProperty(e,"value",{configurable:true,get:()=>raw,set:()=>{}})}', list(int.from_bytes(value.encode('utf-16-le', errors='surrogatepass')[i:i+2], 'little') for i in range(0,len(value.encode('utf-16-le', errors='surrogatepass')),2)))
-                    page.evaluate('document.querySelector("#secret-form").dispatchEvent(new Event("submit", {cancelable:true}))')
-                    assert page.evaluate('submissions.length') == 0  # mandatory human confirmation
-                    page.locator('input[type=checkbox]').check()
+                    # Entering a code alone must not send it. Explicit submission
+                    # of the purpose-labelled form supplies confirmation.
+                    assert page.evaluate('submissions.length') == 0
+                    assert page.locator('input[type=checkbox]').count() == 0
+                    assert page.locator('#submit').inner_text() == 'Fill verification code'
                     page.evaluate('document.querySelector("#secret-form").dispatchEvent(new Event("submit", {cancelable:true}))')
                     submitted = page.evaluate('submissions')
                     expected = allowed
@@ -229,7 +231,7 @@ def test_invalid_frontend_preserves_real_capability(nested, tmp_path, monkeypatc
         editor = page.locator('#secret-0')
         editor.wait_for(state='visible')
         editor.fill('\U0001fae8')
-        page.locator('input[type=checkbox]').check()
+        assert page.locator('input[type=checkbox]').count() == 0
         page.locator('#submit').click()
         assert 'declared exact length and format' in page.locator('#status').inner_text()
         assert not submissions and not links['completion'].done()

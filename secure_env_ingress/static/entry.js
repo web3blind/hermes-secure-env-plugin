@@ -16,7 +16,7 @@
   let paymentMode = false;
   let operationMode = false;
   let targetPolicy = null;
-  let confirmation = null;
+
   const controls = [];
 
   function decode(value) {
@@ -69,7 +69,7 @@
       input.disabled = true;
     }
     submit.disabled = true;
-    if (confirmation) confirmation.disabled = true;
+
     status.textContent = message;
     status.focus();
   }
@@ -207,10 +207,8 @@
     if (targetPolicy) {
       operationSummary.textContent = `Transient verification code; ${data.target.layout}; ${data.target.count} retained field(s); exactly ${targetPolicy.exact_length} Unicode scalars; ${targetPolicy.charset}. ${targetPolicy.multiline ? 'Multiline entry is visible, not password-masked. LF is preserved.' : 'Single-line entry.'} Filling can trigger site actions; no Submit is clicked.`;
       operationSummary.hidden = false;
-      const wrapper = document.createElement('label');
-      confirmation = document.createElement('input'); confirmation.type = 'checkbox'; confirmation.required = true;
-      wrapper.append(confirmation, document.createTextNode(' I confirm this is the transient verification code for the exact site shown above, not a password, card, API key or recovery seed. Filling may trigger site input handlers; no Submit is clicked.'));
-      fields.append(wrapper);
+      operationSummary.textContent += ' Only enter the transient verification code for the site shown above, not a password, card, API key or recovery seed.';
+      submit.textContent = 'Fill verification code';
     }
     form.hidden = false;
     controls[0].focus();
@@ -235,7 +233,7 @@
     if (terminal) return;
     const inputs = controls;
     const values = inputs.map((input) => input.value);
-    if (targetPolicy && (!confirmation?.checked || !validTargetValue(values[0]))) { values.fill(''); status.textContent = 'Confirm the transient-code purpose and enter the declared exact length and format.'; return; }
+    if (targetPolicy && !validTargetValue(values[0])) { values.fill(''); status.textContent = 'Enter the transient verification code with the declared exact length and format.'; return; }
     if (vault && inputs.length === VAULT_KEYS.length && !looksLikeAuthenticatorKey(values[VAULT_KEYS.length - 1])) {
       // Keep the one-time link usable: a typo in the optional field must not burn the capability.
       values.fill("");
@@ -250,7 +248,9 @@
     submit.disabled = true;
     status.textContent = operationMode ? "Running…" : codeMode ? "Filling…" : "Saving…";
     try {
-      const response = await post("/submit", { token: capability, initData, values, ...(targetPolicy ? {confirmed: confirmation.checked} : {}) });
+      // Submitting this purpose-labelled form is explicit confirmation. Merely
+      // entering a value never dispatches a fill; the server still requires true.
+      const response = await post("/submit", { token: capability, initData, values, ...(targetPolicy ? {confirmed: true} : {}) });
       if (codeMode && response.filled !== true) throw new Error('fill_unconfirmed');
       if (paymentMode && response.saved !== true) throw new Error('save_unconfirmed');
       if (operationMode && response.completed !== true) throw new Error('operation_unconfirmed');

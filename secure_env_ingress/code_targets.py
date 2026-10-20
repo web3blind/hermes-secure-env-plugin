@@ -95,9 +95,7 @@ def binding_failure_detail(error):
         'unsupported document': 'document_unsupported',
         'ambiguous code selector': 'selector_ambiguous',
         'inadmissible code selector': 'selector_inadmissible',
-        'parent ownership unavailable': 'parent_ownership',
-        'explicit parent not owned by task': 'parent_ownership',
-        'parent ownership changed': 'parent_ownership',
+        'explicit parent required': 'parent_binding',
         'task-selected parent mismatch': 'parent_binding',
         'invalid parent': 'parent_binding',
         'parent unavailable': 'parent_binding',
@@ -107,6 +105,7 @@ def binding_failure_detail(error):
         'parent connection changed': 'browser_changed',
         'browser generation unavailable': 'browser_changed',
         'browser unavailable': 'browser_unavailable',
+        'public browser capture unavailable': 'browser_unavailable',
         'browser changed': 'browser_changed',
         'invalid selection': 'selection_invalid',
         'ambiguous code form': 'form_ambiguous',
@@ -173,34 +172,7 @@ def discover(origin, label, task, parent=None, field_selector=None, target_spec=
     if parent is not None:
         from .nested_code import discover as nested_discover
         return nested_discover(origin, label, task, parent, field_selector=field_selector, target_spec=target_spec)
-    sup = _supervisor(task)
-    pages = _call(sup, 'Target.getTargets').get('result', {}).get('targetInfos', [])
-    result = []
-    matching = []
-    for p in pages:
-        url = urlsplit(str(p.get('url', '')))
-        if p.get('type') == 'page' and url.scheme + '://' + url.netloc == origin:
-            matching.append(p)
-    if len(matching) > 20:
-        raise ValueError('too many candidate pages')
-    deadline = time.monotonic() + 20
-    for p in matching:
-        if time.monotonic() >= deadline:
-            for target in result:
-                release(target)
-            raise ValueError('discovery timeout')
-        from .nested_code import discover as nested_discover
-        try:
-            result.extend(nested_discover(origin, label, task, p['targetId'], top_only=True))
-        except BaseException:
-            for target in result:
-                release(target)
-            raise
-    if len(result) > 20:
-        for target in result:
-            release(target)
-        raise ValueError('too many candidate forms')
-    return result
+    raise ValueError('explicit parent required')
 
 
 def _guard(target):
@@ -332,6 +304,8 @@ class CodeSelection:
             self._retire(lambda entry: entry[3] is batch)
 
     def choose(self, scope, origin, label, task, selection=None, parent=None, field_selector=None, *, batch=None, target_spec=None):
+        if not isinstance(parent, str) or not parent:
+            raise ValueError('explicit parent required')
         validate_field_selector(field_selector, parent)
         if target_spec is not None:
             from .exact_code import validate_spec
