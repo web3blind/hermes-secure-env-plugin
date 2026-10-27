@@ -110,7 +110,7 @@ def test_registered_real_discovery_details(nested, tmp_path, monkeypatch, case, 
         tokens = sc.set_session_vars(platform='telegram', user_id='7', chat_id='-600',
             chat_type='group', session_id=task, session_key='key', cron_session='')
         try:
-            raw = registry.dispatch('browser_vault',
+            raw = registry.dispatch('secure_env_vault',
                 {'origin': 'https://parent.test', 'label': 'Fixture', 'mode': 'code',
                  'parent': nested.parent, 'field_selector': '#loginForm input[name=Code]'},
                 task_id=task, session_id=task)
@@ -128,7 +128,7 @@ def test_registered_real_discovery_details(nested, tmp_path, monkeypatch, case, 
     ('unsupported shadow', 'document_shadow'),
     ('ambiguous code selector', 'selector_ambiguous'),
     ('inadmissible code selector', 'selector_inadmissible'),
-    ('explicit parent not owned by task', 'parent_ownership'),
+    ('public browser capture unavailable', 'browser_unavailable'),
     ('code document changed', 'target_changed'),
     ('SECRET_PAGE_TEXT https://untrusted.test/?token=PRIVATE', 'binding_refused'),
 ])
@@ -150,8 +150,9 @@ def test_registered_safe_binding_detail(tmp_path, monkeypatch, message, detail):
         tokens = sc.set_session_vars(platform='telegram', user_id='7', chat_id='-600',
             chat_type='group', session_id='sid', session_key='key', cron_session='')
         try:
-            raw = registry.dispatch('browser_vault',
-                {'origin': 'https://site.test', 'label': 'Fixture', 'mode': 'code'},
+            raw = registry.dispatch('secure_env_vault',
+                {'origin': 'https://site.test', 'label': 'Fixture', 'mode': 'code',
+                 'parent': 'selected-fixture-page'},
                 task_id='sid', session_id='sid')
         finally:
             sc.clear_session_vars(tokens)

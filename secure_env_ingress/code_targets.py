@@ -24,24 +24,28 @@ class CodeTarget:
     controls: tuple = field(repr=False)
     supervisor: object = field(repr=False, compare=False)
     field_selector: str | None = field(default=None, kw_only=True, repr=False)
+    target_spec: dict | None = field(default=None, kw_only=True, repr=False)
 
 
 def _supervisor(task):
     from tools.browser_supervisor import SUPERVISOR_REGISTRY
-    sup = SUPERVISOR_REGISTRY.get(task)
-    if not task or task == 'default' or sup is None or sup.task_id != task or not sup._active:
+    from .bound_cdp import require_capture
+    if not task or task == 'default':
+        raise ValueError('browser unavailable')
+    try:
+        sup = SUPERVISOR_REGISTRY.capture(task)
+    except Exception:
+        raise ValueError('public browser capture unavailable') from None
+    require_capture(sup)
+    if sup.task_id != task:
         raise ValueError('browser unavailable')
     return sup
 
 
 def _call(sup, method, params=None, sid=None):
     from .bound_cdp import BoundCDP
-    if isinstance(sup, BoundCDP):
-        return sup.call(method, params, sid)
-    from tools.browser_supervisor import _schedule
-    if not sup._active or sup._loop is None:
-        raise ValueError('browser unavailable')
-    return _schedule(sup._cdp(method, params or {}, session_id=sid, timeout=5), sup._loop, timeout=6)
+    transport = sup if isinstance(sup, BoundCDP) else BoundCDP(sup)
+    return transport.call(method, params, sid)
 
 
 @contextmanager
@@ -91,9 +95,7 @@ def binding_failure_detail(error):
         'unsupported document': 'document_unsupported',
         'ambiguous code selector': 'selector_ambiguous',
         'inadmissible code selector': 'selector_inadmissible',
-        'parent ownership unavailable': 'parent_ownership',
-        'explicit parent not owned by task': 'parent_ownership',
-        'parent ownership changed': 'parent_ownership',
+        'explicit parent required': 'parent_binding',
         'task-selected parent mismatch': 'parent_binding',
         'invalid parent': 'parent_binding',
         'parent unavailable': 'parent_binding',
@@ -103,6 +105,7 @@ def binding_failure_detail(error):
         'parent connection changed': 'browser_changed',
         'browser generation unavailable': 'browser_changed',
         'browser unavailable': 'browser_unavailable',
+        'public browser capture unavailable': 'browser_unavailable',
         'browser changed': 'browser_changed',
         'invalid selection': 'selection_invalid',
         'ambiguous code form': 'form_ambiguous',
@@ -156,42 +159,20 @@ def _classified(raw, explicit=False):
     return found
 
 
-def discover(origin, label, task, parent=None, field_selector=None):
+def discover(origin, label, task, parent=None, field_selector=None, target_spec=None):
     strict_origin(origin)
     validate_field_selector(field_selector, parent)
+    if target_spec is not None:
+        from .exact_code import validate_spec
+        target_spec = validate_spec(target_spec, parent)
+        if field_selector is not None:
+            raise ValueError("invalid target spec")
     if not isinstance(label, str) or not 1 <= len(label) <= 80 or any(ord(c) < 32 for c in label):
         raise ValueError('invalid label')
     if parent is not None:
         from .nested_code import discover as nested_discover
-        return nested_discover(origin, label, task, parent, field_selector=field_selector)
-    sup = _supervisor(task)
-    pages = _call(sup, 'Target.getTargets').get('result', {}).get('targetInfos', [])
-    result = []
-    matching = []
-    for p in pages:
-        url = urlsplit(str(p.get('url', '')))
-        if p.get('type') == 'page' and url.scheme + '://' + url.netloc == origin:
-            matching.append(p)
-    if len(matching) > 20:
-        raise ValueError('too many candidate pages')
-    deadline = time.monotonic() + 20
-    for p in matching:
-        if time.monotonic() >= deadline:
-            for target in result:
-                release(target)
-            raise ValueError('discovery timeout')
-        from .nested_code import discover as nested_discover
-        try:
-            result.extend(nested_discover(origin, label, task, p['targetId'], top_only=True))
-        except BaseException:
-            for target in result:
-                release(target)
-            raise
-    if len(result) > 20:
-        for target in result:
-            release(target)
-        raise ValueError('too many candidate forms')
-    return result
+        return nested_discover(origin, label, task, parent, field_selector=field_selector, target_spec=target_spec)
+    raise ValueError('explicit parent required')
 
 
 def _guard(target):
@@ -224,7 +205,7 @@ def assert_target(target):
     from .nested_code import NestedCodeTarget, assert_target as nested_assert
     if isinstance(target, NestedCodeTarget):
         return nested_assert(target)
-    if _supervisor(target.task) is not target.supervisor:
+    if not target.supervisor.is_valid():
         raise ValueError('browser changed')
     with _page(target.supervisor, target.page) as sid:
         if _evaluate(target.supervisor, sid, _guard(target)) is not True:
@@ -232,53 +213,58 @@ def assert_target(target):
 
 
 def fill(target, code, expires_at):
-    from agent.vault_login_classifier import build_otp_fills
-    if not isinstance(code, str) or not re.fullmatch(r'[!-~]{4,16}', code):
-        raise ValueError('invalid code')
-    from .nested_code import NestedCodeTarget, fill as nested_fill
-    if isinstance(target, NestedCodeTarget):
-        if not target.explicit_parent:
-            try:
-                return nested_fill(target, code, expires_at)
-            except ValueError:
-                return False
-        return nested_fill(target, code, expires_at)
-    if _supervisor(target.task) is not target.supervisor:
-        raise ValueError('browser changed')
-    fills = build_otp_fills(list(target.controls), code)
-    if len(fills) != len(target.controls):
-        raise ValueError('ambiguous code form')
-    if len(fills) == 1:
-        maximum = target.controls[0].control.max_length
-        if maximum is not None and 0 <= maximum < len(code):
-            raise ValueError('code too long')
-    with _page(target.supervisor, target.page) as sid:
-        if time.monotonic() >= expires_at:
-            raise ValueError('expired')
-        # Focus/input callbacks run synchronously and can mutate later fields.
-        # Keep exact references and recheck after focus, before EVERY setter.
-        js = '(() => { const valid=() => ' + _guard(target) + '; const fills=' + json.dumps(fills) + ''';
-          if (!valid()) return {filled:0};
-          const state=document.__hermesCodeTarget;
-          const nodes=fills.map(f => state.nodes[f.index].element);
-          const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-          let filled=0;
-          for (let i=0; i<fills.length; i++) {
-            if (!valid() || document.__hermesCodeTarget!==state) return {filled};
-            const e=nodes[i];
-            e.focus();
-            if (!valid() || document.__hermesCodeTarget!==state) return {filled};
-            setter.call(e, fills[i].value);
-            filled++;
-            e.dispatchEvent(new Event('input', {bubbles:true}));
-            e.dispatchEvent(new Event('change', {bubbles:true}));
-          }
-          return {filled};
-        })()'''
-        result = _evaluate(target.supervisor, sid, js)
-    if isinstance(result, str):
-        result = json.loads(result)
-    return isinstance(result, dict) and result.get('filled') == len(fills) and bool(fills)
+    from .bound_cdp import dispatch_scope
+    with dispatch_scope(expires_at):
+        from agent.vault_login_classifier import build_otp_fills
+        from .exact_code import policy
+        target_spec = getattr(target, 'target_spec', None)
+        if not (policy(target_spec).accepts(code) if target_spec is not None else
+                isinstance(code, str) and re.fullmatch(r'[!-~]{4,16}', code)):
+            raise ValueError('invalid code')
+        from .nested_code import NestedCodeTarget, fill as nested_fill
+        if isinstance(target, NestedCodeTarget):
+            if not target.explicit_parent:
+                try:
+                    return nested_fill(target, code, expires_at)
+                except ValueError:
+                    return False
+            return nested_fill(target, code, expires_at)
+        if not target.supervisor.is_valid():
+            raise ValueError('browser changed')
+        fills = build_otp_fills(list(target.controls), code)
+        if len(fills) != len(target.controls):
+            raise ValueError('ambiguous code form')
+        if len(fills) == 1:
+            maximum = target.controls[0].control.max_length
+            if maximum is not None and 0 <= maximum < len(code):
+                raise ValueError('code too long')
+        with _page(target.supervisor, target.page) as sid:
+            if time.monotonic() >= expires_at:
+                raise ValueError('expired')
+            # Focus/input callbacks run synchronously and can mutate later fields.
+            # Keep exact references and recheck after focus, before EVERY setter.
+            js = '(() => { const valid=() => ' + _guard(target) + '; const fills=' + json.dumps(fills) + ''';
+              if (!valid()) return {filled:0};
+              const state=document.__hermesCodeTarget;
+              const nodes=fills.map(f => state.nodes[f.index].element);
+              const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+              let filled=0;
+              for (let i=0; i<fills.length; i++) {
+                if (!valid() || document.__hermesCodeTarget!==state) return {filled};
+                const e=nodes[i];
+                e.focus();
+                if (!valid() || document.__hermesCodeTarget!==state) return {filled};
+                setter.call(e, fills[i].value);
+                filled++;
+                e.dispatchEvent(new Event('input', {bubbles:true}));
+                e.dispatchEvent(new Event('change', {bubbles:true}));
+              }
+              return {filled};
+            })()'''
+            result = _evaluate(target.supervisor, sid, js)
+        if isinstance(result, str):
+            result = json.loads(result)
+        return isinstance(result, dict) and result.get('filled') == len(fills) and bool(fills)
 
 
 def release(target):
@@ -317,8 +303,15 @@ class CodeSelection:
         with self._lock:
             self._retire(lambda entry: entry[3] is batch)
 
-    def choose(self, scope, origin, label, task, selection=None, parent=None, field_selector=None, *, batch=None):
+    def choose(self, scope, origin, label, task, selection=None, parent=None, field_selector=None, *, batch=None, target_spec=None):
+        if not isinstance(parent, str) or not parent:
+            raise ValueError('explicit parent required')
         validate_field_selector(field_selector, parent)
+        if target_spec is not None:
+            from .exact_code import validate_spec
+            target_spec = validate_spec(target_spec, parent)
+            if field_selector is not None:
+                raise ValueError("invalid target spec")
         batch = batch if batch is not None else threading.Event()
         with self._lock:
             if self._closed or batch.is_set():
@@ -331,7 +324,7 @@ class CodeSelection:
                     raise ValueError('invalid selection')
                 target = entry[2]
                 if (target.task != task or (getattr(target, 'parent', None) if getattr(target, 'explicit_parent', True) else None) != parent
-                        or target.field_selector != field_selector):
+                        or target.field_selector != field_selector or getattr(target, 'target_spec', None) != target_spec):
                     raise ValueError('invalid selection')
                 self._entries.pop(selection)
                 self._retire(lambda entry: False)
@@ -345,7 +338,8 @@ class CodeSelection:
         from .bound_cdp import acquisition_scope
         with acquisition_scope(batch):
             targets = discover(origin, label, task) if parent is None else discover(
-                origin, label, task, parent=parent, **({'field_selector': field_selector} if field_selector is not None else {}))
+                origin, label, task, parent=parent, **({'field_selector': field_selector} if field_selector is not None else {}),
+                **({'target_spec': target_spec} if target_spec is not None else {}))
         with self._lock:
             if self._closed or batch.is_set():
                 for target in targets:

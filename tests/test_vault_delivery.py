@@ -78,11 +78,11 @@ async def test_tool_denies_unbound_context_without_issuing_form(tmp_path, monkey
         def on_unload(self, *args, **kwargs): pass
     ctx = Context()
     register(ctx)
-    assert {'browser_vault', 'secure_operation'} <= set(ctx.tools)
+    assert {'secure_env_vault', 'secure_operation'} <= set(ctx.tools)
     payment = json.loads(await ctx.tools['secure_payment_fill'](
         {'handle': 'vault_fixture', 'parent': 'p', 'origin': 'https://example.test'}, task_id='unbound'))
     assert payment == {'success': False, 'status': 'session_binding'}
-    result = json.loads(await ctx.tools['browser_vault'](
+    result = json.loads(await ctx.tools['secure_env_vault'](
         {'origin': 'https://example.test', 'label': 'Synthetic'}, task_id='unbound'))
     assert result['success'] is False
     assert 'password' not in json.dumps(result).lower()
@@ -132,7 +132,7 @@ async def test_tool_waits_for_saved_metadata_and_never_returns_bearer(tmp_path, 
         chat_type='forum', thread_id='99', session_id='sid', session_key='key',
         profile='default', cron_session='')
     try:
-        pending = asyncio.create_task(ctx.tools['browser_vault'](
+        pending = asyncio.create_task(ctx.tools['secure_env_vault'](
             {'origin': 'https://fixture.test', 'label': 'Fixture'}, task_id='sid', session_id='sid'))
         await asyncio.wait_for(delivered.wait(), 3)
         assert not pending.done()

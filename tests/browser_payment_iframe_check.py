@@ -153,6 +153,8 @@ def main():
                         result,_=invoke(handle=captured_handle)
                         assert result['status']=='unknown' and protected_writes==[0]
                         assert page.frames[1].evaluate("_KKnr.value==='' && expiry_date.value==='' && cccvc.value==='' && !check_agb.checked")
+                        if '--provider-smoke' in sys.argv:
+                            continue
                         for attack in ['reverted_semantics','reverted_overlay','image_source','late_value']:
                             reset(origin=captured_origin, captured=True)
                             page.frames[1].evaluate("""attack=>{
@@ -209,6 +211,12 @@ def main():
                                 result,_=invoke(handle=captured_handle)
                                 assert result['status']=='unknown' and protected_writes==[0,1], (kind,delivery,result)
                                 assert frame.evaluate("expiry_date.value==='' && cccvc.value==='' && !check_agb.checked && submissions===0 && fieldEvents.cccvc.focus===0")
+                    if '--provider-smoke' in sys.argv:
+                        assert errors==[]
+                        print(json.dumps({'protected_iframe_browser':'PASS',
+                            'checks':{'four_fields_both_process_paths':True,'native_consent_declines':True,'format_and_brand':True,'partial_unknown_no_retry':True},
+                            'page_errors':0,'runtime_package':str(Path(payment_adapter.__file__).parent)}),flush=True)
+                        return
                     results['astra_B2_mixed_all_subjects_custom_property_opacity_visibility_all_sheets_both_process_paths']=True
                     results['astra_B1_out_of_slot_paint_B2_control_state_sibling_all_sheet_paths_both_process_paths']=True
                     results['empty_captured_css_div_img_four_fields_both_process_paths_native_consent_and_attacks']=True

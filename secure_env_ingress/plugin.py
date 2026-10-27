@@ -49,11 +49,11 @@ class _CodeChoice:
         self.finished = self.cancelled = False
         self.result = None
 
-    def run(self, *args):
+    def run(self, *args, **kwargs):
         # Never return the target through the cancellable asyncio wrapper.
         result = None
         try:
-            result = self.selection.choose(*args, batch=self.batch)
+            result = self.selection.choose(*args, batch=self.batch, **kwargs)
         finally:
             with self.lock:
                 self.finished = True
@@ -386,19 +386,28 @@ def register(ctx):
         target = None
         # Fixed labels only: never return exception text or contextual identifiers.
         reason = 'session_binding'
+        binding_detail = 'request'
         try:
+            if closed:
+                binding_detail = 'plugin_inactive'
+                raise ValueError('plugin inactive')
             from gateway import session_context as sc
             def bound(var):
                 value = var.get()
                 return None if value is sc._UNSET else value
             if (closed or not isinstance(args, dict) or
-                    (not {'origin', 'label'}.issubset(args) or set(args) - {'origin', 'label', 'mode', 'selection', 'parent', 'field_selector'}) or
+                    (not {'origin', 'label'}.issubset(args) or set(args) - {'origin', 'label', 'mode', 'selection', 'parent', 'field_selector', 'target_spec'}) or
                     args.get('mode', 'login') not in ('login', 'code', 'payment')):
                 raise ValueError('invalid request')
             code_mode = args.get('mode', 'login') == 'code'
             payment_mode = args.get('mode', 'login') == 'payment'
             if 'parent' in args and (not code_mode or not isinstance(args['parent'], str) or not 1 <= len(args['parent']) <= 100):
                 raise ValueError('invalid code parent')
+            if 'target_spec' in args:
+                from .exact_code import validate_spec
+                if not code_mode or 'field_selector' in args:
+                    raise ValueError('invalid target spec')
+                validate_spec(args['target_spec'], args.get('parent'))
             if 'field_selector' in args:
                 from .code_targets import validate_field_selector
                 if not code_mode or args['field_selector'] is None:
@@ -406,9 +415,11 @@ def register(ctx):
                 validate_field_selector(args['field_selector'], args.get('parent'))
             if 'selection' in args and (not code_mode or not isinstance(args['selection'], str) or len(args['selection']) > 100):
                 raise ValueError('invalid selection')
+            binding_detail = 'interactive_context'
             if bound(sc._SESSION_PLATFORM) != 'telegram' or bound(sc._CRON_SESSION) != '':
                 raise ValueError('not an interactive Telegram turn')
             from agent.delegation_context import is_delegated_child_context
+            binding_detail = 'delegation'
             if is_delegated_child_context():
                 raise ValueError('delegated turn')
             sid = bound(sc._SESSION_ID)
@@ -420,20 +431,30 @@ def register(ctx):
             profile = bound(sc._SESSION_PROFILE)
             from hermes_constants import profile_name_for_home
             expected_profile = profile_name_for_home(home) or 'default'
+            binding_detail = 'session_identity'
             if (not sid or not skey or not task_id or sid != task_id or
-                    (session_id and session_id != sid) or not owner_text or
-                    not owner_text.isdecimal() or ('telegram', owner_text) not in configured_owners(read_settings(home)) or
-                    not chat or not str(chat).lstrip('-').isdecimal() or
-                    chat_type not in ('dm', 'group', 'forum') or
-                    profile not in ((expected_profile, '') if expected_profile == 'default' else (expected_profile,))):
+                    (session_id and session_id != sid)):
+                raise ValueError('session mismatch')
+            binding_detail = 'owner_identity'
+            if (not owner_text or not owner_text.isdecimal() or
+                    ('telegram', owner_text) not in configured_owners(read_settings(home))):
+                raise ValueError('session mismatch')
+            binding_detail = 'destination_identity'
+            if (not chat or not str(chat).lstrip('-').isdecimal() or
+                    chat_type not in ('dm', 'group', 'forum')):
+                raise ValueError('session mismatch')
+            binding_detail = 'profile_identity'
+            if profile not in ((expected_profile, '') if expected_profile == 'default' else (expected_profile,)):
                 raise ValueError('session mismatch')
             assert_profile_home(home)
             reason = 'browser_binding' if code_mode else 'storage_binding'
             if code_mode:
+                if not args.get('parent'):
+                    raise ValueError('explicit parent required')
                 scope = (str(home), sid, skey, owner_text, str(chat), str(thread))
                 batch = threading.Event()
                 ownership = _CodeChoice(code_selection, batch)
-                choice = asyncio.create_task(asyncio.to_thread(ownership.run, scope, args['origin'], args['label'], task_id, args.get('selection'), args.get('parent'), args.get('field_selector')))
+                choice = asyncio.create_task(asyncio.to_thread(ownership.run, scope, args['origin'], args['label'], task_id, args.get('selection'), args.get('parent'), args.get('field_selector'), **({'target_spec': args['target_spec']} if 'target_spec' in args else {})))
                 try:
                     await asyncio.shield(choice)
                     target, response = ownership.take()
@@ -514,7 +535,7 @@ def register(ctx):
                 if outcome['status'] == 'saved':
                     return json.dumps({'success': True, 'status': 'saved', 'saved': True,
                         'filled': False, 'handle': outcome['handle'], 'origin': outcome['origin'],
-                        'next': ('Recheck page and exact origin, list native Vault and call native browser_vault_fill, which requires human payment-fill confirmation. Never retry a decline. Filling is not permission to click Pay; sites may act on input.' if payment_mode else 'Recheck current browser page and origin, then use native browser_vault_list, type the identifier with browser_type and call native browser_vault_fill. Saving did not fill or sign in.')})
+                        'next': ('Recheck the exact merchant/provider origins, list native Vault and use secure_payment_fill for supported retained destinations with the exact selected parent. Top-level or explicit fields require the closed target_spec. Separate native human payment-fill confirmation remains mandatory. Stock native fill is not an exact-target fallback. Never retry a decline or unknown result; filling is not permission to click Pay and sites may act on input.' if payment_mode else 'Recheck the selected HTTPS page and destination origin, list native Vault for the public identifier, type only that identifier and call secure_login_fill(handle=..., parent=EXACT_SELECTED_PARENT, origin=EXACT_HTTPS_ORIGIN). For saved TOTP use secure_login_fill(mode="totp", ...) with the same exact destination binding. Saving did not fill or sign in. Never use native fill/enter_code as an exact-target fallback.')})
                 if code_mode and outcome['status'] == 'filled':
                     return json.dumps({'success': True, 'status': 'filled', 'saved': False,
                         'filled': True, 'origin': outcome['origin'],
@@ -523,7 +544,7 @@ def register(ctx):
                     'saved': None if outcome['status'] == 'unknown' else False,
                     'filled': None if code_mode and outcome['status'] == 'unknown' else False,
                     'error': ('Code fill was not confirmed; check the browser before retrying.' if code_mode else
-                              'Vault storage was not confirmed. Recheck native browser_vault_list before retrying if status is unknown.')})
+                              'Vault storage was not confirmed. Recheck native browser_vault(action="list") (legacy: browser_vault_list) before retrying if status is unknown.')})
             except BaseException:
                 # A cancelled to_thread worker can complete AFTER its coroutine is cancelled.
                 # Wait for that exact issuance, then revoke it; never revoke a newer owner request.
@@ -540,6 +561,8 @@ def register(ctx):
         except BaseException as binding_error:
             response = {'success': False, 'reason': reason,
                 'error': 'Form unavailable. Check the active Telegram session, browser page, delivery and HTTPS setup.'}
+            if reason == 'session_binding':
+                response['detail'] = binding_detail
             if reason == 'browser_binding':
                 from .code_targets import binding_failure_detail
                 response['detail'] = binding_failure_detail(binding_error)
@@ -672,10 +695,15 @@ def register(ctx):
             guard()
             vault_binding = bind_vault_home(home)
             if (not isinstance(args, dict) or not {'handle', 'parent', 'origin'} <= set(args)
-                    or set(args) - {'handle', 'parent', 'origin', 'selection', 'resume_existing'}
+                    or set(args) - {'handle', 'parent', 'origin', 'selection', 'resume_existing', 'target_spec'}
                     or type(args.get('resume_existing', False)) is not bool
-                    or any(not isinstance(v, str) or not 1 <= len(v) <= 200 for k, v in args.items() if k != 'resume_existing')):
+                    or any(not isinstance(v, str) or not 1 <= len(v) <= 200 for k, v in args.items() if k not in ('resume_existing', 'target_spec'))):
                 raise ValueError('invalid request')
+            if 'target_spec' in args:
+                from .exact_card import validate_spec
+                args = dict(args, target_spec=validate_spec(args['target_spec'], args['parent']))
+                if args.get('resume_existing', False) or args.get('selection'):
+                    raise ValueError('explicit card target cannot resume or select')
         except Exception:
             return json.dumps({'success': False, 'status': 'session_binding'})
         scope = (str(home), task_id, bound(sc._SESSION_KEY), bound(sc._SESSION_USER_ID),
@@ -690,10 +718,13 @@ def register(ctx):
                 payment_backend(args['handle'], args['origin'])
                 stage = 'selection'
                 target, response = payment_selection.choose(scope, task_id, args['parent'],
-                    args['origin'], args['handle'], args.get('selection'), batch=cancelled)
+                    args['origin'], args['handle'], args.get('selection'), batch=cancelled,
+                    **({'target_spec': args['target_spec']} if 'target_spec' in args else {}))
                 if response is not None:
                     return response
-                return approved_fill(target, args['handle'], guard, resume_existing=True) if args.get('resume_existing', False) else approved_fill(target, args['handle'], guard)
+                from .bound_cdp import acquisition_scope
+                with acquisition_scope(cancelled):
+                    return approved_fill(target, args['handle'], guard, resume_existing=True) if args.get('resume_existing', False) else approved_fill(target, args['handle'], guard)
             except Exception:
                 return {'success': False, 'status': 'target_refused', 'stage': stage}
             finally:
@@ -711,12 +742,115 @@ def register(ctx):
             await asyncio.shield(worker)
             raise
 
+    login_lock = threading.Lock()
+
+    async def login_tool(args, *, task_id=None, session_id=None, **_kwargs):
+        """Exact retained destination; storage and native fill remain independent."""
+        from gateway import session_context as sc
+        from agent.delegation_context import is_delegated_child_context
+        from hermes_constants import profile_name_for_home
+        from . import login_fill as lf
+        from . import code_targets as ct
+        from .vault_ingress import bind_vault_home, assert_vault_home
+        from .bound_cdp import acquisition_scope
+        cancelled = threading.Event()
+        def bound(var):
+            value = var.get()
+            return None if value is sc._UNSET else value
+        variables = (sc._SESSION_PLATFORM, sc._CRON_SESSION, sc._SESSION_ID,
+                     sc._SESSION_KEY, sc._SESSION_USER_ID, sc._SESSION_CHAT_ID,
+                     sc._SESSION_THREAD_ID, sc._SESSION_CHAT_TYPE, sc._SESSION_PROFILE)
+        frozen = tuple(bound(v) for v in variables)
+        expected = profile_name_for_home(home) or 'default'
+        try:
+            if (closed or is_delegated_child_context() or frozen[0] != 'telegram' or frozen[1] != ''
+                    or not task_id or frozen[2] != task_id or (session_id and session_id != task_id)
+                    or not frozen[3] or not isinstance(frozen[4], str) or not frozen[4].isascii()
+                    or not frozen[4].isdecimal() or ('telegram', frozen[4]) not in configured_owners(read_settings(home))
+                    or not frozen[5] or not str(frozen[5]).lstrip('-').isdecimal()
+                    or frozen[7] not in ('dm', 'group', 'forum')
+                    or frozen[8] not in ((expected, '') if expected == 'default' else (expected,))):
+                raise ValueError('session mismatch')
+            assert_profile_home(home)
+            vault_binding = bind_vault_home(home)
+            if (not isinstance(args, dict) or not {'handle', 'parent', 'origin'} <= set(args)
+                    or set(args) - {'handle', 'parent', 'origin', 'mode', 'field_selector', 'frame'}
+                    or args.get('mode', 'login') not in ('login', 'totp')
+                    or any(not isinstance(v, str) or not 1 <= len(v) <= 256 for v in args.values())
+                    or len(args['parent']) > 100 or len(args.get('frame', 'top')) > 100
+                    or args.get('mode', 'login') == 'totp' and 'frame' in args):
+                raise ValueError('invalid request')
+            from .vault_ingress import strict_origin
+            strict_origin(args['origin'])
+        except Exception:
+            return json.dumps({'success': False, 'status': 'session_binding'})
+        def guard():
+            # Called on the public before_send fence too: no browser lookup,
+            # recapture, disk configuration load, prompt or secret resolution.
+            if (closed or cancelled.is_set() or is_delegated_child_context()
+                    or tuple(bound(v) for v in variables) != frozen):
+                raise ValueError('session changed')
+            assert_profile_home(home)
+            assert_vault_home(vault_binding)
+        def work():
+            if not login_lock.acquire(blocking=False):
+                return {'success': False, 'status': 'login_busy'}
+            target = None
+            otp = args.get('mode', 'login') == 'totp'
+            try:
+                with acquisition_scope(cancelled):
+                    guard()
+                    lf.login_backend(args['handle'], args['origin'])
+                    if otp:
+                        candidates = ct.discover(args['origin'], 'Saved login TOTP', task_id,
+                                                 args['parent'], args.get('field_selector'))
+                        if len(candidates) != 1:
+                            for candidate in candidates:
+                                ct.release(candidate)
+                            raise ValueError('ambiguous OTP target')
+                        target = candidates[0]
+                        target.supervisor.scope_guard = guard
+                        return lf.fill_totp(target, args['handle'], guard)
+                    target = lf.discover(task_id, args['parent'], args['origin'], guard,
+                                         args.get('field_selector'), args.get('frame'))
+                    return lf.fill_login(target, args['handle'], guard)
+            except Exception:
+                return {'success': False, 'status': 'target_refused'}
+            finally:
+                if target is not None:
+                    if otp:
+                        ct.release(target)
+                    else:
+                        target.lease.close()
+                login_lock.release()
+        worker = asyncio.create_task(asyncio.to_thread(work))
+        try:
+            return json.dumps(await asyncio.shield(worker))
+        except asyncio.CancelledError:
+            cancelled.set()
+            await asyncio.shield(worker)
+            raise
+
+    ctx.register_tool(name='secure_login_fill', toolset='browser',
+        schema={'name': 'secure_login_fill', 'description': 'Secure ENV exact-parent native Vault login/password or saved TOTP fill. Only opaque handle, exact existing parent page and HTTPS destination origin; tab creator is irrelevant. Hermes supplies the selected parent automatically, never asks the human for IDs. mode=login (default) retains the single original current-password input, supporting password-only/username-first, bounded nested/OOPIF/open or closed Shadow documents. The public identifier is typed separately before admission. mode=totp retains the original recognized OTP destination and checks saved-handle metadata origin before resolving the code. No passwords/codes in arguments, native fill/enter_code fallback, form submission, focus_page, origin-based sibling search or retry after unknown. Locked managers must first use the native supported unlock flow; unavailable prompts cannot be bypassed.',
+                'parameters': {'type': 'object', 'additionalProperties': False,
+                               'required': ['handle', 'parent', 'origin'], 'properties': {
+                    'handle': {'type': 'string', 'description': 'Opaque native login handle from Vault listing, never secret bytes'},
+                    'parent': {'type': 'string', 'description': 'Exact existing selected parent page target; supplied by the agent, not human'},
+                    'origin': {'type': 'string', 'description': 'Exact HTTPS destination document origin matching native metadata'},
+                    'mode': {'type': 'string', 'enum': ['login', 'totp'], 'default': 'login'},
+                    'field_selector': {'type': 'string', 'maxLength': 256, 'description': 'Optional discovery-only selector hint; never fill-time authority'},
+                    'frame': {'type': 'string', 'maxLength': 100, 'description': 'Login only: original frame ID or top; no endpoint/JS input'}}}},
+        handler=login_tool, is_async=True)
+
+    from .exact_card import schema as exact_card_schema
     ctx.register_tool(name='secure_payment_fill', toolset='browser',
-        schema={'name': 'secure_payment_fill', 'description': 'Secure ENV: protected payment iframe fill from a saved native Vault handle. Additive tool, not a replacement for browser_vault_fill. Requires an explicitly task-selected parent target, with exact task-owner/browser-generation proof for a private attachment when the supervisor is on another page, exact HTTPS frame origin matching the saved card, and separate native human confirmation identifying card label/origin. No card values, arbitrary selectors, endpoints or JS arguments. Multiple direct child frames/forms return bounded opaque selections; Hermes chooses using task context. No Pay click, registration or form submission; sites may act on input. Never retry payment_declined or unknown automatically. Native local payment entries only; no manager unlocking. Optional resume_existing preserves all matching nonempty selected fields only after fresh confirmation; mismatched/masked fields refuse before writes. No value matching details before consent. Load secure-env-ingress:usage for supported field formats and refusal boundaries.',
+        schema={'name': 'secure_payment_fill', 'description': 'Secure ENV: protected card fill from a saved native Vault handle, never card values in arguments. Additive tool, not browser_vault_fill replacement. Requires exact existing task-selected parent, authorized human/session and retained browser generation and HTTPS provider origin bound to the saved card. Optional closed target_spec purpose=payment_card maps explicit role/selector/original-frame/fixed-format descriptors for standard input, textarea or simple text-node-only plaintext-only/true editing hosts: top-level, bounded nested/shadow and same-provider multi-frame targets, independent of visual geometry. Simple ID/class selectors only, retained original nodes/forms/roots/frame owners; no first-match fallback, executable JS, formatter or secret arguments. Explicit native protected human confirmation displays card label AND merchant/provider origins before secret resolution. No-spec legacy direct child discovery and native consent remain unchanged; multiple candidates return opaque selections. No Pay click, registration or form submission; sites may act on input. Never retry payment_declined or unknown automatically. Native local payment entries only, no manager unlocking. resume_existing applies only to legacy no-spec targets and requires fresh consent. Load secure-env-ingress:usage for closed formats and refusal limits.',
             'parameters': {'type': 'object', 'properties': {
                 'handle': {'type': 'string', 'description': 'Native vault_ payment handle from Vault listing, never card values'},
-                'parent': {'type': 'string', 'description': 'Exact task-selected parent page target ID; a different supervisor page requires host creation-owner proof; never globally auto-picked'},
+                'parent': {'type': 'string', 'description': 'Exact existing selected parent page target ID supplied by Hermes; supervisor default and tab creator are irrelevant; no global auto-pick'},
                 'origin': {'type': 'string', 'description': 'Exact HTTPS origin of payment child frame, matching native Vault binding'},
+                'target_spec': exact_card_schema(),
                 'resume_existing': {'type': 'boolean', 'default': False, 'description': 'Explicit opt-in to preserve existing fields only if all match the saved card internally after fresh native consent; mismatched/masked fields refuse before any write. No submit.'},
                 'selection': {'type': 'string', 'description': 'Opaque selection returned for this task, parent, origin and handle; consumed within 120 seconds'}},
                 'required': ['handle', 'parent', 'origin'], 'additionalProperties': False}},
@@ -731,19 +865,21 @@ def register(ctx):
                     'parameters': {'type': 'object', 'description': 'Nonsensitive operation parameters, never a password'}},
                     'required': ['operation', 'parameters'], 'additionalProperties': False}},
         handler=operation_tool, is_async=True)
-    ctx.register_tool(name='browser_vault', toolset='browser',
-        schema={'name': 'browser_vault', 'description': 'Secure ENV: Telegram HTTPS form for login, username, password, optional TOTP setup key, payment card storage, or verification code/passcode. Use mode=login (default) to SAVE credentials for an HTTPS origin in encrypted profile Vault; no open browser required, no automatic filling or sign-in. Later fill the matching site through native Vault tools. Use mode=code to FILL a recognized code/passcode field in an attached browser, without Vault storage or explicit site-form submission. Optional parent enables bounded nested iframe discovery under the task-selected page; input can auto-submit or authorize including 3-D Secure. Accepts 4-16 printable ASCII characters including punctuation, no whitespace. A native secret prompt returning prompt_unavailable does NOT establish that this plugin is unavailable: use the matching mode here in an authorized Telegram session. Payment mode saves card fields including CVC in encrypted native Vault for an exact HTTPS origin; no browser required, no fill, no payment authorization. Later native fill needs explicit human payment-fill confirmation; for supported exact hosted-card iframes discover secure_payment_fill, the additive protected plugin path with the same native human consent. Never retry a decline. No mode needs a site-specific registered operation. Never put secrets in arguments or chat. Links grant access to chat readers. For workflow and failure diagnosis load the plugin usage skill.',
+    from .exact_code import schema as exact_code_schema
+    ctx.register_tool(name='secure_env_vault', toolset='browser',
+        schema={'name': 'secure_env_vault', 'description': 'Secure ENV: Telegram HTTPS form for login, username, password, optional TOTP setup key, payment card storage, or verification code/passcode. Use mode=login (default) to SAVE credentials for an HTTPS origin in encrypted profile Vault; no open browser required, no automatic filling or sign-in. Later list native Vault metadata and fill the exact selected destination through secure_login_fill, never native stock fill as an exact-target fallback. Use mode=code to FILL a recognized code/passcode field in an attached browser, without Vault storage or explicit site-form submission. Required exact existing parent enables bounded iframe discovery under the selected page; input can auto-submit or authorize including 3-D Secure. Legacy field classification accepts 4-16 printable ASCII characters including punctuation, no whitespace. With exact task-selected parent, target_spec provides an additive retained single input/textarea/plaintext-only editor or explicit ordered/indexed group of up to 100 cells, with versioned exact-length validation and a separate protected human transient-code-purpose confirmation. No passwords, keys, card or recovery credentials; no executable JS or target attribute changes. A native secret prompt returning prompt_unavailable does NOT establish that this plugin is unavailable: use the matching mode here in an authorized Telegram session. Payment mode saves card fields including CVC in encrypted native Vault for an exact HTTPS origin; no browser required, no fill, no payment authorization. Later use secure_payment_fill for supported retained exact targets, preserving native human payment-fill confirmation. Stock native fill is a separate host feature, never an exact-target fallback. Never retry a decline. No mode needs a site-specific registered operation. Never put secrets in arguments or chat. Links grant access to chat readers. For workflow and failure diagnosis load the plugin usage skill.',
                 'parameters': {'type': 'object', 'properties': {'origin': {'type': 'string', 'description': 'Exact HTTPS origin to store credentials for; for code mode, the exact code document origin (may differ from the parent). No path or trailing slash.'},
                     'label': {'type': 'string', 'description': 'Short public site label'},
                     'selection': {'type': 'string', 'description': 'Code mode only: opaque candidate returned by selection_required. Hermes chooses using its login context; repeat the exact parent if supplied; never ask the user to identify a tab.'},
-                    'parent': {'type': 'string', 'description': 'Code mode only: exact task-selected parent target ID for bounded nested iframe discovery. A different supervisor page requires host creation-owner proof for a private exact attachment. Origin must be the actual code document HTTPS origin. Omit for unchanged top-level discovery. Input may auto-submit/authorize including 3-D Secure; development approval is not banking authorization.'},
-                    'field_selector': {'type': 'string', 'minLength': 1, 'maxLength': 256, 'description': 'Code mode only; requires exact task-owned parent. CSS discovery-only hint for one permissible original input across matching-origin documents. Unknown fields require name=code, a form, numeric inputmode and maxlength 4–16. No password/payment/promo controls, shadow traversal or fill-time selector lookup; all protected HTTPS owner/target guards remain. Repeat unchanged when selecting.'},
+                    'parent': {'type': 'string', 'description': 'Code mode only, required: exact existing selected parent supplied by Hermes for bounded discovery. Tab creator and supervisor default are irrelevant. Origin must be the actual code document HTTPS origin. Missing parent refuses before prompting. Input may auto-submit/authorize including 3-D Secure; development approval is not banking authorization.'},
+                    'field_selector': {'type': 'string', 'minLength': 1, 'maxLength': 256, 'description': 'Code mode only; requires exact selected existing parent. CSS discovery-only hint for one permissible original input across matching-origin documents. Unknown fields require name=code, a form, numeric inputmode and maxlength 4–16. No password/payment/promo controls or fill-time selector lookup; bounded open/closed Shadow roots are retained through CDP; all protected HTTPS session/target guards remain. Repeat unchanged when selecting.'},
+                    'target_spec': exact_code_schema(),
                     'mode': {'type': 'string', 'enum': ['login', 'code', 'payment'], 'description': 'login (default): save username/password and optional TOTP key without a browser. code: fill an attached verification-code/passcode field, no storage. payment: save a card including CVC, no browser, fill or payment authorization.'}}, 'required': ['origin', 'label'], 'additionalProperties': False}},
         handler=vault_tool, is_async=True)
     ctx.register_skill('setup', Path(__file__).parent / 'setup' / 'SKILL.md',
                        description='Install and diagnose secure-env-ingress; never handle secret values.')
     ctx.register_skill('usage', Path(__file__).parent / 'usage' / 'SKILL.md',
-                       description='Use Secure ENV for Telegram login, username/password, TOTP setup keys, payment card storage and protected iframe fill, verification codes/passcodes, .env or trusted operations; handle prompt_unavailable.')
+                       description='Use Secure ENV for Telegram login/password storage, retained exact-parent saved login/TOTP fill, payment card storage/protected fill, verification codes, .env or trusted operations; handle prompt_unavailable.')
     ctx.register_hook('pre_gateway_dispatch', hook)
     ctx.register_command('senv', command, description='Secure secret entry over HTTPS',
                          args_hint='<profile> [field1,field2]|setup|status|cancel')

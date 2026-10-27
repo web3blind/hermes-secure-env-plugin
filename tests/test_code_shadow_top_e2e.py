@@ -44,7 +44,7 @@ def test_discovery_does_not_change_focus_emulation(nested, monkeypatch):
         methods.append(method)
         return original(sup, method, params, sid)
     monkeypatch.setattr(nested_code, '_call', observe)
-    targets = codes.discover(origin, 'Synthetic', nested.sup.task_id)
+    targets = codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent)
     try:
         assert len(targets) == 1
         assert 'Emulation.setFocusEmulationEnabled' not in methods

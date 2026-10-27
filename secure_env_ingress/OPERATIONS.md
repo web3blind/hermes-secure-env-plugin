@@ -1,6 +1,6 @@
 # One-shot secure operations (0.6.2)
 
-`secure_operation` is separate from `/senv` (ENV writes) and `browser_vault` (login/code). It accepts only `{ "operation": "name", "parameters": { ... } }`. No consumer is shipped or enabled by default; unknown names fail before link issuance. The administrator connects reviewed external Python code through the plugin settings allowlist below, or an integrator calls `register_consumer(home, name, factory)` from `secure_env_ingress.operations` in the trusted process before requests. Both routes share the same profile-scoped registry, reject name collisions and clear registrations on plugin unload. This is not a remote registration endpoint. The **model cannot** supply a module path, command, URL, or executable payload.
+`secure_operation` is separate from `/senv` (ENV writes) and `secure_env_vault` (login/code). It accepts only `{ "operation": "name", "parameters": { ... } }`. No consumer is shipped or enabled by default; unknown names fail before link issuance. The administrator connects reviewed external Python code through the plugin settings allowlist below, or an integrator calls `register_consumer(home, name, factory)` from `secure_env_ingress.operations` in the trusted process before requests. Both routes share the same profile-scoped registry, reject name collisions and clear registrations on plugin unload. This is not a remote registration endpoint. The **model cannot** supply a module path, command, URL, or executable payload.
 
 ## Administrator connection (per active profile)
 

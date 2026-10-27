@@ -27,8 +27,12 @@ def test_https_completion_only_after_native_metadata_readback(tmp_path, monkeypa
     try:
         links = runtime.create_vault(('telegram', '7'), target())
         assert not links['completion'].done()
+        # Stock VaultStore lazily imports the canonical config/permission guard
+        # on its first write. The diagnostic stack showed that cold import in
+        # the HTTPS worker exceeding the helper's 3s read budget. Keep the
+        # production capability deadline unchanged; allow the real native write.
         status, result = post(config, root, '/submit', {'token': token(links), 'initData': '',
-                                                      'values': ['synthetic-user', 'synthetic-secret']})
+                                                      'values': ['synthetic-user', 'synthetic-secret']}, timeout=20)
         assert (status, result) == (200, {'saved': True})
         from agent.vault_store import VaultStore
         meta = VaultStore(home / 'vault').list_items()[0]

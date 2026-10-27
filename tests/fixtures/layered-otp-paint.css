@@ -1,0 +1,223 @@
+/* Synthetic structural census: 63 layers, 124 styles, 4 media, 17 font faces, 14 keyframes. */
+:root { --fixture-ring-size: 2px; --fixture-ring-color: rgb(30, 90, 160); }
+@layer fixture { @layer paint { .fixture-focus { border-color: var(--fixture-ring-color); box-shadow: 0 0 0 var(--fixture-ring-size) var(--fixture-ring-color); } } }
+@layer unrelated0 { .decoration0:hover { color: gray; } }
+@layer unrelated1 { .decoration1:hover { color: gray; } }
+@layer unrelated2 { .decoration2:hover { color: gray; } }
+@layer unrelated3 { .decoration3:hover { color: gray; } }
+@layer unrelated4 { .decoration4:hover { color: gray; } }
+@layer unrelated5 { .decoration5:hover { color: gray; } }
+@layer unrelated6 { .decoration6:hover { color: gray; } }
+@layer unrelated7 { .decoration7:hover { color: gray; } }
+@layer unrelated8 { .decoration8:hover { color: gray; } }
+@layer unrelated9 { .decoration9:hover { color: gray; } }
+@layer unrelated10 { .decoration10:hover { color: gray; } }
+@layer unrelated11 { .decoration11:hover { color: gray; } }
+@layer unrelated12 { .decoration12:hover { color: gray; } }
+@layer unrelated13 { .decoration13:hover { color: gray; } }
+@layer unrelated14 { .decoration14:hover { color: gray; } }
+@layer unrelated15 { .decoration15:hover { color: gray; } }
+@layer unrelated16 { .decoration16:hover { color: gray; } }
+@layer unrelated17 { .decoration17:hover { color: gray; } }
+@layer unrelated18 { .decoration18:hover { color: gray; } }
+@layer unrelated19 { .decoration19:hover { color: gray; } }
+@layer unrelated20 { .decoration20:hover { color: gray; } }
+@layer unrelated21 { .decoration21:hover { color: gray; } }
+@layer unrelated22 { .decoration22:hover { color: gray; } }
+@layer unrelated23 { .decoration23:hover { color: gray; } }
+@layer unrelated24 { .decoration24:hover { color: gray; } }
+@layer unrelated25 { .decoration25:hover { color: gray; } }
+@layer unrelated26 { .decoration26:hover { color: gray; } }
+@layer unrelated27 { .decoration27:hover { color: gray; } }
+@layer unrelated28 { .decoration28:hover { color: gray; } }
+@layer unrelated29 { .decoration29:hover { color: gray; } }
+@layer unrelated30 { .decoration30:hover { color: gray; } }
+@layer unrelated31 { .decoration31:hover { color: gray; } }
+@layer unrelated32 { .decoration32:hover { color: gray; } }
+@layer unrelated33 { .decoration33:hover { color: gray; } }
+@layer unrelated34 { .decoration34:hover { color: gray; } }
+@layer unrelated35 { .decoration35:hover { color: gray; } }
+@layer unrelated36 { .decoration36:hover { color: gray; } }
+@layer unrelated37 { .decoration37:hover { color: gray; } }
+@layer unrelated38 { .decoration38:hover { color: gray; } }
+@layer unrelated39 { .decoration39:hover { color: gray; } }
+@layer unrelated40 { .decoration40:hover { color: gray; } }
+@layer unrelated41 { .decoration41:hover { color: gray; } }
+@layer unrelated42 { .decoration42:hover { color: gray; } }
+@layer unrelated43 { .decoration43:hover { color: gray; } }
+@layer unrelated44 { .decoration44:hover { color: gray; } }
+@layer unrelated45 { .decoration45:hover { color: gray; } }
+@layer unrelated46 { .decoration46:hover { color: gray; } }
+@layer unrelated47 { .decoration47:hover { color: gray; } }
+@layer unrelated48 { .decoration48:hover { color: gray; } }
+@layer unrelated49 { .decoration49:hover { color: gray; } }
+@layer unrelated50 { .decoration50:hover { color: gray; } }
+@layer unrelated51 { .decoration51:hover { color: gray; } }
+@layer unrelated52 { .decoration52:hover { color: gray; } }
+@layer unrelated53 { .decoration53:hover { color: gray; } }
+@layer unrelated54 { .decoration54:hover { color: gray; } }
+@layer unrelated55 { .decoration55:hover { color: gray; } }
+@layer unrelated56 { .decoration56:hover { color: gray; } }
+@layer unrelated57 { .decoration57:hover { color: gray; } }
+@layer unrelated58 { .decoration58:hover { color: gray; } }
+@layer unrelated59 { .decoration59:hover { color: gray; } }
+@layer unrelated60 { .decoration60:hover { color: gray; } }
+@layer unrelated61 { .decoration61:hover { color: gray; } }
+.unrelated0:not(:active) { color: gray; }
+.unrelated1:not(:active) { color: gray; }
+.unrelated2:not(:active) { color: gray; }
+.unrelated3:not(:active) { color: gray; }
+.unrelated4:not(:active) { color: gray; }
+.unrelated5:not(:active) { color: gray; }
+.unrelated6:not(:active) { color: gray; }
+.unrelated7:not(:active) { color: gray; }
+.unrelated8:not(:active) { color: gray; }
+.unrelated9:not(:active) { color: gray; }
+.unrelated10:not(:active) { color: gray; }
+.unrelated11:not(:active) { color: gray; }
+.unrelated12:not(:active) { color: gray; }
+.unrelated13:not(:active) { color: gray; }
+.unrelated14:not(:active) { color: gray; }
+.unrelated15:not(:active) { color: gray; }
+.unrelated16:not(:active) { color: gray; }
+.unrelated17:not(:active) { color: gray; }
+.unrelated18:not(:active) { color: gray; }
+.unrelated19:not(:active) { color: gray; }
+.unrelated20:not(:active) { color: gray; }
+.unrelated21:not(:active) { color: gray; }
+.unrelated22:not(:active) { color: gray; }
+.unrelated23:not(:active) { color: gray; }
+.unrelated24:not(:active) { color: gray; }
+.unrelated25:not(:active) { color: gray; }
+.unrelated26:not(:active) { color: gray; }
+.unrelated27:not(:active) { color: gray; }
+.unrelated28:not(:active) { color: gray; }
+.unrelated29:not(:active) { color: gray; }
+.unrelated30:not(:active) { color: gray; }
+.unrelated31:not(:active) { color: gray; }
+.unrelated32:not(:active) { color: gray; }
+.unrelated33:not(:active) { color: gray; }
+.unrelated34:not(:active) { color: gray; }
+.unrelated35:not(:active) { color: gray; }
+.unrelated36:not(:active) { color: gray; }
+.unrelated37:not(:active) { color: gray; }
+.unrelated38:not(:active) { color: gray; }
+.unrelated39:not(:active) { color: gray; }
+.unrelated40:not(:active) { color: gray; }
+.unrelated41:not(:active) { color: gray; }
+.unrelated42:not(:active) { color: gray; }
+.unrelated43:not(:active) { color: gray; }
+.unrelated44:not(:active) { color: gray; }
+.unrelated45:not(:active) { color: gray; }
+.unrelated46:not(:active) { color: gray; }
+.unrelated47:not(:active) { color: gray; }
+.unrelated48:not(:active) { color: gray; }
+.unrelated49:not(:active) { color: gray; }
+.unrelated50:not(:active) { color: gray; }
+.unrelated51:not(:active) { color: gray; }
+.unrelated52:not(:active) { color: gray; }
+.unrelated53:not(:active) { color: gray; }
+.unrelated54:not(:active) { color: gray; }
+.unrelated55:not(:active) { color: gray; }
+.unrelated56:not(:active) { color: gray; }
+.unrelated57:not(:active) { color: gray; }
+.unrelated58:not(:active) { color: gray; }
+.unrelated59:not(:active) { color: gray; }
+.unrelated60:not(:active) { color: gray; }
+.unrelated61:not(:active) { color: gray; }
+.unrelated62:not(:active) { color: gray; }
+.unrelated63:not(:active) { color: gray; }
+.unrelated64:not(:active) { color: gray; }
+.unrelated65:not(:active) { color: gray; }
+.unrelated66:not(:active) { color: gray; }
+.unrelated67:not(:active) { color: gray; }
+.unrelated68:not(:active) { color: gray; }
+.unrelated69:not(:active) { color: gray; }
+.unrelated70:not(:active) { color: gray; }
+.unrelated71:not(:active) { color: gray; }
+.unrelated72:not(:active) { color: gray; }
+.unrelated73:not(:active) { color: gray; }
+.unrelated74:not(:active) { color: gray; }
+.unrelated75:not(:active) { color: gray; }
+.unrelated76:not(:active) { color: gray; }
+.unrelated77:not(:active) { color: gray; }
+.unrelated78:not(:active) { color: gray; }
+.unrelated79:not(:active) { color: gray; }
+.unrelated80:not(:active) { color: gray; }
+.unrelated81:not(:active) { color: gray; }
+.unrelated82:not(:active) { color: gray; }
+.unrelated83:not(:active) { color: gray; }
+.unrelated84:not(:active) { color: gray; }
+.unrelated85:not(:active) { color: gray; }
+.unrelated86:not(:active) { color: gray; }
+.unrelated87:not(:active) { color: gray; }
+.unrelated88:not(:active) { color: gray; }
+.unrelated89:not(:active) { color: gray; }
+.unrelated90:not(:active) { color: gray; }
+.unrelated91:not(:active) { color: gray; }
+.unrelated92:not(:active) { color: gray; }
+.unrelated93:not(:active) { color: gray; }
+.unrelated94:not(:active) { color: gray; }
+.unrelated95:not(:active) { color: gray; }
+.unrelated96:not(:active) { color: gray; }
+.unrelated97:not(:active) { color: gray; }
+.unrelated98:not(:active) { color: gray; }
+.unrelated99:not(:active) { color: gray; }
+.unrelated100:not(:active) { color: gray; }
+.unrelated101:not(:active) { color: gray; }
+.unrelated102:not(:active) { color: gray; }
+.unrelated103:not(:active) { color: gray; }
+.unrelated104:not(:active) { color: gray; }
+.unrelated105:not(:active) { color: gray; }
+.unrelated106:not(:active) { color: gray; }
+.unrelated107:not(:active) { color: gray; }
+.unrelated108:not(:active) { color: gray; }
+.unrelated109:not(:active) { color: gray; }
+.unrelated110:not(:active) { color: gray; }
+.unrelated111:not(:active) { color: gray; }
+.unrelated112:not(:active) { color: gray; }
+.unrelated113:not(:active) { color: gray; }
+.unrelated114:not(:active) { color: gray; }
+.unrelated115:not(:active) { color: gray; }
+.unrelated116:not(:active) { color: gray; }
+.unrelated117:not(:active) { color: gray; }
+.unrelated118:not(:active) { color: gray; }
+.unrelated119:not(:active) { color: gray; }
+.unrelated120:not(:active) { color: gray; }
+.unrelated121:not(:active) { color: gray; }
+.unrelated122:not(:active) { color: gray; }
+@media (min-width: 100px) { .media0 { color: gray; } }
+@media (min-width: 101px) { .media1 { color: gray; } }
+@media (min-width: 102px) { .media2 { color: gray; } }
+@media (min-width: 103px) { .media3 { color: gray; } }
+@font-face { font-family: fixture0; src: local("Arial"); }
+@font-face { font-family: fixture1; src: local("Arial"); }
+@font-face { font-family: fixture2; src: local("Arial"); }
+@font-face { font-family: fixture3; src: local("Arial"); }
+@font-face { font-family: fixture4; src: local("Arial"); }
+@font-face { font-family: fixture5; src: local("Arial"); }
+@font-face { font-family: fixture6; src: local("Arial"); }
+@font-face { font-family: fixture7; src: local("Arial"); }
+@font-face { font-family: fixture8; src: local("Arial"); }
+@font-face { font-family: fixture9; src: local("Arial"); }
+@font-face { font-family: fixture10; src: local("Arial"); }
+@font-face { font-family: fixture11; src: local("Arial"); }
+@font-face { font-family: fixture12; src: local("Arial"); }
+@font-face { font-family: fixture13; src: local("Arial"); }
+@font-face { font-family: fixture14; src: local("Arial"); }
+@font-face { font-family: fixture15; src: local("Arial"); }
+@font-face { font-family: fixture16; src: local("Arial"); }
+@keyframes fixture0 { from { opacity: 0; } to { opacity: 1; } }
+@keyframes fixture1 { from { opacity: 0; } to { opacity: 1; } }
+@keyframes fixture2 { from { opacity: 0; } to { opacity: 1; } }
+@keyframes fixture3 { from { opacity: 0; } to { opacity: 1; } }
+@keyframes fixture4 { from { opacity: 0; } to { opacity: 1; } }
+@keyframes fixture5 { from { opacity: 0; } to { opacity: 1; } }
+@keyframes fixture6 { from { opacity: 0; } to { opacity: 1; } }
+@keyframes fixture7 { from { opacity: 0; } to { opacity: 1; } }
+@keyframes fixture8 { from { opacity: 0; } to { opacity: 1; } }
+@keyframes fixture9 { from { opacity: 0; } to { opacity: 1; } }
+@keyframes fixture10 { from { opacity: 0; } to { opacity: 1; } }
+@keyframes fixture11 { from { opacity: 0; } to { opacity: 1; } }
+@keyframes fixture12 { from { opacity: 0; } to { opacity: 1; } }
+@keyframes fixture13 { from { opacity: 0; } to { opacity: 1; } }

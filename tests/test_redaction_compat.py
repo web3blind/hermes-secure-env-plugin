@@ -36,8 +36,22 @@ def test_nested_fill_registers_context_otp(monkeypatch):
     calls = []
     monkeypatch.setattr(redact, 'register_vault_redaction_value', lambda value, *, kind='secret': calls.append((value, kind)))
     with pytest.raises(ValueError):
-        nested_code.fill(SimpleNamespace(controls=()), 'synthetic', 0)
+        nested_code.fill(SimpleNamespace(controls=(), expires=float('inf')), 'synthetic', 0)
     assert calls == [('synthetic', 'otp')]
+
+def test_expired_nested_fill_registers_redaction_without_dispatch(monkeypatch):
+    import agent.redact as redact
+    from secure_env_ingress import nested_code
+    calls = []
+    monkeypatch.setattr(redact, 'register_vault_redaction_value', lambda value, *, kind='secret': calls.append((value, kind)))
+    def forbidden(*args, **kwargs):
+        raise AssertionError('expired code must not issue a CDP command')
+    monkeypatch.setattr(nested_code, '_invoke', forbidden)
+    monkeypatch.setattr(nested_code, '_call', forbidden)
+    target = SimpleNamespace(controls=(object(),), expires=float('inf'))
+    assert nested_code.fill(target, 'synthetic', 0) is False
+    assert calls == [('synthetic', 'otp')]
+
 
 @pytest.mark.parametrize('old_host', [False, True])
 def test_payment_only_pan_and_context_cvc_not_metadata(monkeypatch, old_host):
@@ -60,7 +74,7 @@ def test_payment_only_pan_and_context_cvc_not_metadata(monkeypatch, old_host):
     monkeypatch.setattr(payment, 'assert_target', lambda *a: None)
     monkeypatch.setattr(payment, 'mapped_fills', lambda *a: [])
     monkeypatch.setattr(payment, '_invoke', lambda *a: [])
-    target = SimpleNamespace(origin='https://synthetic.test', supervisor=None, child_sid='sid', child_guard='guard', controls=())
+    target = SimpleNamespace(expires=float('inf'), origin='https://synthetic.test', parent_session=SimpleNamespace(origin='https://merchant.test'), supervisor=None, child_sid='sid', child_guard='guard', controls=())
     result = payment.approved_fill(target, 'synthetic-handle', lambda: None)
     assert result['status'] == 'filled'
     assert calls == [('synthetic-pan', 'secret'), ('synthetic-cvc', 'secret' if old_host else 'cvc')]

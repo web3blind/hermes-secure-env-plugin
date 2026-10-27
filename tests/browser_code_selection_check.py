@@ -1,10 +1,8 @@
 """Real isolated Chromium + registered tool/HTTPS, unmodified supervisor API."""
-import importlib.util
 import json
+import asyncio
 import os
 from pathlib import Path
-import subprocess
-import sys
 import tempfile
 import time
 from types import SimpleNamespace
@@ -17,20 +15,12 @@ from generic_helpers import registered
 
 
 def main():
-    # Load baseline core module, NOT today's uncommitted target_id patch.
-    core = Path(os.environ['SENV_CORE_ROOT'])
-    with tempfile.TemporaryDirectory(prefix='senv-baseline-') as baseline:
-        path = Path(baseline) / 'browser_supervisor.py'
-        path.write_bytes(subprocess.check_output(['git', '-C', str(core), 'show', 'HEAD:tools/browser_supervisor.py']))
-        spec = importlib.util.spec_from_file_location('tools.browser_supervisor', path)
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
-        import tools
-        tools.browser_supervisor = module
-        import inspect
-        assert 'target_id' not in inspect.signature(module.CDPSupervisor.focus_page).parameters
-        _run(module)
+    # Public candidate needs the isolated host's captured-CDP seam, not a
+    # git-show replacement module whose registry has no capture API.
+    from tools import browser_supervisor as module
+    import inspect
+    assert 'target_id' not in inspect.signature(module.CDPSupervisor.focus_page).parameters
+    _run(module)
 
 
 def _run(module):
@@ -68,24 +58,36 @@ def _run(module):
                     first.goto(origin + '/login?state=do-not-return-this')
                     second = context.new_page()
                     second.goto(origin + '/login?state=do-not-return-this')
+                    second.set_content(markup + markup)
+                    def target_id(page):
+                        cdp = context.new_cdp_session(page)
+                        try:
+                            return cdp.send('Target.getTargetInfo')['targetInfo']['targetId']
+                        finally:
+                            cdp.detach()
+                    parent = target_id(second)
+                    second.bring_to_front()
                     scope = (str(home), task, 'key', '7', '-600', 'None')
                     picker = CodeSelection()
-                    target, choices = picker.choose(scope, origin, 'Fixture', task)
+                    target, choices = picker.choose(scope, origin, 'Fixture', task, parent=parent)
                     assert target is None and choices['status'] == 'selection_required'
                     assert len(choices['candidates']) == 2
                     assert 'do-not-return-this' not in json.dumps(choices)
                     token = choices['candidates'][1]['selection']
                     with pytest.raises(ValueError):
-                        picker.choose(('foreign',), origin, 'Fixture', task, token)
-                    target, _ = picker.choose(scope, origin, 'Fixture', task, token)
+                        picker.choose(('foreign',), origin, 'Fixture', task, token, parent=parent)
+                    target, _ = picker.choose(scope, origin, 'Fixture', task, token, parent=parent)
                     assert_target(target)
                     with pytest.raises(ValueError):
-                        picker.choose(scope, origin, 'Fixture', task, token)
+                        picker.choose(scope, origin, 'Fixture', task, token, parent=parent)
                     # Discover again through the REAL registered plugin entry point.
-                    sent = []
+                    sent, pending = [], []
                     class Adapter:
                         async def send(self, chat_id, content, metadata=None):
-                            sent.append(content)
+                            sent.append(True)
+                            pending.append(asyncio.create_task(self.submit(content)))
+                            return SimpleNamespace(success=True)
+                        async def submit(self, content):
                             url = content.split(' form: ', 1)[1].split(' for ', 1)[0]
                             from playwright.async_api import async_playwright
                             async with async_playwright() as ap:
@@ -125,50 +127,63 @@ def _run(module):
                         invoke_hook('pre_gateway_dispatch', event=event, gateway=gateway)
                         tokens = sc.set_session_vars(platform='telegram', user_id='7', chat_id='-600', chat_type='group', session_id=task, session_key='key', cron_session='')
                         try:
-                            args = {'origin': origin, 'label': 'Fixture', 'mode': 'code'}
-                            choices = json.loads(registry.dispatch('browser_vault', args, task_id=task, session_id=task))
+                            missing = json.loads(registry.dispatch('secure_env_vault', {'origin': origin, 'label': 'Fixture', 'mode': 'code'}, task_id=task, session_id=task))
+                            assert missing.get('error') and 'parent' in json.dumps(missing) and not sent
+                            args = {'origin': origin, 'label': 'Fixture', 'mode': 'code', 'parent': parent}
+                            choices = json.loads(registry.dispatch('secure_env_vault', args, task_id=task, session_id=task))
                             assert choices['status'] == 'selection_required' and not sent
                             cdp = context.new_cdp_session(second)
                             tid = cdp.send('Target.getTargetInfo')['targetInfo']['targetId']
                             cdp.detach()
-                            chosen = next(c for c in choices['candidates'] if c['page_ref'] == tid)
-                            result = json.loads(registry.dispatch('browser_vault', {**args, 'selection': chosen['selection']}, task_id=task, session_id=task))
+                            assert tid == parent
+                            assert len(choices['candidates']) == 2
+                            assert all(c['page_ref'] == parent for c in choices['candidates'])
+                            chosen = choices['candidates'][1]
+                            result = json.loads(registry.dispatch('secure_env_vault', {**args, 'selection': chosen['selection']}, task_id=task, session_id=task))
                             assert result.get('status') == 'filled' and len(sent) == 1, result
+                            async def drain():
+                                await asyncio.gather(*pending)
+                            asyncio.run_coroutine_threadsafe(drain(), gateway_loop).result(30)
                             assert 'Q!7&z=R9' not in json.dumps(result)
                         finally:
                             sc.clear_session_vars(tokens)
                     assert first.locator('input').input_value() == ''
-                    assert second.locator('input').input_value() == 'Q!7&z=R9'
+                    assert second.locator('input').nth(0).input_value() == ''
+                    assert second.locator('input').nth(1).input_value() == 'Q!7&z=R9'
                     second.close()
-                    target, choices = picker.choose(scope, origin, 'Fixture', task)
+                    parent = target_id(first)
+                    first.bring_to_front()
+                    target, choices = picker.choose(scope, origin, 'Fixture', task, parent=parent)
                     assert target is not None and choices is None
                     first.goto(origin + '/login?state=different')
                     with pytest.raises(ValueError):
                         assert_target(target)
-                    target, _ = picker.choose(scope, origin, 'Fixture', task)
+                    target, _ = picker.choose(scope, origin, 'Fixture', task, parent=parent)
                     first.close()
                     with pytest.raises(Exception):
                         assert_target(target)
-                    empty, response = picker.choose(scope, origin, 'Fixture', task)
-                    assert empty is None and response['status'] == 'no_code_form'
+                    with pytest.raises(ValueError):
+                        picker.choose(scope, origin, 'Fixture', task, parent=parent)
                     form_page = context.new_page()
                     form_page.goto(origin + '/login')
+                    parent = target_id(form_page)
+                    form_page.bring_to_front()
                     form_page.set_content(markup + markup)
-                    _, response = picker.choose(scope, origin, 'Fixture', task)
+                    _, response = picker.choose(scope, origin, 'Fixture', task, parent=parent)
                     assert len(response['candidates']) == 2
                     assert len({c['page_ref'] for c in response['candidates']}) == 1
-                    selected, _ = picker.choose(scope, origin, 'Fixture', task, response['candidates'][1]['selection'])
+                    selected, _ = picker.choose(scope, origin, 'Fixture', task, response['candidates'][1]['selection'], parent=parent)
                     from secure_env_ingress.code_targets import fill
                     assert fill(selected, '654321', time.monotonic() + 10)
                     assert form_page.locator('input').nth(0).input_value() == ''
                     assert form_page.locator('input').nth(1).input_value() == '654321'
                     form_page.goto(origin + '/login')
-                    selected, _ = picker.choose(scope, origin, 'Fixture', task)
+                    selected, _ = picker.choose(scope, origin, 'Fixture', task, parent=parent)
                     form_page.evaluate("document.querySelector('input').outerHTML='<input autocomplete=one-time-code>'")
                     with pytest.raises(ValueError):
                         assert_target(selected)
                     form_page.goto(origin + '/login')
-                    selected, _ = picker.choose(scope, origin, 'Fixture', task)
+                    selected, _ = picker.choose(scope, origin, 'Fixture', task, parent=parent)
                     form_page.goto('about:blank')
                     with pytest.raises(ValueError):
                         assert_target(selected)
@@ -178,35 +193,37 @@ def _run(module):
                         "document.querySelector('form').action='/other-challenge'",
                     ):
                         form_page.goto(origin + '/login')
-                        selected, _ = picker.choose(scope, origin, 'Fixture', task)
+                        selected, _ = picker.choose(scope, origin, 'Fixture', task, parent=parent)
                         form_page.evaluate('() => {' + mutation + '}')
                         with pytest.raises(ValueError):
                             assert_target(selected)
-                        assert not fill(selected, '654321', time.monotonic() + 10)
+                        with pytest.raises(ValueError, match='invalid code fields'):
+                            fill(selected, '654321', time.monotonic() + 10)
                         assert form_page.locator('input').input_value() == ''
                     for mutation in (
                         "const f=document.createElement('form'); document.body.append(f); f.append(e)",
                         "e.form.action='/other-challenge'",
                     ):
                         form_page.goto(origin + '/login')
-                        selected, _ = picker.choose(scope, origin, 'Fixture', task)
+                        selected, _ = picker.choose(scope, origin, 'Fixture', task, parent=parent)
                         form_page.evaluate("() => {const e=document.querySelector('input'); e.addEventListener('focus', () => {" + mutation + "}, {once:true})}")
                         assert not fill(selected, '654321', time.monotonic() + 10)
                         assert form_page.locator('input').input_value() == ''
                     form_page.goto(origin + '/login')
                     form_page.set_content('<form>' + '<input autocomplete="one-time-code" maxlength="1">' * 6 + '</form>')
-                    selected, _ = picker.choose(scope, origin, 'Fixture', task)
+                    selected, _ = picker.choose(scope, origin, 'Fixture', task, parent=parent)
                     form_page.evaluate("() => {const all=document.querySelectorAll('input'); all[0].addEventListener('input', () => all[1].replaceWith(all[1].cloneNode(true)), {once:true})}")
                     assert not fill(selected, '654321', time.monotonic() + 10)
                     assert form_page.locator('input').nth(1).input_value() == ''
                     form_page.goto(origin + '/login')
                     form_page.set_content('<form>' + '<input autocomplete="one-time-code" maxlength="1">' * 6 + '</form>')
-                    selected, _ = picker.choose(scope, origin, 'Fixture', task)
+                    selected, _ = picker.choose(scope, origin, 'Fixture', task, parent=parent)
                     assert fill(selected, '654321', time.monotonic() + 10)
                     assert form_page.locator('input').evaluate_all('(els) => els.map(e => e.value).join(\"\")') == '654321'
                     assert not (home / 'vault').exists()
-                    print('BASELINE_CORE; MULTI_TAB_SELECTION; REGISTERED_HTTPS_FILL; NO_SECRET_OUTPUT; SINGLE_AUTO; NAVIGATION_AND_CLOSE_REFUSAL=PASS')
+                    print('STOCK_OWNER_FREE; EXACT_PARENT_SAME_PAGE_SELECTION; REGISTERED_HTTPS_FILL; NO_SECRET_OUTPUT; SINGLE_AUTO; NAVIGATION_AND_CLOSE_REFUSAL=PASS')
                 finally:
+                    picker.close()
                     context.close()
         finally:
             runtime.close()

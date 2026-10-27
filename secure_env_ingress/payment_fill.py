@@ -15,7 +15,7 @@ import time
 
 from .code_targets import _call, _supervisor
 from .vault_ingress import strict_origin
-from .bound_cdp import BoundCDP
+from .bound_cdp import BoundCDP, FrameUnavailable
 
 
 @dataclass(frozen=True)
@@ -230,18 +230,9 @@ _GUARD = r'''function(nodes, inspection=false, strictMutations=inspection) {
           'background-attachment':'scroll','background-origin':'padding-box',
           'background-clip':'border-box','box-shadow':'none'};
         return allSubjects().length>0 && !/::/.test(raw) && allSubjects().every(e=> {
-          if(e.tagName!=='BUTTON' || !e.classList.contains('custom-button-red') ||
-             !e.form || !nodes.some(n=>n.form===e.form) || e.children.length || !noPseudo(e)) return false;
-          const s=getComputedStyle(e),b=e.getBoundingClientRect(),f=e.form.getBoundingClientRect();
-          const range=doc.createRange();range.selectNodeContents(e);
-          const text=range.getBoundingClientRect();
-          return ['static','relative'].includes(s.position) && boundedPaint(s) &&
-            s.outlineStyle==='none' && s.textShadow==='none' && s.webkitTextStrokeWidth==='0px' &&
-            (!e.textContent.trim() || (text.left>=b.left-1 && text.right<=b.right+1 && text.top>=b.top-1 && text.bottom<=b.bottom+1)) &&
-            ['transform','translate','rotate','scale','filter','backdropFilter','boxShadow','offsetPath','animationName']
-              .every(k=>s[k]==='none') && ['1','normal'].includes(s.zoom) &&
-            b.width>0 && b.width<=Math.min(f.width,doc.defaultView.innerWidth) && b.height>0 && b.height<=64 &&
-            b.left>=f.left-1 && b.right<=f.right+1 && b.top>=f.top-1 && b.bottom<=f.bottom+1;
+          if(!buttonPaintSafe(e)) return false;
+          livePaintButtons.add(e);
+          return true;
         }) && Array.from(r.style).every(k=> {
           const v=r.style.getPropertyValue(k);
           return ['color','background-color'].includes(k) ? CSS.supports('color',v) && !/^(?:inherit|initial|unset|revert)/.test(v) :
@@ -397,9 +388,24 @@ _GUARD = r'''function(nodes, inspection=false, strictMutations=inspection) {
     return JSON.stringify([...Array.from(doc.styleSheets),...Array.from(doc.adoptedStyleSheets || [])].map(rows));
   };
   const cssAtBinding=slots.size ? cssIdentity() : null;
-  // State-stripped selectors and immutable CSS/DOM authority make this verdict
-  // visibility-independent. Cache the costly recursive analysis; do not scan
-  // thousands of Bootstrap rules once per mutation within a bounded CDP call.
+  // Only rule/selector analysis is immutable. Transitioned computed paint and
+  // text rectangles remain live authority even when CSS identity is unchanged.
+  const livePaintButtons=new Set();
+  const buttonPaintSafe=e=> {
+    if(!e.isConnected || e.tagName!=='BUTTON' || !e.classList.contains('custom-button-red') ||
+       !e.form || !nodes.some(n=>n.form===e.form) || e.children.length || !noPseudo(e)) return false;
+    const s=getComputedStyle(e),b=e.getBoundingClientRect(),f=e.form.getBoundingClientRect();
+    const range=doc.createRange();range.selectNodeContents(e);
+    const text=range.getBoundingClientRect();
+    return ['static','relative'].includes(s.position) && boundedPaint(s) &&
+      s.outlineStyle==='none' && s.textShadow==='none' && s.webkitTextStrokeWidth==='0px' &&
+      (!e.textContent.trim() || (text.left>=b.left-1 && text.right<=b.right+1 && text.top>=b.top-1 && text.bottom<=b.bottom+1)) &&
+      ['transform','translate','rotate','scale','filter','backdropFilter','boxShadow','offsetPath','animationName']
+        .every(k=>s[k]==='none') && ['1','normal'].includes(s.zoom) &&
+      b.width>0 && b.width<=Math.min(f.width,doc.defaultView.innerWidth) && b.height>0 && b.height<=64 &&
+      b.left>=f.left-1 && b.right<=f.right+1 && b.top>=f.top-1 && b.bottom<=f.bottom+1;
+  };
+  // Cache the costly recursive CSS analysis, not its mutable paint conditions.
   const slotCssSafe=slots.size ? decorationSafe() : null;
   const labelsWithinControls=()=>nodes.every(n=>Array.from(n.labels || []).every(l=>{
     const s=getComputedStyle(l),r=l.getBoundingClientRect(),b=n.getBoundingClientRect();
@@ -437,7 +443,8 @@ _GUARD = r'''function(nodes, inspection=false, strictMutations=inspection) {
   const equal=(a,b)=>a.length===b.length && a.every((e,i)=>e===b[i]);
   const valid=()=> {
     observe(observer.takeRecords());
-    if(slots.size && (cssIdentity()!==cssAtBinding || !labelsWithinControls())) changed=true;
+    if(slots.size && (cssIdentity()!==cssAtBinding || !labelsWithinControls() ||
+      !Array.from(livePaintButtons).every(buttonPaintSafe))) changed=true;
     return !changed && document===doc && location.href===href && self.origin===origin &&
       authority.every(s=>attrs(s.e)===s.attributes && style(s.e)===s.style) &&
       positions.every(s=>geometry(s.e)===s.geometry) &&
@@ -560,7 +567,7 @@ def payment_backend(handle, origin):
 
 
 def _parent(sup, parent):
-    sid = sup._page_session_id
+    sid = sup.page_session_id
     if not sid or _call(sup, 'Target.getTargetInfo', {}, sid)['result']['targetInfo']['targetId'] != parent:
         raise ValueError('explicit parent is not task-selected supervisor page')
     return sid
@@ -593,9 +600,7 @@ def discover(task, parent, origin):
                 try:
                     probe = _call(sup, 'Page.createIsolatedWorld', {'frameId': frame,
                         'worldName': 'secure-payment-inspect-' + secrets.token_hex(12)}, psid)
-                except RuntimeError as error:
-                    if 'No frame for given id found' not in str(error):
-                        raise
+                except FrameUnavailable:
                     probe = {}
                 if probe.get('error') or not probe.get('result', {}).get('executionContextId'):
                     csid = _call(sup, 'Target.attachToTarget', {'targetId': frame, 'flatten': True})['result']['sessionId']
@@ -660,9 +665,12 @@ def discover(task, parent, origin):
 
 
 def assert_target(target):
-    sup = _supervisor(target.task)
+    from .exact_card import CardTarget, assert_target as card_assert
+    if isinstance(target, CardTarget):
+        return card_assert(target)
+    sup = target.supervisor
     parent_sid = target.parent_session.check() if target.parent_session is not None else _parent(sup, target.parent)
-    if sup is not getattr(target.supervisor, 'raw', target.supervisor) or time.monotonic() >= target.expires or parent_sid != target.parent_sid:
+    if not target.supervisor.valid() or time.monotonic() >= target.expires or parent_sid != target.parent_sid:
         raise ValueError('stale target')
     sup = target.supervisor
     # getFrameOwner resolves only in the selected parent document's session;
@@ -690,6 +698,9 @@ def _close_object(sup, sid, obj, *, inspection=False):
 
 
 def release(target):
+    from .exact_card import CardTarget, release as card_release
+    if isinstance(target, CardTarget):
+        return card_release(target)
     for sid, obj in ((target.parent_sid, target.parent_guard), (target.child_sid, target.child_guard)):
         _close_object(target.supervisor, sid, obj)
     if target.attachment is not None:
@@ -699,81 +710,89 @@ def release(target):
 
 
 def approved_fill(target, handle, scope_guard, resume_existing=False):
-    from tools.browser_vault_tool import _confirm_payment_fill, _bot_desktop_browser_session
-    from agent.redact import register_vault_redaction_value
-    started = False
-    secret = None
-    stage = 'preflight'
-    try:
-        scope_guard()
-        backend = payment_backend(handle, target.origin)
-        meta = backend.get_meta(handle)
-        assert_target(target)
-        stage = 'consent'
-        if not _confirm_payment_fill(meta.label, target.origin):
-            return {'success': False, 'status': 'payment_declined'}
-        stage = 'revalidation'
-        scope_guard()
-        assert_target(target)
-        approved_meta = meta
-        backend = payment_backend(handle, target.origin)
-        if backend.get_meta(handle) != approved_meta:
-            raise ValueError('payment metadata changed')
-        stage = 'mapping'
-        secret = backend.resolve_secret(handle)
-        fills = mapped_fills(target.controls, secret)
-        # Mirror native Vault policy: payment metadata is not a global secret.
-        register_vault_redaction_value(secret.get('card_number', ''))
-        from .redaction_compat import register_context_secret
-        register_context_secret(secret.get('cvc', ''), kind='cvc')
-        sup, sid, obj = target.supervisor, target.child_sid, target.child_guard
-        stage = 'format'
-        for i, f in enumerate(fills):
-            if _invoke(sup, sid, obj, 'function(i,v,token){return this.accepts(i,v,token);}', (i, f['value'], f['token'])) is not True:
-                raise ValueError('unsupported field format')
-        stage = 'existing'
-        adopted = _invoke(sup, sid, obj, 'function(fills,resume){return this.prepare(fills,resume);}', (fills, resume_existing))
-        if not isinstance(adopted, list) or any(type(i) is not int or not 0 <= i < len(fills) for i in adopted):
-            raise ValueError('existing field refused')
-        filled = len(adopted)
-        for i, f in enumerate(fills):
-            if i in adopted:
-                continue
-            stage = 'focus'
+    from .bound_cdp import dispatch_scope
+    with dispatch_scope(target.expires):
+        from .exact_card import CardTarget, approved_fill as card_fill
+        if isinstance(target, CardTarget):
+            if resume_existing:
+                return {'success': False, 'status': 'target_refused', 'stage': 'preflight'}
+            return card_fill(target, handle, scope_guard)
+        from tools.browser_vault_tool import _confirm_payment_fill, _bot_desktop_browser_session
+        from agent.redact import register_vault_redaction_value
+        started = False
+        secret = None
+        stage = 'preflight'
+        try:
+            scope_guard()
+            backend = payment_backend(handle, target.origin)
+            meta = backend.get_meta(handle)
+            assert_target(target)
+            stage = 'consent'
+            merchant = target.parent_session.origin
+            if not _confirm_payment_fill(meta.label, f'payment frame {target.origin}; merchant page {merchant}'):
+                return {'success': False, 'status': 'payment_declined'}
+            stage = 'revalidation'
             scope_guard()
             assert_target(target)
-            if _bot_desktop_browser_session(target.task):
-                from tools.bot_desktop import lease
-                lease.assert_agent_may_act()
-            if _invoke(sup, sid, obj, 'function(i){return this.focus(i);}', (i,)) is not True:
-                raise ValueError('focus mutated target')
-            # Focus callbacks in either document complete before the next CDP
-            # read. Recheck BOTH lineage and closure identities before each write.
+            approved_meta = meta
+            backend = payment_backend(handle, target.origin)
+            if backend.get_meta(handle) != approved_meta:
+                raise ValueError('payment metadata changed')
+            stage = 'mapping'
+            secret = backend.resolve_secret(handle)
+            fills = mapped_fills(target.controls, secret)
+            # Mirror native Vault policy: payment metadata is not a global secret.
+            register_vault_redaction_value(secret.get('card_number', ''))
+            from .redaction_compat import register_context_secret
+            register_context_secret(secret.get('cvc', ''), kind='cvc')
+            sup, sid, obj = target.supervisor, target.child_sid, target.child_guard
+            stage = 'format'
+            for i, f in enumerate(fills):
+                if _invoke(sup, sid, obj, 'function(i,v,token){return this.accepts(i,v,token);}', (i, f['value'], f['token'])) is not True:
+                    raise ValueError('unsupported field format')
+            stage = 'existing'
+            adopted = _invoke(sup, sid, obj, 'function(fills,resume){return this.prepare(fills,resume);}', (fills, resume_existing))
+            if not isinstance(adopted, list) or any(type(i) is not int or not 0 <= i < len(fills) for i in adopted):
+                raise ValueError('existing field refused')
+            filled = len(adopted)
+            for i, f in enumerate(fills):
+                if i in adopted:
+                    continue
+                stage = 'focus'
+                scope_guard()
+                assert_target(target)
+                if _bot_desktop_browser_session(target.task):
+                    from tools.bot_desktop import lease
+                    lease.assert_agent_may_act()
+                if _invoke(sup, sid, obj, 'function(i){return this.focus(i);}', (i,)) is not True:
+                    raise ValueError('focus mutated target')
+                # Focus callbacks in either document complete before the next CDP
+                # read. Recheck BOTH lineage and closure identities before each write.
+                scope_guard()
+                assert_target(target)
+                if _bot_desktop_browser_session(target.task):
+                    from tools.bot_desktop import lease
+                    lease.assert_agent_may_act()
+                stage = 'write'
+                started = True
+                result = _invoke(sup, sid, obj, 'function(i,v,token){return this.write(i,v,token);}', (i, f['value'], f['token']))
+                if not isinstance(result, dict) or not result.get('written') or not result.get('valid'):
+                    raise ValueError('write not confirmed')
+                filled += 1
+                scope_guard()
+                assert_target(target)
+            stage = 'completion'
             scope_guard()
             assert_target(target)
-            if _bot_desktop_browser_session(target.task):
-                from tools.bot_desktop import lease
-                lease.assert_agent_may_act()
-            stage = 'write'
-            started = True
-            result = _invoke(sup, sid, obj, 'function(i,v,token){return this.write(i,v,token);}', (i, f['value'], f['token']))
-            if not isinstance(result, dict) or not result.get('written') or not result.get('valid'):
-                raise ValueError('write not confirmed')
-            filled += 1
-            scope_guard()
-            assert_target(target)
-        stage = 'completion'
-        scope_guard()
-        assert_target(target)
-        result = {'success': True, 'status': 'filled', 'filled_fields': filled, 'origin': target.origin, 'kind': 'payment'}
-        if resume_existing:
-            result['resumed_fields'] = len(adopted)
-        return result
-    except Exception:
-        return {'success': False, 'status': 'unknown' if started else 'target_refused', 'stage': stage}
-    finally:
-        if secret is not None:
-            secret.clear()
+            result = {'success': True, 'status': 'filled', 'filled_fields': filled, 'origin': target.origin, 'kind': 'payment'}
+            if resume_existing:
+                result['resumed_fields'] = len(adopted)
+            return result
+        except Exception:
+            return {'success': False, 'status': 'unknown' if started else 'target_refused', 'stage': stage}
+        finally:
+            if secret is not None:
+                secret.clear()
 
 
 class PaymentSelection:
@@ -801,8 +820,11 @@ class PaymentSelection:
         with self._lock:
             self._drop([k for k, v in self._entries.items() if v[4] is batch])
 
-    def choose(self, scope, task, parent, origin, handle, selection=None, *, batch=None):
+    def choose(self, scope, task, parent, origin, handle, selection=None, *, batch=None, target_spec=None):
         from .bound_cdp import acquisition_scope
+        if target_spec is not None:
+            from .exact_card import validate_spec
+            target_spec = validate_spec(target_spec, parent)
         batch = batch if batch is not None else threading.Event()
         with self._lock:
             if self._closed or batch.is_set():
@@ -810,6 +832,8 @@ class PaymentSelection:
             now = time.monotonic()
             self._drop([k for k, v in self._entries.items() if v[0] <= now])
             binding = (task, parent, origin, handle)
+            if target_spec is not None:
+                binding += (json.dumps(target_spec, sort_keys=True),)
             if selection is not None:
                 entry = self._entries.get(selection)
                 if entry is None or entry[1:3] != (scope, binding):
@@ -825,7 +849,11 @@ class PaymentSelection:
                 return target, None
         # Neither shutdown nor cancellation waits behind CDP discovery.
         with acquisition_scope(batch):
-            targets = discover(task, parent, origin)
+            if target_spec is None:
+                targets = discover(task, parent, origin)
+            else:
+                from .exact_card import discover as card_discover
+                targets = card_discover(task, parent, origin, target_spec)
         with self._lock:
             if self._closed or batch.is_set():
                 for t in targets:

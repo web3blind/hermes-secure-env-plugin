@@ -50,16 +50,16 @@ def test_cancelled_guards_really_close_before_release(nested, tmp_path, monkeypa
     }'''.replace('ORIGINAL', module._GUARD)
     monkeypatch.setattr(module, '_GUARD', wrapper)
     original_request, probes = BoundCDP._request, []
-    async def observe(self, method, params, sid, **kwargs):
+    def observe(self, method, params, sid, **kwargs):
         if method == 'Runtime.releaseObject':
-            probe = await original_request(self, 'Runtime.callFunctionOn', {
+            probe = original_request(self, 'Runtime.callFunctionOn', {
                 'objectId': params['objectId'], 'functionDeclaration':
                 'function(){return this.cleanupProbe?this.cleanupProbe():null}',
                 'returnByValue': True}, sid, cleanup=True)
             value = probe.get('result', {}).get('result', {}).get('value')
             if value is not None:
                 probes.append((sid, params['objectId'], value))
-        return await original_request(self, method, params, sid, **kwargs)
+        return original_request(self, method, params, sid, **kwargs)
     monkeypatch.setattr(BoundCDP, '_request', observe)
     batch, targets = threading.Event(), []
     try:
@@ -79,7 +79,7 @@ def test_cancelled_guards_really_close_before_release(nested, tmp_path, monkeypa
         assert all(closed for _, _, closed in probes), probes
         assert nested.page.frames[-1].evaluate('Array.from(document.querySelectorAll("input")).every(e=>e.value==="")')
         assert not nested.sup._pending_calls
-        assert codes._call(nested.sup, 'Target.getTargetInfo', {}, nested.sup._page_session_id)['result']['targetInfo']['type'] == 'page'
+        assert codes._call(nested.capture(), 'Target.getTargetInfo', {}, nested.sup._page_session_id)['result']['targetInfo']['type'] == 'page'
     finally:
         for target in targets:
             (pf.release if adapter == 'payment' else codes.release)(target)
@@ -144,7 +144,7 @@ def test_private_payment_idle_expiry_preserves_live_lease(nested, tmp_path, monk
     payment_page(nested)
     other, previous = wrongsite(nested)
     authorize(tmp_path, monkeypatch, nested.sup, nested.parent)
-    separate = ParentSession(nested.sup, nested.parent)
+    separate = ParentSession(nested.capture(), nested.parent)
     original, found = pf.discover, []
     def discover(*args):
         found.extend(replace(t, expires=time.monotonic() + .4) for t in original(*args))
@@ -173,7 +173,7 @@ def test_private_payment_idle_expiry_preserves_live_lease(nested, tmp_path, monk
             selected = None
         assert found[0].parent_session.closed
         with pytest.raises(Exception):
-            codes._call(nested.sup, 'Target.getTargetInfo', {}, found[0].parent_sid)
+            codes._call(nested.capture(), 'Target.getTargetInfo', {}, found[0].parent_sid)
         assert separate.check() == separate.sid
         assert nested.sup._page_session_id == previous
     finally:

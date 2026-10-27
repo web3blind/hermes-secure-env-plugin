@@ -9,24 +9,12 @@ from secure_env_ingress import code_targets as codes, payment_fill as pf
 nested = chromium_fixture
 
 
-def authorize(tmp_path, monkeypatch, sup, parent, owner_task=None, home=None):
-    from hermes_state import SessionDB
-    from tools.browser_tab_lifecycle import Authority
-    from tools.browser_tab_ownership import OwnershipRegistry
+def authorize(tmp_path, monkeypatch, sup, parent, home=None):
+    """Legacy fixture name: isolate profile only; no tab-creation authority."""
     home = home or tmp_path / 'home'
     home.mkdir(exist_ok=True)
     monkeypatch.setenv('HERMES_HOME', str(home))
-    task = owner_task or sup.task_id
-    db = SessionDB(db_path=home / 'state.db')
-    db.create_session(task, 'telegram')
-    db.close()
-    owner = Authority(home).owner(task, task)
-    assert not owner[0].startswith('unknown:')
-    ledger = OwnershipRegistry(home / 'browser_tabs.sqlite')
-    token = ledger.admit(*owner, sup.cdp_url, 'synthetic-daemon')
-    ledger.record_created(token, parent)
-    ledger.finish(token)
-    return ledger, token
+    return home
 
 
 def wrongsite(nested):

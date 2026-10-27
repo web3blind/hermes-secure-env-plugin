@@ -60,9 +60,9 @@ def test_registered_invalid_locator_no_discovery(tmp_path, monkeypatch, mode, se
     monkeypatch.setenv('HERMES_HOME', str(home))
     monkeypatch.setattr(CodeSelection, 'choose', lambda *a, **k: pytest.fail('invalid input reached discovery'))
     with registered(monkeypatch, home, settings=settings), _profile_runtime_scope(home, {}):
-        entry = registry.get_entry('browser_vault', scope=str(home))
+        entry = registry.get_entry('secure_env_vault', scope=str(home))
         assert entry.schema['parameters']['properties']['field_selector']['maxLength'] == 256
-        result = json.loads(registry.dispatch('browser_vault', dict(origin='https://synthetic.test', label='Synthetic', mode=mode, field_selector=selector, **({'parent':parent} if parent is not None else {})), task_id='synthetic'))
+        result = json.loads(registry.dispatch('secure_env_vault', dict(origin='https://synthetic.test', label='Synthetic', mode=mode, field_selector=selector, **({'parent':parent} if parent is not None else {})), task_id='synthetic'))
         assert result['success'] is False and result['reason'] == 'session_binding'
 
 

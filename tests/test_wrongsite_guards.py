@@ -65,21 +65,12 @@ def test_registered_payment_wrongsite(nested, tmp_path, monkeypatch, choice):
         other.close()
 
 
-@pytest.mark.parametrize('bad', ['foreign-owner', 'invalid-target', 'other-generation', 'retired'])
 @pytest.mark.parametrize('path', ['payment', 'code'])
-def test_wrongsite_authority_refuses(nested, tmp_path, monkeypatch, bad, path):
+def test_wrongsite_invalid_exact_target_refuses(nested, tmp_path, monkeypatch, path):
     origin, leaf = setup_chain(nested)
     other, previous = wrongsite(nested)
-    ledger, token = authorize(tmp_path, monkeypatch, nested.sup, nested.parent,
-        owner_task='foreign-task' if bad == 'foreign-owner' else None)
-    parent = nested.parent
-    if bad == 'invalid-target':
-        parent = 'nonexistent-synthetic-target'
-    elif bad == 'other-generation':
-        monkeypatch.setattr(nested.sup, 'cdp_url', nested.sup.cdp_url + '-other-generation')
-    elif bad == 'retired':
-        call = ledger.call(token)
-        assert ledger.retire(call['owner'], call['generation'], evidence='synthetic-terminal')
+    authorize(tmp_path, monkeypatch, nested.sup, nested.parent)
+    parent = 'nonexistent-synthetic-target'
     try:
         with pytest.raises(Exception):
             if path == 'code':
@@ -92,11 +83,11 @@ def test_wrongsite_authority_refuses(nested, tmp_path, monkeypatch, bad, path):
         other.close()
 
 
-@pytest.mark.parametrize('change', ['navigation', 'reconnect', 'retirement'])
+@pytest.mark.parametrize('change', ['navigation', 'reconnect', 'profile'])
 def test_issued_private_code_never_retargets(nested, tmp_path, monkeypatch, change):
     origin, leaf = setup_chain(nested)
     other, _ = wrongsite(nested)
-    ledger, token = authorize(tmp_path, monkeypatch, nested.sup, nested.parent)
+    home = authorize(tmp_path, monkeypatch, nested.sup, nested.parent)
     target = codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent)[0]
     try:
         if change == 'navigation':
@@ -105,8 +96,7 @@ def test_issued_private_code_never_retargets(nested, tmp_path, monkeypatch, chan
             nested.sup.stop()
             nested.sup.start()
         else:
-            call = ledger.call(token)
-            assert ledger.retire(call['owner'], call['generation'], evidence='synthetic-terminal')
+            monkeypatch.setenv('HERMES_HOME', str(home / 'different-profile'))
         with pytest.raises(Exception):
             codes.fill(target, 'Q!7&z=R9', time.monotonic() + 20)
         if change != 'navigation':
@@ -138,14 +128,14 @@ def test_private_candidate_cancel_cleanup(nested, tmp_path, monkeypatch):
         assert all(t.lease.closed and t.lease.parent_session.closed for t in targets)
         for t in targets:
             with pytest.raises(Exception):
-                codes._call(nested.sup, 'Target.getTargetInfo', {}, t.parent_sid)
+                codes._call(nested.capture(), 'Target.getTargetInfo', {}, t.parent_sid)
         assert nested.sup._page_session_id == previous
     finally:
         selection.close()
         other.close()
 
 
-@pytest.mark.parametrize('change', ['navigation', 'reconnect', 'retirement', 'cancel'])
+@pytest.mark.parametrize('change', ['navigation', 'reconnect', 'profile', 'cancel'])
 def test_private_payment_terminal_guards(nested, tmp_path, monkeypatch, change):
     setup_chain(nested)
     nested.pages['https://parent.test/root'] = '<iframe src="https://parent.test/pay"></iframe>'
@@ -153,7 +143,7 @@ def test_private_payment_terminal_guards(nested, tmp_path, monkeypatch, change):
     nested.page.reload()
     nested.page.frames[-1].wait_for_selector('input')
     other, _ = wrongsite(nested)
-    ledger, token = authorize(tmp_path, monkeypatch, nested.sup, nested.parent)
+    home = authorize(tmp_path, monkeypatch, nested.sup, nested.parent)
     targets = pf.discover(nested.sup.task_id, nested.parent, 'https://parent.test')
     target = targets[0]
     try:
@@ -162,9 +152,8 @@ def test_private_payment_terminal_guards(nested, tmp_path, monkeypatch, change):
         elif change == 'reconnect':
             nested.sup.stop()
             nested.sup.start()
-        elif change == 'retirement':
-            call = ledger.call(token)
-            assert ledger.retire(call['owner'], call['generation'], evidence='synthetic-terminal')
+        elif change == 'profile':
+            monkeypatch.setenv('HERMES_HOME', str(home / 'different-profile'))
         else:
             pf.release(target)
         with pytest.raises(Exception):
@@ -173,12 +162,12 @@ def test_private_payment_terminal_guards(nested, tmp_path, monkeypatch, change):
         pf.release(target)
         assert target.parent_session.closed
         with pytest.raises(Exception):
-            codes._call(nested.sup, 'Target.getTargetInfo', {}, target.parent_sid)
+            codes._call(nested.capture(), 'Target.getTargetInfo', {}, target.parent_sid)
         other.close()
 
 
 @pytest.mark.parametrize('path', ['payment', 'code'])
-def test_visible_unrecorded_parent_is_not_authority(nested, tmp_path, monkeypatch, path):
+def test_visible_unrecorded_parent_without_destination(nested, tmp_path, monkeypatch, path):
     origin, _ = setup_chain(nested)
     other, previous = wrongsite(nested)
     authorize(tmp_path, monkeypatch, nested.sup, nested.parent)
@@ -188,11 +177,9 @@ def test_visible_unrecorded_parent_is_not_authority(nested, tmp_path, monkeypatc
     parent = pc.send('Target.getTargetInfo')['targetInfo']['targetId']
     pc.detach()
     try:
-        with pytest.raises(ValueError, match='not owned'):
-            if path == 'code':
-                codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=parent)
-            else:
-                pf.discover(nested.sup.task_id, parent, origin)
+        targets = (codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=parent)
+                   if path == 'code' else pf.discover(nested.sup.task_id, parent, origin))
+        assert targets == []  # Parent admitted, but no matching destination exists.
         assert nested.sup._page_session_id == previous
     finally:
         unknown.close()
@@ -207,14 +194,14 @@ def test_concurrent_exact_private_attachments(nested, tmp_path, monkeypatch):
     authorize(tmp_path, monkeypatch, nested.sup, nested.parent)
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
-            bindings = list(pool.map(lambda _: ParentSession(nested.sup, nested.parent), range(2)))
+            bindings = list(pool.map(lambda _: ParentSession(nested.capture(), nested.parent), range(2)))
         assert bindings[0].sid != bindings[1].sid
         bindings[0].drop(None)
         assert bindings[1].check() == bindings[1].sid
         bindings[1].drop(None)
         for binding in bindings:
             with pytest.raises(Exception):
-                codes._call(nested.sup, 'Target.getTargetInfo', {}, binding.sid)
+                codes._call(nested.capture(), 'Target.getTargetInfo', {}, binding.sid)
         assert nested.sup._page_session_id == previous
     finally:
         other.close()

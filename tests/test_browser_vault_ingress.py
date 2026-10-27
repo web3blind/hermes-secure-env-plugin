@@ -4,6 +4,7 @@ from urllib.parse import urlsplit
 import pytest
 
 from test_runtime_e2e import make_runtime, post
+from public_capture_helpers import PublicConnection, install_public_registry
 from secure_env_ingress.vault_ingress import VaultTarget, strict_origin, capture_browser_target
 
 
@@ -20,19 +21,11 @@ def test_capture_requires_existing_task_owned_browser(monkeypatch):
     from tools import browser_use_cli
     monkeypatch.setattr(browser_use_cli, 'is_browser_use_cli_mode', lambda: False)
     from tools import browser_tool as bt
-    from tools.browser_supervisor import SUPERVISOR_REGISTRY
     from secure_env_ingress.vault_ingress import assert_browser_target
-    import threading
-    class Supervisor:
-        task_id = 'task-1'
-        _state_lock = threading.Lock()
-        _active = True
-        _page_session_id = 'page-1'
-        href = 'https://site.test/login'
-        def evaluate_runtime(self, expression):
-            return {'ok': True, 'result': self.href}
-    supervisor = Supervisor()
-    monkeypatch.setattr(SUPERVISOR_REGISTRY, 'get', lambda task: supervisor)
+    state = {'href': 'https://site.test/login'}
+    connection = PublicConnection(task_id='task-1', page_session_id='page-1',
+                                  evaluate=lambda expression: state['href'])
+    registry = install_public_registry(monkeypatch, connection)
     monkeypatch.setattr(bt, '_last_active_session_key', {})
     monkeypatch.setattr(bt, '_active_sessions', {})
     with pytest.raises(ValueError, match='browser missing'):
@@ -44,18 +37,18 @@ def test_capture_requires_existing_task_owned_browser(monkeypatch):
     bt._last_active_session_key['task-1'] = 'task-1'
     target = capture_browser_target('https://site.test', 'Site', 'task-1', 'task-1', 'session-key')
     assert_browser_target(target)
-    supervisor.href = 'https://elsewhere.test/login'
+    state['href'] = 'https://elsewhere.test/login'
     with pytest.raises(ValueError, match='page changed'):
         assert_browser_target(target)
-    supervisor.href = 'https://site.test/login'
-    supervisor._page_session_id = 'page-2'
+    state['href'] = 'https://site.test/login'
+    connection.page_session_id = 'page-2'
     with pytest.raises(ValueError, match='page changed'):
         assert_browser_target(target)
-    supervisor._page_session_id = 'page-1'
-    monkeypatch.setattr(SUPERVISOR_REGISTRY, 'get', lambda task: Supervisor())
-    with pytest.raises(ValueError, match='page changed'):
+    connection.page_session_id = 'page-1'
+    registry.connection = PublicConnection(task_id='task-1', page_session_id='page-1')
+    with pytest.raises(ValueError):
         assert_browser_target(target)
-    monkeypatch.setattr(SUPERVISOR_REGISTRY, 'get', lambda task: supervisor)
+    registry.connection = connection
     bt._active_sessions['task-1'] = record.copy()
     with pytest.raises(ValueError, match='browser changed'):
         assert_browser_target(target)
@@ -63,9 +56,7 @@ def test_capture_requires_existing_task_owned_browser(monkeypatch):
 
 def test_browser_use_issues_and_submits_to_native_vault(tmp_path, monkeypatch):
     """Exercise the compatibility binding through HTTPS submission, not a stub."""
-    import threading
-    from types import SimpleNamespace
-    from tools import browser_use_cli, browser_tool, browser_supervisor
+    from tools import browser_use_cli, browser_tool
     from agent.vault_store import VaultStore
 
     runtime, cfg, home, root = make_runtime(tmp_path, mini=False)
@@ -73,10 +64,7 @@ def test_browser_use_issues_and_submits_to_native_vault(tmp_path, monkeypatch):
     monkeypatch.setattr(browser_use_cli, 'is_browser_use_cli_mode', lambda: True)
     monkeypatch.setattr(browser_tool, '_last_active_session_key', {})
     monkeypatch.setattr(browser_tool, '_active_sessions', {})
-    supervisor = SimpleNamespace(task_id='task', _state_lock=threading.RLock(),
-        _active=True, _page_session_id='page',
-        evaluate_runtime=lambda expr: {'ok': True, 'result': 'https://site.test/login'})
-    monkeypatch.setattr(browser_supervisor.SUPERVISOR_REGISTRY, 'get', lambda task: supervisor)
+    install_public_registry(monkeypatch)
     try:
         target = capture_browser_target('https://site.test', 'Site', 'task', 'task', 'chat-key')
         links = runtime.create_vault(('telegram', '7'), target)
