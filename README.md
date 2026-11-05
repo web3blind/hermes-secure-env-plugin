@@ -8,7 +8,7 @@ A profile-scoped, on-demand HTTPS form for adding missing `.env` keys. `/senv` a
 
 YAML configuration uses bounded `ruamel.yaml>=0.18.16,<0.19`; PyYAML is not a plugin runtime dependency. Setup preserves the historical implicit scalar grammar and rejects duplicate keys, including collisions through YAML merges. Optional consumer config-read failures disable consumer discovery only; ordinary ingress config reads remain strict. A fresh-wheel registration and strict-YAML check is available in `tests/wheel_yaml_smoke.py`, run outside the checkout with an unmodified ruamel-based Hermes host on `PYTHONPATH`, an isolated `HOME`/`HERMES_HOME`, and `SENV_WHEEL_ROOT` pointing to the clean wheel environment.
 
-**0.8.3 requires Hermes >=0.22.2**, the stock host tested for this candidate. Its public captured-CDP dispatch seam is required; this does not establish catalog acceptance or universal browser-startup compatibility. Runtime requires Python 3.11+, POSIX ownership/modes, `flock`, `O_NOFOLLOW`, OpenSSL and the bounded dependencies in `pyproject.toml` / `uv.lock`.
+**0.8.4 requires Hermes >=0.22.2**, the stock host tested for this candidate. Its public captured-CDP dispatch seam is required; this does not establish catalog acceptance or universal browser-startup compatibility. Runtime requires Python 3.11+, POSIX ownership/modes, `flock`, `O_NOFOLLOW`, OpenSSL and the bounded dependencies in `pyproject.toml` / `uv.lock`.
 
 0.8.2 names the plugin tool `secure_env_vault` to avoid colliding with Hermes' native unified `browser_vault(action=...)`. There is no plugin `browser_vault` alias. Native Vault filling/listing remains separate; legacy Hermes >=0.21.7 exposes `browser_vault_list` / `browser_vault_fill`.
 
@@ -28,6 +28,11 @@ Two supported Hermes discovery surfaces:
 - Python package: build with `uv build`, install the reviewed wheel into that same Hermes Python environment. It exposes `hermes_agent.plugins` entry point `secure-env-ingress`. The wheel does not configure or enable the plugin.
 
 Then enable using the documented `hermes plugins enable secure-env-ingress` command **in the intended profile**. Do not run both install variants. Enabling an installed plugin, production configuration, or restarting a gateway are operator actions, not part of the local tests. The old `secure_env_ingress_probe/` is only a test fixture; never install it.
+
+## Changes in 0.8.4
+
+- Explicit transient-code targets accept the exact Russian label `Секретный код`. Secret-key and recovery-code labels remain refused; this does not reclassify ordinary password fields or broader secret labels as OTP fields.
+- Allowlisted trusted-operation factories can return the exact current public SDK `BoundOperation` when Hermes loads the plugin into an isolated directory namespace. Callback and summary checks remain enforced, and registries remain isolated. See [the operations integration guide](secure_env_ingress/OPERATIONS.md) for SDK availability and programmatic registration limits.
 
 ## Non-secret configuration
 

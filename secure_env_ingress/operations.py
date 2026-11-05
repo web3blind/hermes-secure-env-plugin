@@ -10,6 +10,7 @@ import hashlib
 import os
 import re
 import stat
+import sys
 import threading
 import types
 from pathlib import Path
@@ -65,6 +66,16 @@ def bind(home: Path, name: str, parameters: object) -> tuple[BoundOperation, byt
     if len(canonical) > 4096 or not isinstance(parameters, dict):
         raise ValueError('invalid parameters')
     bound = entry[0](canonical)
+    if type(bound) is not BoundOperation:
+        # Hermes directory imports isolate registry state, but trusted factories
+        # use the absolute public SDK. Accept only its current exact class, then
+        # normalize the value without sharing either module's consumer registry.
+        # The factory's import already loaded it; catalog-only local consumers
+        # need no bare SDK import, alias or process-global module cache here.
+        sdk = sys.modules.get('secure_env_ingress.operations')
+        if sdk is None or type(bound) is not getattr(sdk, 'BoundOperation', None):
+            raise ValueError('invalid bound operation')
+        bound = BoundOperation(bound.summary, bound.execute)
     if (type(bound) is not BoundOperation or not callable(bound.execute)
             or inspect.iscoroutinefunction(bound.execute)
             or not isinstance(bound.summary, str) or not bound.summary.strip()

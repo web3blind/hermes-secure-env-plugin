@@ -37,6 +37,25 @@ def test_adapters(nested, markup, value, multiline):
         codes.release(t)
 
 
+def test_russian_secret_code_label_is_transient_code_not_a_secret_key(nested):
+    origin, leaf = setup_chain(nested)
+    leaf.evaluate('(s)=>document.body.innerHTML=s', '<input id="challenge" placeholder="Секретный код">')
+    t = codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent, target_spec=spec(6))[0]
+    try:
+        assert codes.fill(t, '123456', time.monotonic()+30)
+        assert leaf.evaluate('document.querySelector("#challenge").value') == '123456'
+    finally:
+        codes.release(t)
+
+
+@pytest.mark.parametrize('label', ['Секретный ключ', 'Секретный код восстановления'])
+def test_secret_key_labels_remain_forbidden(nested, label):
+    origin, leaf = setup_chain(nested)
+    leaf.evaluate('(s)=>document.body.innerHTML=s', '<input id="challenge" placeholder="'+label+'">')
+    with pytest.raises(ValueError):
+        codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent, target_spec=spec(6))
+
+
 @pytest.mark.parametrize('attack', [
     'document.querySelector("#challenge").replaceWith(document.querySelector("#challenge").cloneNode())',
     'document.querySelector("#challenge").id="other";document.querySelector("input").id="challenge"',

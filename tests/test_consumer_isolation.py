@@ -142,7 +142,7 @@ def test_collision_revoke_reload_and_profile(tmp_path):
 
 
 @pytest.mark.parametrize('reverse', [False, True])
-@pytest.mark.parametrize('container', ['mixed', 'null', 'settings'])
+@pytest.mark.parametrize('container', ['mixed', 'public_sdk', 'null', 'settings'])
 def test_actual_directory_loader_keeps_all_surfaces(tmp_path, monkeypatch, reverse, container):
     from hermes_cli.plugins import PluginManager
     from tools.registry import registry
@@ -162,6 +162,8 @@ ops = next(m for m in list(sys.modules.values())
 def factory(public):
     return ops.BoundOperation('Synthetic action', lambda secret: None)
 """)
+    if container == 'public_sdk':
+        good = module(home, 'good', GOOD)
     bad = module(home, 'bad', "raise RuntimeError('PRIVATE-DIAGNOSTIC')")
     bad['sha256'] = '0' * 64
     pairs = [('good', good), ('bad', bad)]
@@ -188,10 +190,16 @@ def factory(public):
         import sys
         operation_handler = registry.get_entry('secure_operation', scope=str(home)).handler
         loaded_ops = sys.modules[operation_handler.__module__.rsplit('.', 1)[0] + '.operations']
-        if container == 'mixed':
+        if container in ('mixed', 'public_sdk'):
             bound, _ = loaded_ops.bind(home, 'good', {})
+            assert type(bound) is loaded_ops.BoundOperation
             assert bound.summary == 'Synthetic action'
             bound.execute('synthetic')
+            with pytest.raises(ValueError):
+                loaded_ops.bind(tmp_path / 'other-profile', 'good', {})
+            if container == 'public_sdk':
+                with pytest.raises(ValueError):
+                    bind(home, 'good', {})
             tokens = sc.set_session_vars(platform='telegram', user_id='7', chat_id='7',
                 chat_type='dm', session_id='sid', session_key='key', profile='', cron_session='')
             try:

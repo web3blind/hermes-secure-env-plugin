@@ -197,14 +197,16 @@ RESOLVE_JS = r'''function(spec){
     ...(p.getAttribute('aria-labelledby')||'').split(/\s+/).filter(Boolean).map(id=>rootLabel(p,id)));
   }
   const normalize=s=>String(s||'').replace(/([a-z])([A-Z])/g,'$1 $2').normalize('NFKC').toLowerCase();
-  const ownName=normalize(row.name), ownLabel=normalize(row.label), ac=normalize(row.autocomplete);
+  const ownName=normalize(row.name), ownLabel=normalize(row.label).trim(), ac=normalize(row.autocomplete);
   const otp=/one[ _-]*time[ _-]*(?:code|password)|\botp\b|\bpasscode\b|(?:verification|confirmation)[ _-]*code|код[ _-]*(?:подтверждения|верификации)|одноразов/.test([ownName,ownLabel,ac].join(' '));
   const dangerous=/captcha|promo|coupon|discount|gift|cvv|cvc|csc|card|credit|payment|billing|postal|zip|api[ _-]*(?:key|token)|(?:access|bearer|refresh|auth)[ _-]*token|jwt|(?:private|signing)[ _-]*key|seed|recovery|backup|credential|secret|секрет|ключ|восстанов/;
   const credential=/password|passwd|(?:^|[^a-z])pwd(?:$|[^a-z])|passphrase|парол|user[ _-]*name|email|e-mail|account[ _-]*name/;
+  // An exact Russian OTP label must not turn a secret key or recovery field into a code.
+  const codeLabel=ownLabel==='секретный код'?'код подтверждения':ownLabel;
   // Selected name/id and native autofill roles are stronger than caller intent.
   // OTP phrases/context cannot turn an actual email/password/key field into OTP.
-  if(dangerous.test(ownName+' '+ownLabel)||credential.test(ownName))throw Error('purpose');
-  const labelRole=ownLabel.replace(/one[ _-]*time[ _-]*password/g,'one time code')
+  if(dangerous.test(ownName+' '+codeLabel)||credential.test(ownName))throw Error('purpose');
+  const labelRole=codeLabel.replace(/one[ _-]*time[ _-]*password/g,'one time code')
     .replace(/(?:email|e-mail)[ _-]*(?:verification|confirmation)[ _-]*code/g,'verification code');
   if(credential.test(labelRole))throw Error('purpose');
   const context=normalize(ancestry.join(' '));
