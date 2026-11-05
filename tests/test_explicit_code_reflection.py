@@ -19,7 +19,7 @@ def descriptor(layout='indexed_cells'):
     return result
 
 
-def prepare(leaf, attack=''):
+def prepare(leaf, attack='', service=False):
     root = Path(__file__).with_name('fixtures')
     # Fixed test-only markup; no page/user content is interpolated.
     leaf.evaluate('document.body.innerHTML=\'<div id="fixture-mount"></div>\'')
@@ -43,12 +43,19 @@ def prepare(leaf, attack=''):
     }''', attack)
     leaf.wait_for_selector('#cell-4')
     leaf.evaluate('window.originalCells=Array.from(document.querySelectorAll("input"))')
+    if service:
+        leaf.evaluate('''()=>new Promise(resolve=>{
+          const frame=document.createElement('iframe');
+          frame.id='service-frame';frame.onload=()=>resolve();
+          frame.src=new URL('/service',location.href).href;document.body.append(frame);
+        })''')
 
 
+@pytest.mark.parametrize('service', [False, True])
 @pytest.mark.parametrize('layout', ['indexed_cells', 'ordered_cells'])
-def test_controlled_explicit_cells(nested, layout):
+def test_controlled_explicit_cells(nested, layout, service):
     origin, leaf = setup_chain(nested)
-    prepare(leaf)
+    prepare(leaf, service=service)
     target = codes.discover(origin, 'Synthetic', nested.sup.task_id,
                             parent=nested.parent, target_spec=descriptor(layout))[0]
     try:
@@ -59,6 +66,7 @@ def test_controlled_explicit_cells(nested, layout):
         codes.release(target)
 
 
+@pytest.mark.parametrize('service', [False, True])
 @pytest.mark.parametrize('attack', [
     "const e=document.querySelector('#cell-0');e.setAttribute('value','x');e.setAttribute('value',e.value)",
     "document.querySelector('#cell-1').setAttribute('value','x')",
@@ -67,9 +75,9 @@ def test_controlled_explicit_cells(nested, layout):
     "const e=document.querySelector('#cell-1');e.replaceWith(e.cloneNode(true))",
     "document.querySelector('form').setAttribute('action','/other')",
 ])
-def test_reflection_does_not_acknowledge_other_history(nested, attack):
+def test_reflection_does_not_acknowledge_other_history(nested, attack, service):
     origin, leaf = setup_chain(nested)
-    prepare(leaf, attack)
+    prepare(leaf, attack, service=service)
     target = codes.discover(origin, 'Synthetic', nested.sup.task_id,
                             parent=nested.parent, target_spec=descriptor())[0]
     try:
@@ -83,6 +91,26 @@ def test_reflection_does_not_acknowledge_other_history(nested, attack):
         # The attack itself may change the second input's value property.
         # No subsequent code setter may reach the untouched remaining inputs.
         assert leaf.evaluate('originalCells.slice(2).every(e=>e.value==="")')
+    finally:
+        codes.release(target)
+
+
+@pytest.mark.parametrize('attack', [
+    "const f=document.querySelector('#service-frame');f.setAttribute('title','changed');f.removeAttribute('title')",
+    "const f=document.querySelector('#service-frame');f.replaceWith(f.cloneNode(true))",
+    "document.querySelector('#service-frame').setAttribute('src','https://other.test/service')",
+])
+def test_service_frame_authority_still_refuses(nested, attack):
+    origin, leaf = setup_chain(nested)
+    prepare(leaf, attack, service=True)
+    target = codes.discover(origin, 'Synthetic', nested.sup.task_id,
+                            parent=nested.parent, target_spec=descriptor())[0]
+    try:
+        try:
+            assert not codes.fill(target, '12345', time.monotonic()+45)
+        except ValueError:
+            pass
+        assert leaf.evaluate('originalCells.slice(1).every(e=>e.value==="")')
     finally:
         codes.release(target)
 
@@ -105,7 +133,7 @@ def test_registered_controlled_cells_https(nested, tmp_path, monkeypatch):
     from secure_env_ingress import runtime as runtime_module
 
     origin, leaf = setup_chain(nested)
-    prepare(leaf)
+    prepare(leaf, service=True)
     sample, settings, home, root = make_runtime(tmp_path, mini=False)
     sample.close()
     monkeypatch.setenv('HERMES_HOME', str(home))

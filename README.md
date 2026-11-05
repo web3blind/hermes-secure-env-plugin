@@ -33,6 +33,8 @@ Then enable using the documented `hermes plugins enable secure-env-ingress` comm
 
 Explicit ASCII-digit `indexed_cells` and `ordered_cells` targets support a controlled input reflecting the just-written digit into its own `value` attribute during synchronous input/change handling, including fields without `maxlength` or legacy group names. Exactly one reflection with the captured old attribute, the exact written digit and matching current property is acknowledged. This does not reacquire or replace controls: origin, original node/form/ancestor identities, selector membership, earlier values, focus and mutation history remain checked. Other-cell changes, reverted/multiple reflections, accompanying metadata changes and late asynchronous reflections still refuse. No site-specific allowlist or blanket DOM-mutation bypass is added.
 
+When service iframes leave additional retained guards in the same isolated document, those guards recognize only the writing guard's authenticated synchronous reflection receipt. Each peer requires one matching old/new attribute record on the original written control and consumes it once. Frame/canary guards are retained; all other mutation history, original frame identity, transport/profile checks and cross-document isolation remain enforced. Delayed unacknowledged reflections are not admitted by this peer mechanism.
+
 ## Changes in 0.8.4
 
 - Explicit transient-code targets accept the exact Russian label `Секретный код`. Secret-key and recovery-code labels remain refused; this does not reclassify ordinary password fields or broader secret labels as OTP fields.

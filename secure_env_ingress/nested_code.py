@@ -124,7 +124,8 @@ _GUARD = r'''function(nodes, inspection=false, roots=[document], selector=null, 
   const dirty=()=>{bad=true};
   navigation.addEventListener('navigate',dirty);
   addEventListener('popstate',dirty);addEventListener('hashchange',dirty);
-  const filled=new Map();
+  const filled=new Map(), reflectionReceipts=new Map(), peerSeen=new Set();
+  let peerWriter=null;
   // Direct name bindings cannot depend on a sibling button's disabled state.
   // Keep original buttons only; never relax selected/ancestor/label objects.
   const directNames=!group&&spec?.layout==='ordered_cells'&&nodes.length===spec.fields.length&&
@@ -494,7 +495,21 @@ _GUARD = r'''function(nodes, inspection=false, roots=[document], selector=null, 
       if(ids&&[r.oldValue,r.target.id].some(id=>id&&ids.has(id)))sources.add(r.target);
     }
   };
+  const withoutPeerReflections=records=>{
+    if(!peerWriter)return records;
+    const acknowledged=new Set();
+    for(const r of records){
+      if(r.type!=='attributes'||r.attributeName!=='value'||peerSeen.has(r.target))continue;
+      const matching=records.filter(v=>v.type==='attributes'&&v.attributeName==='value'&&v.target===r.target);
+      const value=r.target.getAttribute('value');
+      if(matching.length===1&&peerWriter.ownsReflection(r.target,r.oldValue,value)){
+        patchFrozen(r.target,'value',value);peerSeen.add(r.target);acknowledged.add(r);
+      }
+    }
+    return records.filter(r=>!acknowledged.has(r));
+  };
   const mutationsBad=records=>{
+    records=withoutPeerReflections(records);
     learnHistory(records);
     records=withoutTitleText(records);
     if(caretIndependent&&records.some(stylesheetMutation))bad=true;
@@ -536,11 +551,20 @@ _GUARD = r'''function(nodes, inspection=false, roots=[document], selector=null, 
   let lastChecks=null;
   return Object.freeze({document:doc,valid,
     lastWriteChecks(){return lastChecks},
+    bindWriter(writer){
+      if(peerWriter||writer.document!==doc||writer===this||!valid())return false;
+      peerWriter=writer;return true;
+    },
+    ownsReflection(e,previous,value){
+      const receipt=reflectionReceipts.get(e);
+      return !bad&&!closed&&!!receipt&&receipt.previous===previous&&receipt.value===value&&
+        e.getAttribute('value')===value&&read(e)===value;
+    },
     accepts(value){return valid()&&(!group||(value.length===nodes.length&&(!group.numeric||/^[0-9]+$/.test(value))))},
     censusRoot(root){if(!roots.includes(root)){roots.push(root);observe(root);if(spec)bad=true;
       if(Array.from(root.querySelectorAll('*')).some(n=>semantic(n)||groupPotential(n)))bad=true;}return valid()},
     censusNode(n){if(authority(n))bad=true;return valid()},
-    close(){closed=true;lastChecks=null;observer.disconnect();navigation.removeEventListener('navigate',dirty);
+    close(){closed=true;lastChecks=null;peerWriter=null;peerSeen.clear();reflectionReceipts.clear();observer.disconnect();navigation.removeEventListener('navigate',dirty);
     removeEventListener('popstate',dirty);removeEventListener('hashchange',dirty);filled.clear();uiButtons.clear();numericMetadata.clear();paint.clear();originalSpans.clear();cssOwners.clear();selected.length=0;saved.length=0;nodes.length=0;roots.length=0;protectedNodes.clear();labels.clear();sources.clear();sourceIds.clear();snapshots.length=0},
     focus(i){if(!valid())return false;saved[i].e.focus();return valid()&&doc.hasFocus()&&focused(saved[i].e)},
     write(i,value){if(!valid()||!doc.hasFocus()||!focused(saved[i].e))return {written:false,valid:false};
@@ -575,7 +599,7 @@ _GUARD = r'''function(nodes, inspection=false, roots=[document], selector=null, 
         const values=records.filter(r=>r.type==='attributes'&&r.target===e&&r.attributeName==='value');
         const own=values.length===1&&values[0].oldValue===previousValueAttribute&&
           e.getAttribute('value')===value&&read(e)===value;
-        if(own)patchFrozen(e,'value',value);
+        if(own){patchFrozen(e,'value',value);reflectionReceipts.set(e,{previous:previousValueAttribute,value});}
         explicitRecords=records.filter(r=>!own||r!==values[0]);
       }
       if(uiButtons.size){
@@ -859,6 +883,22 @@ def _inspection_js(nonce, selector, generic=False):
     }'''
 
 
+def _share_reflection_writer(target, peers):
+    """Retain peer guards; acknowledge only the original writer's exact receipt."""
+    spec, lease = target.target_spec, target.lease
+    if spec is None or spec['layout'] == 'single' or spec['validation']['charset'] != 'ascii_digits':
+        return
+    for sid, guard in peers:
+        if (sid != target.leaf_sid or guard == target.leaf_guard
+                or lease.contexts[guard] != lease.contexts[target.leaf_guard]):
+            continue
+        reply = _call(target.supervisor, 'Runtime.callFunctionOn', {
+            'objectId': guard, 'functionDeclaration': 'function(writer){return this.bindWriter(writer)}',
+            'arguments': [{'objectId': target.leaf_guard}], 'returnByValue': True}, sid)
+        if _result(reply).get('value') is not True:
+            raise ValueError('code document changed')
+
+
 def discover(origin, label, task, parent, field_selector=None, *, top_only=False, target_spec=None):
     from .code_targets import validate_field_selector
     validate_field_selector(field_selector, parent)
@@ -1003,6 +1043,7 @@ def discover(origin, label, task, parent, field_selector=None, *, top_only=False
         scope_sessions = {sid for sid, _ in scope_objects}
         for target in targets:
             assert_target(target)
+            _share_reflection_writer(target, scope_objects | {(a[0], a[4]) for a in target.ancestry})
             lease.resources[target.leaf_guard] = (
                 {(target.leaf_sid, target.leaf_guard)} | {(a[0], a[4]) for a in target.ancestry} | scope_objects |
                 {(sid, obj) for (sid, _), obj in lease.census_documents.items()},
