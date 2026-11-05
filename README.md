@@ -29,6 +29,10 @@ Two supported Hermes discovery surfaces:
 
 Then enable using the documented `hermes plugins enable secure-env-ingress` command **in the intended profile**. Do not run both install variants. Enabling an installed plugin, production configuration, or restarting a gateway are operator actions, not part of the local tests. The old `secure_env_ingress_probe/` is only a test fixture; never install it.
 
+## Changes in 0.8.5
+
+Explicit ASCII-digit `indexed_cells` and `ordered_cells` targets support a controlled input reflecting the just-written digit into its own `value` attribute during synchronous input/change handling, including fields without `maxlength` or legacy group names. Exactly one reflection with the captured old attribute, the exact written digit and matching current property is acknowledged. This does not reacquire or replace controls: origin, original node/form/ancestor identities, selector membership, earlier values, focus and mutation history remain checked. Other-cell changes, reverted/multiple reflections, accompanying metadata changes and late asynchronous reflections still refuse. No site-specific allowlist or blanket DOM-mutation bypass is added.
+
 ## Changes in 0.8.4
 
 - Explicit transient-code targets accept the exact Russian label `Секретный код`. Secret-key and recovery-code labels remain refused; this does not reclassify ordinary password fields or broader secret labels as OTP fields.

@@ -565,8 +565,21 @@ _GUARD = r'''function(nodes, inspection=false, roots=[document], selector=null, 
       }else return {written:false,valid:false};
       filled.set(i,value);
       e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));
-      if(uiButtons.size){
+      let explicitRecords=null;
+      if(!group&&spec&&spec.layout!=='single'&&spec.validation.charset==='ascii_digits'&&
+          e.matches('input[type="text"],input[type="tel"],input[type="number"]')){
+        // Controlled explicit cells need no legacy maxlength/group heuristic.
+        // Acknowledge only this setter's single exact value reflection; all
+        // other records and complete retained snapshots remain authoritative.
         const records=observer.takeRecords();
+        const values=records.filter(r=>r.type==='attributes'&&r.target===e&&r.attributeName==='value');
+        const own=values.length===1&&values[0].oldValue===previousValueAttribute&&
+          e.getAttribute('value')===value&&read(e)===value;
+        if(own)patchFrozen(e,'value',value);
+        explicitRecords=records.filter(r=>!own||r!==values[0]);
+      }
+      if(uiButtons.size){
+        const records=explicitRecords||observer.takeRecords();
         // Learn the whole history before acknowledging even unchanged metadata.
         learnHistory(records);
         const buttonRecords=records.filter(r=>r.type==='attributes'&&
@@ -610,7 +623,7 @@ _GUARD = r'''function(nodes, inspection=false, roots=[document], selector=null, 
           else if(r.attributeName==='data-disabled')s.dataDisabled=value;
           s.attrs=patchAttribute(s.attrs,r.attributeName,value);
         }
-      }
+      }else if(explicitRecords&&mutationsBad(explicitRecords))bad=true;
       if(group){
         const final=i===saved.length-1&&filled.size===saved.length;
         const records=observer.takeRecords();
