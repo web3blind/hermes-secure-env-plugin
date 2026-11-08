@@ -281,7 +281,7 @@ def registered_fill(
         plugin_module=plugin.__file__,
         module_hash=hashlib.sha256(Path(exact_card.__file__).read_bytes()).hexdigest(),
     )
-    with (Path(__file__).resolve().parents[1] / "card-receipts.jsonl").open(
+    with (Path(__file__).resolve().parents[2] / "card-receipts.jsonl").open(
         "a"
     ) as ledger:
         ledger.write(json.dumps(receipt, sort_keys=True) + "\n")

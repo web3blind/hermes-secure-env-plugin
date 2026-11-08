@@ -85,7 +85,7 @@ def test_registered_consent_names_and_retains_merchant(nested, tmp_path, monkeyp
         with payment_consent(choice, session=nested.sup.task_id, before_decision=navigate) as seen:
             raw = registry.dispatch('secure_payment_fill', dict(handle=handle, parent=parent, origin='https://frame.test'), task_id=nested.sup.task_id, session_id=nested.sup.task_id)
     result = json.loads(raw)
-    expected = 'payment_declined' if choice == 'deny' else 'target_refused' if change else 'filled'
+    expected = 'payment_declined' if choice == 'deny' else 'target_refused' if change=='origin' else 'filled'
     assert result['status'] == expected, result
     prompt = json.dumps(seen)
     assert len(seen) == 1
@@ -94,8 +94,8 @@ def test_registered_consent_names_and_retains_merchant(nested, tmp_path, monkeyp
     assert 'private=token' not in prompt and '/checkout' not in prompt
     assert 'redirect.test' not in prompt
     assert secret['card_number'] not in raw + prompt
-    assert bool(resolved) == (choice == 'once' and change is None)
+    assert bool(resolved) == (choice == 'once' and change != 'origin')
     if change != 'origin':
         leaf = nested.page.frames[-1]
-        assert leaf.evaluate('Array.from(document.querySelectorAll("input")).every(e=>!!e.value)') == (choice == 'once' and change is None)
+        assert leaf.evaluate('Array.from(document.querySelectorAll("input")).every(e=>!!e.value)') == (choice == 'once' and change != 'origin')
         assert leaf.evaluate('!window.submitted')

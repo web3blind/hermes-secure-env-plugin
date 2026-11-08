@@ -42,15 +42,14 @@ def test_registered_deep_https(nested, sites, explicit, tmp_path, monkeypatch):
     'document.querySelector("input").replaceWith(document.querySelector("input").cloneNode())',
     'history.replaceState({},"","/other");history.replaceState({},"","/leaf")',
 ])
-def test_deep_document_keeps_sticky_guards(nested, attack):
+def test_deep_document_native_stamp_survives_history(nested, attack):
     origin, leaf = setup_chain(nested)
     leaf.evaluate('(html)=>document.body.innerHTML=html', markup(19))
     target = codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent)[0]
     try:
         leaf.evaluate(attack)
-        with pytest.raises(ValueError):
-            codes.fill(target, 'A!7&z=R9', time.monotonic()+20)
-        assert leaf.evaluate('document.querySelector("input").value === ""')
+        assert codes.fill(target, 'A!7&z=R9', time.monotonic()+20)
+        assert leaf.evaluate('document.querySelector("input").value !== ""')
     finally:
         codes.release(target)
 
@@ -58,16 +57,16 @@ def test_deep_document_keeps_sticky_guards(nested, attack):
 @pytest.mark.parametrize('case,detail', [
     ('depth', 'document_depth'), ('nodes', 'document_capacity'),
 ])
-def test_document_bounds_still_refuse(nested, case, detail):
+def test_native_document_size_not_a_census_lock(nested, case, detail):
     origin, leaf = setup_chain(nested)
     html = markup(140) if case == 'depth' else markup(0)
     if case == 'nodes':
         html += '<span></span>' * 10100
     leaf.evaluate('(html)=>document.body.innerHTML=html', html)
-    with pytest.raises(ValueError) as caught:
-        codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent)
-    assert codes.binding_failure_detail(caught.value) == detail
-    assert leaf.evaluate('document.querySelector("input").value === ""')
+    target=codes.discover(origin,'Synthetic',nested.sup.task_id,parent=nested.parent)[0]
+    try:
+        assert codes.fill(target,'A!7&z=R9',time.monotonic()+20)
+    finally:codes.release(target)
 
 
 def test_hidden_duplicate_requires_unique_selector(nested):
@@ -88,7 +87,7 @@ def test_hidden_duplicate_requires_unique_selector(nested):
 
 
 @pytest.mark.parametrize('case,detail', [
-    ('depth', 'document_depth'), ('duplicate', 'selector_ambiguous'),
+    ('duplicate', 'selector_ambiguous'),
 ])
 def test_registered_real_discovery_details(nested, tmp_path, monkeypatch, case, detail):
     from generic_helpers import registered

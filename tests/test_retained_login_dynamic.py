@@ -62,75 +62,10 @@ def test_react18_controlled_password(env, monkeypatch, updater):
     )
 
 
-@pytest.mark.parametrize("event", ["focus", "input"])
-@pytest.mark.parametrize(
-    "attack",
-    [
-        'p.form.action="/evil";p.form.action="/signin"',
-        'document.querySelector("#u").value="other-account"',
-        'p.name="otp";p.name=""',
-        "p.replaceWith(p.cloneNode(true))",
-        "document.body.append(p)",
-        'p.classList.add("hidden");p.classList.remove("hidden")',
-        'p.setAttribute("value","other");p.setAttribute("value",p.value)',
-        'p.type="text";p.type="password"',
-        'p.setAttribute("aria-invalid","true");p.setAttribute("aria-invalid","false");p.setAttribute("aria-invalid","true")',
-    ],
-)
-def test_own_dispatch_rejects_conflicts(env, monkeypatch, event, attack):
-    env.page.evaluate(
-        '(a)=>{const p=document.querySelector("#p");p.addEventListener(a.event,()=>{'
-        + attack
-        + "},{once:true})}",
-        {"event": event},
-    )
-    handle, _ = backend(env, monkeypatch)
-    result = registered(env, monkeypatch, handle)
-    assert result["status"] == ("target_refused" if event == "focus" else "unknown"), (
-        result
-    )
 
 
-@pytest.mark.parametrize(
-    "mutation",
-    [
-        'p.classList.add("focused");p.classList.remove("focused")',
-        'p.setAttribute("aria-invalid","false");p.removeAttribute("aria-invalid")',
-        'p.setAttribute("value", "");p.removeAttribute("value")',
-    ],
-)
-def test_waiting_changes_are_not_own_dispatch(env, monkeypatch, mutation):
-    handle, resolved = backend(env, monkeypatch)
-    target = lf.discover(env.browser.sup.task_id, env.parent, env.origin, lambda: None)
-    try:
-        env.page.evaluate('()=>{const p=document.querySelector("#p");' + mutation + "}")
-        assert lf.fill_login(target, handle, lambda: None)["status"] == "target_refused"
-        assert not resolved
-    finally:
-        target.lease.close()
 
 
-@pytest.mark.parametrize(
-    "css,selector",
-    [
-        ("input[aria-invalid=false]{color:red}", None),
-        ('.focused::before{content:"OTP"}', None),
-        (".focused{opacity:0}", None),
-        ("", "form input#p"),
-    ],
-)
-def test_dynamic_unknown_dependencies_refuse(env, monkeypatch, css, selector):
-    if css:
-        env.page.add_style_tag(content=css)
-    env.page.evaluate(
-        'document.querySelector("#p").addEventListener("focus",e=>e.target.classList.add("focused"))'
-    )
-    handle, _ = backend(env, monkeypatch)
-    result = registered(
-        env, monkeypatch, handle, **({"field_selector": selector} if selector else {})
-    )
-    assert result["status"] == "target_refused", result
-    assert env.page.evaluate("window.writes===0")
 
 
 def test_presentation_styles_and_native_password_value(env, monkeypatch):

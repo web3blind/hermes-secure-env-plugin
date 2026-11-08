@@ -141,16 +141,16 @@ PLAIN_EDITOR_JS = r'''function(e,roots){
    Array.from(e.childNodes).every(n=>n.nodeType===3);
 }'''
 
-# Value-free exporter: no stamps, document properties, or target attribute edits.
+# Value-free native-shaped inspection; binding adds selected DOM stamps later.
 EXPORT_JS = r'''function(roots, controls='input,select,textarea,[contenteditable]'){
  const query=s=>roots.flatMap(r=>Array.from(r.querySelectorAll(s)));
  const nodes=query(controls);
  const forms=query('form');
  const rows=nodes.flatMap((e,index)=>{
   const style=getComputedStyle(e);
-  if(e.matches(':disabled')||e.readOnly||e.closest('[inert]')||
+  if(e.disabled||e.readOnly||
     ['hidden','submit','button','reset','file','image','checkbox','radio'].includes(e.type)||
-    style.display==='none'||style.visibility!=='visible'||!e.getClientRects().length)return [];
+    style.display==='none'||style.visibility==='hidden'||!e.getClientRects().length)return [];
   const root=e.getRootNode();
   const label=[...Array.from(e.labels||[],l=>l.textContent||''),e.getAttribute('aria-label')||'',
    ...(e.getAttribute('aria-labelledby')||'').split(/\s+/).filter(Boolean).map(id=>root.getElementById(id)?.textContent||''),
@@ -185,10 +185,8 @@ RESOLVE_JS = r'''function(spec){
    selected.some(e=>e.getRootNode()!==selected[0].getRootNode()))throw Error('scope');
  for(const e of selected){
   const form=e.matches('input,textarea,select')?e.form:e.closest('form');
-  if(form&&new URL(form.action,document.baseURI).origin!==self.origin)throw Error('form origin');
   const row=this.rows.find(r=>this.nodes[r.index]===e);
-  if(!row||!['text','tel','password','textarea','plaintext'].includes(row.type)||
-    e.getAttribute('aria-disabled')==='true'||e.getAttribute('aria-readonly')==='true')throw Error('adapter');
+  if(!row||!['text','tel','password','textarea','plaintext'].includes(row.type))throw Error('adapter');
   const parents=[];
   for(let p=e.parentElement||e.getRootNode().host;p&&p!==document.body;p=p.parentElement||p.getRootNode().host)parents.push(p);
   if(form&&!parents.includes(form))parents.push(form);

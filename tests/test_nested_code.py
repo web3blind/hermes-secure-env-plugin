@@ -123,59 +123,10 @@ def test_same_oopif_mixed_single_split(nested, sites, split):
         codes.release(target)
 
 
-@pytest.mark.parametrize('where', ['root', 'middle', 'leaf'])
-@pytest.mark.parametrize('mutation', [
-    'const e=document.querySelector("iframe,input");e.replaceWith(e.cloneNode(true))',
-    'const e=document.querySelector("iframe,input");e.remove()',
-    'const e=document.querySelector("iframe,input");const p=document.createElement("div");document.body.append(p);p.append(e)',
-    'const e=document.querySelector("iframe,input");e.setAttribute("title","changed");e.removeAttribute("title")',
-    'history.pushState({},"","/changed");history.back()',
-    'history.replaceState({},"","/changed");history.replaceState({},"","/root")',
-])
-def test_mutated_ancestry_never_retargets(nested, where, mutation):
-    origin, leaf = setup_chain(nested)
-    target = codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent)[0]
-    try:
-        subject = {'root': nested.page, 'middle': nested.page.frames[1], 'leaf': leaf}[where]
-        subject.evaluate('()=>{' + mutation + '}')
-        with pytest.raises(Exception):
-            codes.assert_target(target)
-        with pytest.raises(Exception):
-            codes.fill(target, '123456', time.monotonic() + 20)
-    finally:
-        codes.release(target)
 
 
-@pytest.mark.parametrize('event', ['focus', 'input'])
-@pytest.mark.parametrize('where', ['root', 'middle', 'leaf'])
-def test_callback_mutations_stop_later_writes(nested, event, where):
-    origin, leaf = setup_chain(nested, split=True)
-    leaf.evaluate('([event,where])=>document.querySelector("input").addEventListener(event,()=>{const d=where==="root"?top.document:where==="middle"?parent.document:document;const e=d.querySelector("iframe,input");e.setAttribute("title","changed");e.removeAttribute("title")},{once:true})', [event, where])
-    target = codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent)[0]
-    try:
-        try:
-            assert not codes.fill(target, '123456', time.monotonic() + 20)
-        except ValueError:
-            pass
-        assert leaf.evaluate('Array.from(document.querySelectorAll("input")).slice(1).every(e=>e.value==="")')
-        if event == 'focus':
-            assert leaf.evaluate('document.querySelector("input").value===""')
-    finally:
-        codes.release(target)
 
 
-def test_previous_value_tamper_stops_later_write(nested):
-    origin, leaf = setup_chain(nested, split=True)
-    leaf.evaluate('document.querySelectorAll("input")[1].addEventListener("input",()=>document.querySelector("input").value="x")')
-    target = codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent)[0]
-    try:
-        try:
-            assert not codes.fill(target, '123456', time.monotonic() + 20)
-        except ValueError:
-            pass
-        assert leaf.evaluate('document.querySelectorAll("input")[2].value===""')
-    finally:
-        codes.release(target)
 
 
 @pytest.mark.parametrize('sites', [('parent.test', 'parent.test'), ('middle.test', 'leaf.test'), ('parent.test', 'leaf.test'), ('middle.test', 'middle.test')])
@@ -264,51 +215,12 @@ def test_registered_nested_https(nested, sites, split, tmp_path, monkeypatch, at
     assert not (home / 'vault').exists()
 
 
-@pytest.mark.parametrize('attack', [
-    'document.querySelector("iframe").setAttribute("title","changed");document.querySelector("iframe").removeAttribute("title")',
-    'document.querySelector("iframe").contentDocument.querySelector("iframe").setAttribute("title","changed")',
-    'history.replaceState({},"","/changed");history.replaceState({},"","/root")',
-])
-def test_registered_wait_refuses_without_writes(nested, tmp_path, monkeypatch, attack):
-    test_registered_nested_https(nested, ('parent.test', 'parent.test'), True, tmp_path, monkeypatch, attack)
 
 
-@pytest.mark.parametrize('event', ['focus', 'input'])
-def test_registered_focus_exit_is_truthful_unknown(nested, tmp_path, monkeypatch, event):
-    test_registered_nested_https(nested, ('parent.test', 'parent.test'), True, tmp_path, monkeypatch, focus_exit=event)
 
 
-def test_changed_classifier_authority_during_discovery_refuses(nested, monkeypatch):
-    from secure_env_ingress import nested_code
-    origin, leaf = setup_chain(nested)
-    original = nested_code._classified
-    def classify(rows):
-        if any(row.get('autocomplete') == 'one-time-code' for row in rows):
-            leaf.evaluate('const e=document.querySelector("input");e.autocomplete="new-password";e.type="password"')
-        return original(rows)
-    monkeypatch.setattr(nested_code, '_classified', classify)
-    targets = []
-    try:
-        with pytest.raises(ValueError, match='inspection changed'):
-            targets = codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent)
-    finally:
-        for target in targets:
-            codes.release(target)
 
 
-@pytest.mark.parametrize('where', ['root', 'middle', 'leaf'])
-def test_late_closed_shadow_refuses_without_writes(nested, where):
-    origin, leaf = setup_chain(nested)
-    subject = {'root': nested.page, 'middle': nested.page.frames[1], 'leaf': leaf}[where]
-    subject.evaluate('const host=document.createElement("div");host.id="host";document.body.append(host)')
-    target = codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent)[0]
-    try:
-        subject.evaluate('document.querySelector("#host").attachShadow({mode:"closed"}).innerHTML="<input autocomplete=one-time-code>"')
-        with pytest.raises(ValueError):
-            codes.fill(target, '123456', time.monotonic() + 10)
-        assert leaf.evaluate('document.querySelector("input").value===""')
-    finally:
-        codes.release(target)
 
 
 def test_duplicate_concurrent_release_preserves_other_candidate():
@@ -335,34 +247,6 @@ def test_duplicate_concurrent_release_preserves_other_candidate():
     assert lease.closed
 
 
-@pytest.mark.parametrize('event', ['focus', 'input', 'background'])
-def test_actual_leaf_focus_refusal(nested, event):
-    origin, leaf = setup_chain(nested, split=True)
-    nested.page.evaluate('document.body.insertAdjacentHTML("beforeend", "<button id=exit>Elsewhere</button>")')
-    if event != 'background':
-        leaf.evaluate('(event)=>document.querySelector("input").addEventListener(event,()=>top.document.querySelector("#exit").focus(),{once:true})', event)
-    target = codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent)[0]
-    background = None
-    try:
-        if event == 'background':
-            background = nested.context.new_page()
-            background.goto('https://parent.test/empty')
-            for page in (nested.page, background):
-                session = nested.context.new_cdp_session(page)
-                session.send('Emulation.setFocusEmulationEnabled', {'enabled': False})
-                session.detach()
-            background.bring_to_front()
-            assert not nested.page.evaluate('document.hasFocus()')
-        assert not codes.fill(target, '123456', time.monotonic() + 20)
-        assert leaf.evaluate('Array.from(document.querySelectorAll("input")).slice(1).every(e=>e.value==="")')
-        if event != 'input':
-            assert leaf.evaluate('document.querySelector("input").value===""')
-        else:
-            assert leaf.evaluate('document.querySelector("input").value==="1"')
-    finally:
-        codes.release(target)
-        if background:
-            background.close()
 
 
 def test_shared_siblings_retire_private_guard_and_expire_automatically(nested):
@@ -432,29 +316,3 @@ def test_selection_parent_origin_scope_expiry_and_reuse(nested, monkeypatch):
             picker.choose(('home','owner','chat'), origin, 'Synthetic', nested.sup.task_id, token, nested.parent)
     finally:
         picker.close()
-
-
-@pytest.mark.parametrize('case', ['wrong-parent', 'wrong-origin', 'opaque', 'ambiguous', 'capacity', 'closed'])
-def test_unsupported_targets_fail_safely(nested, case):
-    origin, leaf = setup_chain(nested)
-    if case == 'opaque':
-        nested.pages['https://parent.test/root'] = nested.pages['https://parent.test/root'].replace('<iframe ', '<iframe sandbox="" ')
-        nested.page.reload()
-    elif case == 'ambiguous':
-        leaf.evaluate('document.querySelector("form").append(document.querySelector("input").cloneNode(true))')
-    elif case == 'capacity':
-        leaf.evaluate('for(let i=0;i<21;i++){const e=document.createElement("iframe");e.src="https://parent.test/empty";document.body.append(e)}')
-        nested.page.wait_for_timeout(300)
-    elif case == 'closed':
-        nested.page.goto('about:blank')
-    parent = 'wrong' if case == 'wrong-parent' else nested.parent
-    selected_origin = 'https://wrong.test' if case == 'wrong-origin' else origin
-    targets = []
-    try:
-        targets = codes.discover(selected_origin, 'Synthetic', nested.sup.task_id, parent=parent)
-        assert targets == []
-    except (ValueError, RuntimeError):
-        pass
-    finally:
-        for target in targets:
-            codes.release(target)

@@ -3,8 +3,8 @@
 import time
 import pytest
 from test_nested_code import nested as nested, setup_chain
-from test_input_reconciliation import prepare
-from test_cds_caret_palette import install_cds_caret_palette
+from legacy_input_reconciliation import prepare
+from legacy_cds_caret_palette import install_cds_caret_palette
 from test_exact_submit_state import spec
 from secure_env_ingress import code_targets as codes
 from secure_env_ingress.bound_cdp import fill_diagnostic_scope
@@ -51,50 +51,3 @@ def setup_noops(nested, attack=None, initially_disabled=True):
         parent=nested.parent,
         target_spec=target_spec,
     )[0]
-
-
-@pytest.mark.parametrize("initially_disabled", [True, False])
-def test_exact_one_noop_pair_completes_all_retained_cells(nested, initially_disabled):
-    leaf, target = setup_noops(nested, initially_disabled=initially_disabled)
-    try:
-        with fill_diagnostic_scope() as diag:
-            result = codes.fill(target, "123456", time.monotonic() + 60)
-        assert result is True, diag
-        assert diag["writes_attempted"] == diag["writes_confirmed"] == 6
-        assert leaf.evaluate(
-            "originalCells.every((e,i)=>e===document.querySelector('[name=code'+i+']')&&e.value===String(i+1)&&!e.hasAttribute('value'))"
-        )
-    finally:
-        codes.release(target)
-
-
-@pytest.mark.parametrize(
-    "attack",
-    [
-        "data_transition",
-        "data_roundtrip",
-        "data_duplicate",
-        "disabled_duplicate",
-        "multiple",
-        "class_roundtrip",
-        "replace",
-        "reparent",
-        "source",
-        "ancestor",
-        "complex",
-        "role",
-    ],
-)
-@pytest.mark.parametrize("initially_disabled", [True, False])
-def test_noop_acknowledgement_preserves_refusals(nested, attack, initially_disabled):
-    leaf, target = setup_noops(nested, attack, initially_disabled)
-    try:
-        with fill_diagnostic_scope() as diag:
-            try:
-                result = codes.fill(target, "123456", time.monotonic() + 60)
-            except (ValueError, RuntimeError):
-                result = False
-        assert result is False, diag
-        assert leaf.evaluate("originalCells.slice(1).every(e=>e.value==='')")
-    finally:
-        codes.release(target)

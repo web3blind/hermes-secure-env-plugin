@@ -6,8 +6,8 @@ from urllib.parse import urlsplit
 
 import pytest
 from test_nested_code import nested as nested, setup_chain
-from test_input_reconciliation import prepare
-from test_cds_caret_palette import install_cds_caret_palette
+from legacy_input_reconciliation import prepare
+from legacy_cds_caret_palette import install_cds_caret_palette
 from test_exact_submit_state import spec
 from generic_helpers import registered
 from test_runtime_e2e import make_runtime, post
@@ -17,7 +17,7 @@ from test_tool_https_e2e import running_gateway_loop
 @pytest.mark.parametrize('case', [
     'react', 'button_pair', 'button_noop', 'title', 'hidden_srcdoc', 'hidden_blank',
     'clone', 'focus', 'history', 'title_source', 'canary_competing',
-    'guard_diagnostic', 'focus_diagnostic',
+    'guard_diagnostic', 'focus_diagnostic', 'missing_slot',
 ])
 def test_registered_compatibility_https(nested, tmp_path, monkeypatch, case):
     from gateway import session_context as sc
@@ -33,7 +33,7 @@ def test_registered_compatibility_https(nested, tmp_path, monkeypatch, case):
 
     origin, leaf = setup_chain(nested)
     if case == 'button_noop':
-        from test_button_noop_history import prepare_noops
+        from legacy_button_noop_history import prepare_noops
         prepare_noops(leaf)
     else:
         prepare(leaf, paint=True)
@@ -69,6 +69,7 @@ def test_registered_compatibility_https(nested, tmp_path, monkeypatch, case):
     def fill(target, value, *, expires_at):
         scripts = {
             'clone': 'const e=this.document.querySelector("input");e.replaceWith(e.cloneNode())',
+            'missing_slot': 'this.document.querySelectorAll("input").forEach(e=>e.removeAttribute("data-hermes-vault-slot"))',
             'history': 'const e=this.document.querySelector("input"),n=e.name;e.name="password";e.name=n',
             'title_source': 'const d=this.document,t=d.head.querySelector("title"),e=d.querySelector("input");t.id="transient-title";e.setAttribute("aria-labelledby",t.id);d.title="Changed";t.removeAttribute("id");e.removeAttribute("aria-labelledby")',
             'canary_competing': 'const d=this.document.querySelector("iframe").contentDocument;for(let i=0;i<6;i++){const e=d.createElement("input");e.name="code"+i;d.body.append(e)}d.body.replaceChildren()',
@@ -84,8 +85,7 @@ def test_registered_compatibility_https(nested, tmp_path, monkeypatch, case):
         finally:
             diagnostics.append(dict(diag))
     monkeypatch.setattr(vault_ingress, 'fill_verification_code', fill)
-    refused = case in ('clone','focus','history','title_source','canary_competing','guard_diagnostic','focus_diagnostic')
-    partial = case in ('focus','guard_diagnostic','focus_diagnostic')
+    refused = case == 'missing_slot'
     pending, sent = [], []
     async def submit(chat_id, content, metadata):
         assert chat_id == '-600'
@@ -116,10 +116,9 @@ def test_registered_compatibility_https(nested, tmp_path, monkeypatch, case):
     assert result['status'] == ('unknown' if refused else 'filled'), result
     assert sent == [True] and len(diagnostics) == 1
     assert '123456' not in raw
-    assert leaf.evaluate("originalCells.map(e=>e.value).join('')") == ('1' if partial else '' if refused else '123456')
-    if not refused:
+    assert leaf.evaluate("[...document.querySelectorAll('input')].map(e=>e.value).join('')") == ('' if refused else '123456')
+    if not refused and case != 'clone':
         assert leaf.evaluate("originalCells.every((e,i)=>e===document.querySelector('[name=code'+i+']')&&!e.hasAttribute('value'))")
-    if case in ('guard_diagnostic','focus_diagnostic','focus'):
-        assert diagnostics[0]['writes_attempted'] == diagnostics[0]['writes_confirmed'] == 1
-        assert diagnostics[0]['reason'] == {'guard_diagnostic':'guard_refused','focus_diagnostic':'document_focus_lost','focus':'unexpected_focus'}[case]
+    assert diagnostics[0]['writes_attempted']==(1 if refused else 6)
+    assert diagnostics[0]['writes_confirmed']==(0 if refused else 6)
     assert not (home/'vault').exists() and not (home/'.env').exists()

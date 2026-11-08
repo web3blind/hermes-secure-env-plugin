@@ -1,2 +1,5 @@
-include tests/fixtures/hostkey-public-otp.js
-include tests/fixtures/hostkey-public-otp.README.md
+include __init__.py plugin.yaml uv.lock
+recursive-include secure_env_ingress *.py *.yaml *.txt *.md *.json *.html *.css *.js
+recursive-include secure_env_ingress_probe *.py *.yaml
+recursive-include tests *.py
+recursive-include tests/fixtures *.md *.txt *.json *.js *.css *.svg *.woff2

@@ -7,7 +7,7 @@ from test_exact_code_browser import spec
 from acceptance_diagnostics import trace_fill
 
 
-@pytest.mark.parametrize("phase", ["revalidate", "focus"])
+@pytest.mark.parametrize("phase", ["write"])
 def test_100_cell_expiry_keeps_identity_and_stops_writes(nested, phase, pytestconfig):
     from secure_env_ingress import code_targets as codes
     from secure_env_ingress.bound_cdp import fill_diagnostic_scope

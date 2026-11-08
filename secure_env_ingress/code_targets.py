@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-import json
 import re
 import secrets
 import threading
@@ -159,7 +158,7 @@ def _classified(raw, explicit=False):
     return found
 
 
-def discover(origin, label, task, parent=None, field_selector=None, target_spec=None):
+def discover(origin, label, task, parent=None, field_selector=None, target_spec=None, *, saved_otp=False):
     strict_origin(origin)
     validate_field_selector(field_selector, parent)
     if target_spec is not None:
@@ -171,100 +170,23 @@ def discover(origin, label, task, parent=None, field_selector=None, target_spec=
         raise ValueError('invalid label')
     if parent is not None:
         from .nested_code import discover as nested_discover
-        return nested_discover(origin, label, task, parent, field_selector=field_selector, target_spec=target_spec)
+        return nested_discover(origin, label, task, parent, field_selector=field_selector, target_spec=target_spec, saved_otp=saved_otp)
     raise ValueError('explicit parent required')
 
 
-def _guard(target):
-    # Stamp checks precede filling in the SAME JavaScript evaluation. Navigation,
-    # replaced nodes, hidden/disabled fields, changed field attributes all refuse.
-    expected = [{'index': x.control.index, 'type': x.control.type,
-                 'maxLength': x.control.max_length, 'autocomplete': x.control.autocomplete}
-                for x in target.controls]
-    bound = json.dumps({'origin': target.origin, 'href': target.href, 'nonce': target.nonce, 'expected': expected})
-    return '(() => { const b=' + bound + ''';
-      if (location.origin !== b.origin || location.href !== b.href) return false;
-      const state=document.__hermesCodeTarget;
-      if (!state || state.nonce!==b.nonce) return false;
-      return b.expected.every(c => {
-        const saved=state.nodes[c.index];
-        const matches=document.querySelectorAll('[data-hermes-vault-slot="' + b.nonce + ':' + c.index + '"]');
-        if (!saved || matches.length!==1 || matches[0]!==saved.element) return false;
-        const e=saved.element;
-        if (!e.isConnected || e.form!==saved.form || e.disabled || e.readOnly || !e.getClientRects().length) return false;
-        if (saved.form && (!saved.form.isConnected || saved.form.action!==saved.action || saved.form.method!==saved.method)) return false;
-        const s=getComputedStyle(e);
-        return s.display!=='none' && s.visibility!=='hidden' && e.type===c.type &&
-          (e.getAttribute('autocomplete') || '')===c.autocomplete &&
-          (e.maxLength > 0 ? e.maxLength : null)===c.maxLength;
-      });
-    })()'''
-
-
 def assert_target(target):
-    from .nested_code import NestedCodeTarget, assert_target as nested_assert
-    if isinstance(target, NestedCodeTarget):
-        return nested_assert(target)
-    if not target.supervisor.is_valid():
-        raise ValueError('browser changed')
-    with _page(target.supervisor, target.page) as sid:
-        if _evaluate(target.supervisor, sid, _guard(target)) is not True:
-            raise ValueError('page changed')
+    from .nested_code import assert_target
+    return assert_target(target)
 
 
 def fill(target, code, expires_at):
-    from .bound_cdp import dispatch_scope
-    with dispatch_scope(expires_at):
-        from agent.vault_login_classifier import build_otp_fills
-        from .exact_code import policy
-        target_spec = getattr(target, 'target_spec', None)
-        if not (policy(target_spec).accepts(code) if target_spec is not None else
-                isinstance(code, str) and re.fullmatch(r'[!-~]{4,16}', code)):
-            raise ValueError('invalid code')
-        from .nested_code import NestedCodeTarget, fill as nested_fill
-        if isinstance(target, NestedCodeTarget):
-            if not target.explicit_parent:
-                try:
-                    return nested_fill(target, code, expires_at)
-                except ValueError:
-                    return False
-            return nested_fill(target, code, expires_at)
-        if not target.supervisor.is_valid():
-            raise ValueError('browser changed')
-        fills = build_otp_fills(list(target.controls), code)
-        if len(fills) != len(target.controls):
-            raise ValueError('ambiguous code form')
-        if len(fills) == 1:
-            maximum = target.controls[0].control.max_length
-            if maximum is not None and 0 <= maximum < len(code):
-                raise ValueError('code too long')
-        with _page(target.supervisor, target.page) as sid:
-            if time.monotonic() >= expires_at:
-                raise ValueError('expired')
-            # Focus/input callbacks run synchronously and can mutate later fields.
-            # Keep exact references and recheck after focus, before EVERY setter.
-            js = '(() => { const valid=() => ' + _guard(target) + '; const fills=' + json.dumps(fills) + ''';
-              if (!valid()) return {filled:0};
-              const state=document.__hermesCodeTarget;
-              const nodes=fills.map(f => state.nodes[f.index].element);
-              const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-              let filled=0;
-              for (let i=0; i<fills.length; i++) {
-                if (!valid() || document.__hermesCodeTarget!==state) return {filled};
-                const e=nodes[i];
-                e.focus();
-                if (!valid() || document.__hermesCodeTarget!==state) return {filled};
-                setter.call(e, fills[i].value);
-                filled++;
-                e.dispatchEvent(new Event('input', {bubbles:true}));
-                e.dispatchEvent(new Event('change', {bubbles:true}));
-              }
-              return {filled};
-            })()'''
-            result = _evaluate(target.supervisor, sid, js)
-        if isinstance(result, str):
-            result = json.loads(result)
-        return isinstance(result, dict) and result.get('filled') == len(fills) and bool(fills)
+    from .nested_code import fill
+    from .exact_code import policy
+    spec=target.target_spec
+    if not (policy(spec).accepts(code) if spec is not None else
+            isinstance(code,str) and re.fullmatch(r'[!-~]{4,16}',code)):
+        raise ValueError('invalid code')
+    return fill(target,code,expires_at)
 
 
 def release(target):

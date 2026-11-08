@@ -81,7 +81,7 @@ def queued_result(gate, function, expire):
             gate.resume.set()
 
 
-@pytest.mark.parametrize('adapter', ['top', 'nested', 'top_only'])
+@pytest.mark.parametrize('adapter', ['nested'])
 @pytest.mark.parametrize('expiry', ['authorization', 'target'])
 def test_queued_code_never_outlives_authority(transport, monkeypatch, clock, adapter, expiry):
     if adapter == 'top' and expiry == 'target':
@@ -114,7 +114,7 @@ def test_queued_code_never_outlives_authority(transport, monkeypatch, clock, ada
 
 def payment_target(transport, frame='frame'):
     return pf.PaymentTarget('synthetic', 'parent', frame, 'https://synthetic.test', 0,
-        (), 1, transport, 'default', 'default', 'parent-guard', frame + '-guard', time.monotonic() + 30,
+        (SimpleNamespace(control=SimpleNamespace(index=0)),), 1, transport, 'default', 'default', 'parent-guard', frame + '-guard', time.monotonic() + 30,
         parent_session=SimpleNamespace(origin='https://merchant.test'))
 
 
@@ -130,7 +130,7 @@ def install_payment(monkeypatch):
     monkeypatch.setattr(browser_vault_tool, '_bot_desktop_browser_session', lambda *a: False)
 
 
-@pytest.mark.parametrize('phase', ['accepts', 'prepare', 'write'])
+@pytest.mark.parametrize('phase', ['prepare', 'write'])
 def test_payment_target_expiry_fences_every_secret_command(transport, monkeypatch, clock, phase):
     from dataclasses import replace
     host, wire, _, _ = transport
@@ -140,7 +140,7 @@ def test_payment_target_expiry_fences_every_secret_command(transport, monkeypatc
         return method == 'Runtime.callFunctionOn' and 'this.' + phase in params.get('functionDeclaration', '')
     gate = QueuedCapture(host, predicate)
     target = replace(payment_target(bc.BoundCDP(gate)), expires=time.monotonic() + .5)
-    with queued_result(gate, lambda: pf.approved_fill(target, 'vault_test', lambda: None),
+    with queued_result(gate, lambda: pf.approved_fill(target, 'vault_test', lambda: None, resume_existing=phase=='prepare'),
                        lambda: clock.__setitem__(0, 1)) as future:
         result = future.result(2)
     assert result['success'] is False
@@ -213,7 +213,7 @@ def test_native_oopif_error_attaches_only_exact_frame(transport, monkeypatch, ad
         if msg['method'] == 'Page.createIsolatedWorld':
             wire.commands.append(msg)
             future = host._pending_calls[msg['id']]
-            if msg.get('sessionId') == 'default':
+            if msg.get('sessionId') == 'default' and msg.get('params',{}).get('frameId') != 'root':
                 future.set_exception(RuntimeError('CDP error: No frame for given id found; synthetic-sensitive-tail'))
             else:
                 future.set_result({'result': {'executionContextId': 7}})

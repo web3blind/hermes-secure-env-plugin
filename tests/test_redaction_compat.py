@@ -76,5 +76,5 @@ def test_payment_only_pan_and_context_cvc_not_metadata(monkeypatch, old_host):
     monkeypatch.setattr(payment, '_invoke', lambda *a: [])
     target = SimpleNamespace(expires=float('inf'), origin='https://synthetic.test', parent_session=SimpleNamespace(origin='https://merchant.test'), supervisor=None, child_sid='sid', child_guard='guard', controls=())
     result = payment.approved_fill(target, 'synthetic-handle', lambda: None)
-    assert result['status'] == 'filled'
+    assert result['status'] == 'target_refused'  # Native empty fill count is not success.
     assert calls == [('synthetic-pan', 'secret'), ('synthetic-cvc', 'secret' if old_host else 'cvc')]

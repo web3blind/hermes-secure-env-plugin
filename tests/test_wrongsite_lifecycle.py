@@ -27,27 +27,12 @@ def test_cancelled_guards_really_close_before_release(nested, tmp_path, monkeypa
     if private:
         other, _ = wrongsite(nested)
         authorize(tmp_path, monkeypatch, nested.sup, nested.parent)
-    # Track real isolated-world observer/listener disposal, not Python flags.
+    # Verify real isolated-world closure; native boundaries have no observers.
     wrapper = r'''function(...args){
-      const observers=[], added=[], removed=[];
-      const MO=globalThis.MutationObserver;
-      globalThis.MutationObserver=class extends MO {
-        constructor(cb){super(cb);this.disposed=false;observers.push(this)}
-        disconnect(){this.disposed=true;super.disconnect()}
-      };
-      const proto=EventTarget.prototype, add=proto.addEventListener;
-      proto.addEventListener=function(...a){added.push([this,a[0],a[1]]);return add.apply(this,a)};
-      let guard, closed=false;
-      try {guard=(ORIGINAL)(...args)} finally {
-        globalThis.MutationObserver=MO;proto.addEventListener=add;
-      }
-      return Object.freeze({...guard,cleanupProbe(){return closed&&observers.length>0&&observers.every(o=>o.disposed)&&
-        added.length>0&&added.every(a=>removed.some(r=>r.every((x,i)=>x===a[i])))},
-        close(){const remove=proto.removeEventListener;
-          proto.removeEventListener=function(...a){removed.push([this,a[0],a[1]]);return remove.apply(this,a)};
-          try {guard.close();closed=true} finally {proto.removeEventListener=remove}
-        }});
-    }'''.replace('ORIGINAL', module._GUARD)
+      const guard=(ORIGINAL)(...args);let closed=false;
+      return Object.freeze({...guard,cleanupProbe(){return closed&&!guard.valid()},
+        close(){guard.close();closed=true}});
+    }'''.replace('ORIGINAL',module._GUARD)
     monkeypatch.setattr(module, '_GUARD', wrapper)
     original_request, probes = BoundCDP._request, []
     def observe(self, method, params, sid, **kwargs):
@@ -87,13 +72,17 @@ def test_cancelled_guards_really_close_before_release(nested, tmp_path, monkeypa
             other.close()
 
 
-def payment_page(nested):
+def payment_page(nested, multiple_documents=False):
     setup_chain(nested)
     nested.pages['https://parent.test/root'] = '<iframe src="https://parent.test/pay"></iframe>'
     form = '<form><input autocomplete="cc-number"><input autocomplete="cc-exp" placeholder="MM/YY"><input autocomplete="cc-csc"></form>'
-    nested.pages['https://parent.test/pay'] = form * 2
+    nested.pages['https://parent.test/pay'] = form
+    if multiple_documents:
+        nested.pages['https://parent.test/pay2'] = form
+        nested.pages['https://parent.test/root'] += '<iframe src="https://parent.test/pay2"></iframe>'
     nested.page.reload()
-    nested.page.frames[-1].wait_for_selector('input')
+    for frame in nested.page.frames[1:]:
+        frame.wait_for_selector('input')
 
 
 @pytest.mark.parametrize('adapter', ['payment', 'code'])
@@ -141,7 +130,7 @@ def test_reconnect_between_final_guard_and_write(nested, tmp_path, monkeypatch, 
 @pytest.mark.parametrize('consume', [False, True])
 def test_private_payment_idle_expiry_preserves_live_lease(nested, tmp_path, monkeypatch, consume):
     from secure_env_ingress.parent_session import ParentSession
-    payment_page(nested)
+    payment_page(nested,multiple_documents=True)
     other, previous = wrongsite(nested)
     authorize(tmp_path, monkeypatch, nested.sup, nested.parent)
     separate = ParentSession(nested.capture(), nested.parent)

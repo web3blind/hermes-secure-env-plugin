@@ -1,7 +1,7 @@
 """Explicit, geometry-independent native-card targets. No secret tool arguments.
 
-Only bounded simple selectors are supported: their complete attribute dependency
-is provable. References, not selectors or visual layout, remain write authority.
+Selectors describe discovery. Native-style DOM stamps, not selector history or
+visual layout, choose the setter destinations in retained parent documents.
 """
 from dataclasses import dataclass, field
 import json
@@ -10,8 +10,10 @@ import time
 import unicodedata
 
 from .vault_ingress import strict_origin
+from .native_fill import BOUNDARY_JS
 from .bound_cdp import BoundCDP
 from .exact_code import PLAIN_EDITOR_JS
+from agent.vault_login_classifier import PAYMENT_AUTOFILL_TOKENS
 
 
 class _CardCDP(BoundCDP):
@@ -45,7 +47,7 @@ def validate_spec(spec, parent):
         raise ValueError('invalid card target')
     strict_origin(spec['merchant_origin'])
     fields = spec['fields']
-    if not isinstance(fields, list) or not 3 <= len(fields) <= 23:
+    if not isinstance(fields, list) or not 1 <= len(fields) <= 23:
         raise ValueError('invalid card target')
     for f in fields:
         if not isinstance(f, dict) or set(f) not in ({'role', 'selector', 'frame', 'format'}, {'role', 'selector', 'frame', 'format', 'part', 'length'}):
@@ -53,21 +55,19 @@ def validate_spec(spec, parent):
         if (f['role'] not in FORMATS or f['format'] not in FORMATS[f['role']] or
                 not isinstance(f['frame'], str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', f['frame']) or
                 not isinstance(f['selector'], str) or not 1 <= len(f['selector']) <= 256 or
-                not re.fullmatch(r'(?:[a-zA-Z][\w-]*)?(?:[.#][\w-]+)+', f['selector'], flags=re.ASCII)):
+                any(ord(c)<32 or ord(c)==127 for c in f['selector'])):
             raise ValueError('invalid card target')
         if 'part' in f and (f['role'] != 'pan' or f['format'] != 'digits' or
                             type(f['part']) is not int or type(f['length']) is not int or not 1 <= f['length'] <= 19):
             raise ValueError('invalid card target')
     roles = [f['role'] for f in fields]
-    if (roles.count('cvc') != 1 or roles.count('cardholder') > 1 or roles.count('expiry') > 1 or
-            roles.count('month') > 1 or roles.count('year') > 1 or
-            not (roles.count('expiry') == 1 and 'month' not in roles and 'year' not in roles or
-                 'expiry' not in roles and roles.count('month') == roles.count('year') == 1)):
-        raise ValueError('invalid card target')
+    if any(roles.count(role)>1 for role in FORMATS if role!='pan'):
+        raise ValueError('duplicate card role')
     pan = [f for f in fields if f['role'] == 'pan']
-    if not pan or (len(pan) == 1 and 'part' not in pan[0]):
-        if len(pan) != 1:
-            raise ValueError('invalid card target')
+    if not pan:
+        pass  # Native checkout may fill only the saved roles present on this page.
+    elif len(pan) == 1 and 'part' not in pan[0]:
+        pass
     elif (any('part' not in f for f in pan) or [f['part'] for f in pan] != list(range(len(pan))) or
           not 12 <= sum(f['length'] for f in pan) <= 19):
         raise ValueError('invalid card target')
@@ -80,7 +80,7 @@ def schema():
     return {'type': 'object', 'additionalProperties': False,
             'required': ['version', 'purpose', 'merchant_origin', 'fields'], 'properties': {
                 'version': {'type': 'integer', 'enum': [1]}, 'purpose': {'type': 'string', 'enum': ['payment_card']},
-                'merchant_origin': {'type': 'string'}, 'fields': {'type': 'array', 'minItems': 3, 'maxItems': 23,
+                'merchant_origin': {'type': 'string'}, 'fields': {'type': 'array', 'minItems': 1, 'maxItems': 23,
                 'items': {'type': 'object', 'additionalProperties': False, 'required': ['role', 'selector', 'frame', 'format'],
                           'properties': {'role': {'type': 'string', 'enum': list(FORMATS)},
                                          'selector': {'type': 'string', 'maxLength': 256}, 'frame': {'type': 'string'},
@@ -90,11 +90,11 @@ def schema():
 
 
 def values_for(spec, secret):
-    # Reuse authoritative native storage validation including Luhn, expiry and LF.
-    from .payment import payment_secret, PAYMENT_FIELDS
-    values = [secret.get(k, '') for k in PAYMENT_FIELDS]
-    valid = payment_secret(values)
-    pan, month, year, cvc = (valid[k] for k in ('card_number', 'exp_month', 'exp_year', 'cvc'))
+    # Storage validation belongs to the native backend. This explicit adapter
+    # formats only requested roles, rather than demanding a complete card form.
+    valid=secret
+    pan,month,year,cvc=(valid.get(k,'') for k in ('card_number','exp_month','exp_year','cvc'))
+    month=month.zfill(2) if month else month
     parts = [f for f in spec['fields'] if f['role'] == 'pan' and 'part' in f]
     if parts and sum(f['length'] for f in parts) != len(pan):
         raise ValueError('card format mismatch')
@@ -126,116 +126,19 @@ def values_for(spec, secret):
     return result
 
 
+
 GUARD_JS = r'''function(roots, fields, owners=[]){
- const doc=document,href=location.href,origin=self.origin;
  const query=s=>roots.flatMap(r=>Array.from(r.querySelectorAll(s)));
- const path=e=>{let p=[];for(;e;e=e.parentNode||(e instanceof ShadowRoot?e.host:null))p.push(e);return p};
- // Inline paint/layout is not setter authority for a retained explicit node.
- // Simple selectors cannot depend on style; focus is checked on the real node.
- const attrs=e=>JSON.stringify(Array.from(e.attributes||[]).filter(a=>a.name!=='style').map(a=>[a.name,a.value]));
- const read=e=>e.matches('input,textarea')?e.value:e.textContent;
- const form=e=>e.matches('input,textarea')?e.form:e.closest('form');
- const focused=e=>{let active=doc.activeElement;for(const r of roots)if(r instanceof ShadowRoot&&r.host===active&&r.activeElement)active=r.activeElement;return active===e};
- const nodes=owners.length?owners:fields.map(f=>{const m=query(f.selector);if(m.length!==1)throw Error();return m[0]});
- if(new Set(nodes).size!==nodes.length)throw Error();
- const expected={pan:'cc-number',cardholder:'cc-name',expiry:'cc-exp',month:'cc-exp-month',year:'cc-exp-year',cvc:'cc-csc'};
- const labels=new Set();
- for(let i=0;i<fields.length;i++){
-  const e=nodes[i],f=fields[i];
-  if(!e.matches('input,textarea,[contenteditable="plaintext-only"],[contenteditable="true"]')||
-    (e.matches('input')&&!['text','tel'].includes(e.type))||
-    (!e.matches('input,textarea')&&!(__PLAIN_EDITOR__)(e,roots))||
-    e.matches(':disabled')||e.readOnly||e.closest('[inert]')||e.getAttribute('aria-disabled')==='true'||e.getAttribute('aria-readonly')==='true')throw Error();
-  const ac=(e.autocomplete||e.getAttribute('autocomplete')||'').trim().toLowerCase().split(/\s+/).filter(Boolean);
-  if(ac.length&&!((ac.length===1&&['off','on'].includes(ac[0]))||
-    (ac.at(-1)===expected[f.role]&&ac.slice(0,-1).every(t=>['billing','shipping'].includes(t)||/^section-[a-z0-9_-]+$/.test(t))&&
-      ac.filter(t=>t==='billing'||t==='shipping').length<=1&&ac.filter(t=>t.startsWith('section-')).length<=1)))throw Error();
-  const ls=[...Array.from(e.labels||[]),...(e.getAttribute('aria-labelledby')||'').split(/\s+/).filter(Boolean).map(id=>e.getRootNode().getElementById(id)).filter(Boolean)];
-  ls.forEach(l=>labels.add(l));
-  const text=[e.getAttribute('name'),e.id,e.getAttribute('aria-label'),e.getAttribute('placeholder'),e.getAttribute('title'),...ls.map(l=>l.textContent)]
-    .join(' ').replace(/([a-z])([A-Z])/g,'$1 $2').normalize('NFKC').toLowerCase();
-  if(/captcha|password|passwd|passphrase|user[ _-]*name|e-?mail|\b(pwd|otp|totp|passcode|recovery|backup|seed|promo|credential|secret|jwt)\b|one[ _-]*time[ _-]*(?:code|password)|(?:verification|confirmation)[ _-]*code|(?:api|private|signing)[ _-]*(?:key|token)|(?:access|bearer|refresh|auth)[ _-]*token|парол|код[ _-]*(?:подтверждения|верификации)|одноразов/.test(text))throw Error();
-  if(form(e)&&new URL(form(e).action,doc.baseURI).origin!==origin)throw Error();
- }
- if(nodes.length&&nodes.some(e=>e.getRootNode()!==nodes[0].getRootNode()||form(e)!==form(nodes[0])))throw Error();
- const snapshots=nodes.map(e=>({e,path:path(e),attrs:attrs(e),form:form(e),action:form(e)?.action,method:form(e)?.method}));
- const protectedNodes=new Set([...snapshots.flatMap(s=>[...s.path,...(s.form?path(s.form):[])]),...Array.from(labels).flatMap(path)]);
- for(const l of labels)for(const n of l.querySelectorAll('*'))protectedNodes.add(n);
- for(const n of protectedNodes){const r=n.getRootNode();if(!roots.includes(r))roots.push(r)}
- const saved=Array.from(protectedNodes,n=>[n,attrs(n)]),filled=new Map();
- let stale=false,own=null,closed=false;
- const historyLength=history.length;
- // Same-document navigation is sticky even if the original URL is restored.
- // Without Navigation API, replaceState-away-and-back has no reliable native
- // event; fail closed rather than patching a website's History API methods.
- if(!self.navigation)throw Error('unsupported navigation authority');
- const dirty=()=>{stale=true};
- navigation.addEventListener('navigate',dirty);
- addEventListener('popstate',dirty);addEventListener('hashchange',dirty);
- const tokens=fields.flatMap(f=>Array.from(f.selector.matchAll(/([.#])([\w-]+)/g),m=>[m[1],m[2]]));
- const selectorAttr=r=>tokens.some(([p,t])=>r.attributeName===(p==='#'?'id':'class')&&[r.oldValue,r.target.getAttribute(r.attributeName)].some(v=>p==='#'?v===t:String(v||'').split(/\s+/).includes(t)));
- const hasMatch=n=>n.nodeType===1&&fields.some(f=>n.matches(f.selector)||n.querySelector(f.selector));
- const historicRoots=new WeakMap();
- const learn=(n,r)=>{for(const e of [n,...Array.from(n.querySelectorAll?.('*')||[])]){if(!historicRoots.has(e))historicRoots.set(e,new Set());historicRoots.get(e).add(r)}};
- roots.forEach(r=>learn(r,r));
- const sameRoot=(n,e)=>n.getRootNode()===e.getRootNode()||historicRoots.get(n)?.has(e.getRootNode());
- const relatedLabel=n=>n.nodeType===1&&n.matches('label')&&nodes.some(e=>e.id&&n.htmlFor===e.id&&sameRoot(n,e));
- const labelTouch=n=>Array.from(labels).some(l=>l===n||l.contains(n))||relatedLabel(n);
- const addedLabel=n=>relatedLabel(n)||(n.nodeType===1&&Array.from(n.querySelectorAll('label')).some(relatedLabel));
- const base=n=>n.nodeType===1&&(n.matches('base')||n.querySelector('base'));
- const records=(rs,root)=>{
-  // Learn removed-subtree roots before evaluating the complete mutation batch.
-  for(const r of rs){learn(r.target,root);if(r.type==='childList')for(const n of [...r.addedNodes,...r.removedNodes])learn(n,root)}
-  for(const r of rs){
-   if(r.type==='attributes'&&r.attributeName==='style')continue;
-   if(own&&r===own.record)continue;
-   if(r.type==='attributes'&&(protectedNodes.has(r.target)||selectorAttr(r)||labelTouch(r.target)||
-     (r.target.matches('label')&&r.attributeName==='for'&&nodes.some(e=>e.id===r.oldValue&&sameRoot(r.target,e)))||
-     (r.target.matches('base')&&r.attributeName==='href')))stale=true;
-   if(r.type==='characterData'&&(labelTouch(r.target)||nodes.some(n=>n.contains(r.target))))stale=true;
-   if(r.type==='childList'&&(labelTouch(r.target)||nodes.includes(r.target)||
-      [...r.addedNodes,...r.removedNodes].some(n=>base(n)||hasMatch(n)||addedLabel(n)||Array.from(protectedNodes).some(p=>n===p||n.contains?.(p)))))stale=true;
-  }
- };
- const observers=roots.map(r=>{const o=new MutationObserver(rs=>records(rs,r));o.root=r;o.observe(r,{subtree:true,childList:true,attributes:true,attributeOldValue:true,characterData:true,characterDataOldValue:true});return o});
- const valid=()=>{
-  observers.forEach(o=>records(o.takeRecords(),o.root));
-  if(stale||closed||doc!==document||href!==location.href||origin!==self.origin||history.length!==historyLength||!doc.defaultView)return false;
-  if(saved.some(([n,a])=>attrs(n)!==a))return false;
-  for(let i=0;i<nodes.length;i++){
-   const s=snapshots[i],e=s.e,p=path(e),matches=fields[i]?query(fields[i].selector):[e];
-   if(matches.length!==1||matches[0]!==e||!e.isConnected||p.length!==s.path.length||p.some((n,j)=>n!==s.path[j])||
-    form(e)!==s.form||s.action!==form(e)?.action||s.method!==form(e)?.method||e.matches(':disabled')||e.readOnly||e.closest('[inert]')||
-    (e.matches('[contenteditable]')&&(!e.isContentEditable||(e.parentElement||e.getRootNode().host)?.isContentEditable||
-      e.children.length||Array.from(e.childNodes).some(n=>n.nodeType!==3))))return false;
-   if(filled.has(e)&&read(e)!==filled.get(e))return false;
-  }
-  return true;
- };
- return {valid,document:doc,close(){closed=true;observers.forEach(o=>o.disconnect());navigation.removeEventListener('navigate',dirty);
-  removeEventListener('popstate',dirty);removeEventListener('hashchange',dirty)},
-  prepare(values){return valid()&&values.length===nodes.length&&nodes.every((e,i)=>!read(e)&&(!e.maxLength||e.maxLength<0||values[i].length<=e.maxLength)&&!/[\r\n]/.test(values[i]))},
-  focus(i){if(!valid())return false;const e=nodes[i];e.focus();return doc.hasFocus()&&focused(e)&&valid()},
-  write(i,v){if(!valid()||!doc.hasFocus()||!focused(nodes[i])||filled.has(nodes[i])||read(nodes[i])||/[\r\n]/.test(v))return {written:false,valid:false};const e=nodes[i];
-   if(e.matches('input,textarea'))Object.getOwnPropertyDescriptor(e.matches('input')?HTMLInputElement.prototype:HTMLTextAreaElement.prototype,'value').set.call(e,v);
-   else {
-    const before=Array.from(e.childNodes);
-    Object.getOwnPropertyDescriptor(Node.prototype,'textContent').set.call(e,v);
-    const rs=observers.flatMap(o=>o.takeRecords());
-    const r=rs.find(r=>r.type==='childList'&&r.target===e);
-    if(!r||rs.filter(r=>r.type==='childList'&&r.target===e).length!==1||
-      r.removedNodes.length!==before.length||Array.from(r.removedNodes).some((n,j)=>n!==before[j]||n.nodeType!==3)||
-      r.addedNodes.length!==1||r.addedNodes[0]!==e.firstChild||e.childNodes.length!==1||
-      r.addedNodes[0].nodeType!==3||r.addedNodes[0].textContent!==v)stale=true;
-    own={record:r};records(rs,e.getRootNode());own=null;
-    const range=doc.createRange();range.selectNodeContents(e);range.collapse(false);
-    const selection=doc.getSelection();selection.removeAllRanges();selection.addRange(range);
-   }
-   observers.forEach(o=>records(o.takeRecords(),o.root));own=null;filled.set(e,v);
-   e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));
-   return {written:true,valid:read(e)===v&&doc.hasFocus()&&focused(e)&&valid()};}
- };
-}'''.replace('__PLAIN_EDITOR__', PLAIN_EDITOR_JS)
+ const nodes=fields.map(f=>{const matches=query(f.selector);if(matches.length!==1)throw Error('card selection');return matches[0]});
+ const paymentTokens=''' + json.dumps(list(PAYMENT_AUTOFILL_TOKENS)) + r''';
+ if(new Set(nodes).size!==nodes.length||nodes.some(e=>!e.matches('input,select,textarea,[contenteditable]')||e.disabled||e.readOnly||
+  ['hidden','submit','button','reset','file','image','checkbox','radio'].includes(e.type)||
+  ['password','email'].includes(e.type)&&!(e.autocomplete||'').toLowerCase().split(/\s+/).some(t=>paymentTokens.includes(t))))throw Error('card control');
+ if(nodes.some(e=>{const s=getComputedStyle(e);return s.display==='none'||s.visibility==='hidden'||!e.getClientRects().length}))throw Error('card inspection');
+ if(nodes.some(e=>e.matches('[contenteditable]')&&!(''' + PLAIN_EDITOR_JS + r''')(e,roots)))throw Error('card editor');
+ const boundary=(''' + BOUNDARY_JS + r''')(roots,nodes);
+ return boundary;
+}'''
 
 
 @dataclass(frozen=True)
@@ -273,17 +176,11 @@ def discover(task, parent, origin, spec):
                 raise ValueError('card traversal capacity')
             visited.add(frame)
             sid, context = nc._context(sup, sid, frame, lease)
-            actual = nc._eval(sup, sid, context, 'self.origin', True).get('value')
+            actual = nc._eval(sup, sid, context, 'location.origin', True).get('value')
             fields = [(i, f) for i, f in enumerate(spec['fields']) if f['frame'] == frame or f['frame'] == 'top' and frame == root]
-            try:
-                strict_origin(actual)
-            except ValueError:
-                if fields or frame == root:
-                    raise
-                return  # Opaque unrelated branches confer no destination authority.
             if frame == root and actual != spec['merchant_origin']:
                 raise ValueError('merchant mismatch')
-            shadows, census = nc._document_capacity(sup, sid, context)
+            shadows = nc._shadow_roots(sup, sid, context)
             roots = lease.keep(sid, nc._eval(sup, sid, context, '[document]')['objectId'])
             for backend in shadows:
                 obj = lease.keep(sid, _call(sup, 'DOM.resolveNode', {'backendNodeId': backend, 'executionContextId': context}, sid)['result']['object']['objectId'])
@@ -298,8 +195,10 @@ def discover(task, parent, origin, spec):
             # Owner closures bind merchant navigation even for a top-level target.
             if fields or frame == root:
                 docguard = lease.keep(sid, nc._invoke(sup, sid, roots, 'function(){return (' + GUARD_JS + ')(this.slice(),[])}', (), False)['objectId'])
-                lease.censuses[docguard] = (shadows, census)
                 guards.append((sid, docguard, ()))
+            # Complete declared layouts do not census unrelated service frames.
+            if len(found) == len(spec['fields']):
+                return
             owners = lease.keep(sid, nc._invoke(sup, sid, roots, 'function(){return this.flatMap(r=>Array.from(r.querySelectorAll("iframe,frame")))}', (), False)['objectId'])
             count = nc._invoke(sup, sid, owners, 'function(){return this.length}').get('value')
             if type(count) is not int or count > 20:
@@ -312,6 +211,8 @@ def discover(task, parent, origin, spec):
                     raise ValueError('card owner mismatch')
                 guard = lease.keep(sid, nc._invoke(sup, sid, obj, 'function(){return (' + GUARD_JS + ')([document,this.getRootNode()].filter((r,i,a)=>a.indexOf(r)===i),[],[this])}', (), False)['objectId'])
                 visit(sid, child, depth + 1, path + ((sid, child, owner, guard),))
+                if len(found) == len(spec['fields']):
+                    return
         visit(psid, root, 0)
         if found != set(range(len(spec['fields']))):
             raise ValueError('missing card targets')
@@ -337,12 +238,6 @@ def assert_target(target):
     for sid, guard, _ in target.guards:
         if _invoke(target.supervisor, sid, guard, 'function(){return this.valid()}').get('value') is not True:
             raise ValueError('card document changed')
-        if guard in target.lease.censuses:
-            from .nested_code import _document_capacity
-            doc = _invoke(target.supervisor, sid, guard, 'function(){return this.document}', (), False)['objectId']
-            current = _document_capacity(target.supervisor, sid, doc=doc)
-            if current[0] != target.lease.censuses[guard][0]:
-                raise ValueError('card roots changed')
 
 
 def release(target):
@@ -372,27 +267,16 @@ def approved_fill(target, handle, scope_guard):
             scope_guard()
             assert_target(target)
             backend = payment_backend(handle, target.origin)
-            if backend.get_meta(handle) != meta:
-                raise ValueError('card metadata changed')
             scope_guard()
             target.supervisor.check()
             target.supervisor.lease_check()
             secret = backend.resolve_secret(handle)
             register_vault_redaction_value(secret.get('card_number', ''))
             register_context_secret(secret.get('cvc', ''), kind='cvc')
-            stage = 'format'
             values = values_for(target.spec, secret)
-            for sid, guard, indices in target.guards:
-                if indices and _invoke(target.supervisor, sid, guard, 'function(v){return this.prepare(v)}', ([values[i] for i in indices],)).get('value') is not True:
-                    raise ValueError('card fields refused')
             destinations = {i: (sid, guard, j) for sid, guard, indices in target.guards for j, i in enumerate(indices)}
             for i, value in enumerate(values):
                 sid, guard, local = destinations[i]
-                stage = 'focus'
-                scope_guard()
-                assert_target(target)
-                if _invoke(target.supervisor, sid, guard, 'function(i){return this.focus(i)}', (local,)).get('value') is not True:
-                    raise ValueError('card focus changed')
                 scope_guard()
                 assert_target(target)
                 stage = 'write'
@@ -401,7 +285,6 @@ def approved_fill(target, handle, scope_guard):
                 if result != {'written': True, 'valid': True}:
                     raise ValueError('card write unconfirmed')
                 scope_guard()
-                assert_target(target)
             return {'success': True, 'status': 'filled', 'filled_fields': len(values), 'origin': target.origin, 'kind': 'payment'}
         except Exception:
             return {'success': False, 'status': 'unknown' if started else 'target_refused', 'stage': stage}

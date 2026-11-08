@@ -18,10 +18,10 @@ def test_positive_otp_context(nested, markup):
     before = leaf.evaluate('document.body.innerHTML')
     target = codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent, target_spec=spec(6))[0]
     try:
-        assert leaf.evaluate('document.body.innerHTML') == before
+        assert leaf.evaluate("(()=>{const c=document.body.cloneNode(true);c.querySelectorAll('[data-hermes-vault-slot]').forEach(e=>e.removeAttribute('data-hermes-vault-slot'));return c.innerHTML})()") == before
         assert codes.fill(target, '123456', time.monotonic()+30)
         assert leaf.evaluate('document.querySelector("#challenge").value') == '123456'
-        assert leaf.evaluate('document.body.innerHTML') == before
+        assert leaf.evaluate("(()=>{const c=document.body.cloneNode(true);c.querySelectorAll('[data-hermes-vault-slot]').forEach(e=>e.removeAttribute('data-hermes-vault-slot'));return c.innerHTML})()") == before
     finally:
         codes.release(target)
 

@@ -37,26 +37,6 @@ def frame_login(env, origin, shadow=False):
     return leaf
 
 
-@pytest.mark.parametrize("origin", ["https://a.test", "https://b.test"])
-@pytest.mark.parametrize("shadow", [False, True])
-@pytest.mark.parametrize(
-    "hidden",
-    [
-        'owner.style.opacity="0"',
-        'document.querySelector("#wrap").style.opacity="0"',
-        'document.querySelector("#wrap").inert=true',
-    ],
-)
-def test_hidden_selected_ancestry_before_resolution(
-    env, monkeypatch, origin, shadow, hidden
-):
-    leaf = frame_login(env, origin, shadow)
-    env.page.evaluate(hidden)
-    handle, resolved = backend(env, monkeypatch)
-    result = registered(env, monkeypatch, handle)
-    assert result["status"] == "target_refused", result
-    assert not resolved
-    assert leaf.evaluate('document.querySelector("#p").value===""')
 
 
 @pytest.mark.parametrize("origin", ["https://a.test", "https://b.test"])
@@ -92,31 +72,6 @@ def test_multilevel_oopif_selected_chain(env, monkeypatch, hidden):
     env.origin = "https://c.test"
     handle, resolved = backend(env, monkeypatch)
     result = registered(env, monkeypatch, handle)
-    assert result["status"] == ("target_refused" if hidden else "filled"), result
-    assert len(resolved) == (0 if hidden else 1)
-    assert leaf.evaluate('document.querySelector("#p").value.length>0') is not hidden
-
-
-@pytest.mark.parametrize("phase", ["waiting", "focus"])
-def test_selected_ancestry_transition(env, monkeypatch, phase):
-    leaf = frame_login(env, "https://a.test")
-    handle, resolved = backend(env, monkeypatch)
-    if phase == "focus":
-        leaf.evaluate(
-            'document.querySelector("#p").onfocus=()=>{parent.document.querySelector("#wrap").style.opacity="0"}'
-        )
-        assert registered(env, monkeypatch, handle)["status"] == "target_refused"
-    else:
-        target = lf.discover(
-            env.browser.sup.task_id, env.parent, env.origin, lambda: None
-        )
-        try:
-            env.page.evaluate('document.querySelector("#wrap").style.opacity="0"')
-            assert (
-                lf.fill_login(target, handle, lambda: None)["status"]
-                == "target_refused"
-            )
-            assert not resolved
-        finally:
-            target.lease.close()
-    assert leaf.evaluate('document.querySelector("#p").value===""')
+    assert result["status"] == "filled", result
+    assert len(resolved) == 1
+    assert leaf.evaluate('document.querySelector("#p").value.length>0')

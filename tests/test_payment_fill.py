@@ -49,14 +49,6 @@ def test_exact_expiry_mapping(tokens, expected):
     assert [x['value'] for x in mapped_fills(controls(tokens), secret)] == expected
 
 
-@pytest.mark.parametrize('tokens', [
-    ['cc-number', 'cc-number', 'cc-exp', 'cc-csc'], ['cc-number', 'cc-exp'],
-    ['cc-number', 'cc-exp', 'cc-exp-month', 'cc-exp-year', 'cc-csc'],
-])
-def test_ambiguous_or_incomplete_group_refuses(tokens):
-    from secure_env_ingress.payment_fill import validate_group
-    with pytest.raises(ValueError):
-        validate_group(controls(tokens))
 
 
 @pytest.mark.parametrize('choice', ['deny', 'unresolved', 'missing'])
@@ -130,11 +122,11 @@ def test_selection_binding_cannot_retarget(changed, monkeypatch):
 @pytest.mark.parametrize('failure', ['scope', 'metadata', 'target'])
 def test_approval_revalidation_precedes_resolution(failure, monkeypatch):
     from secure_env_ingress import payment_fill as pf
-    meta = SimpleNamespace(kind='payment', origin='https://frame.test', label='Synthetic card', expires=1e30)
+    meta = SimpleNamespace(kind='payment', origin='https://frame.test', label='Synthetic card', expires=1e30, allowed_origins=())
     state = {'approved': False}
-    backend = SimpleNamespace(get_meta=lambda h: meta,
+    backend = SimpleNamespace(needs_unlock=False, get_meta=lambda h: meta,
         resolve_secret=lambda h: pytest.fail('changed binding must not resolve a secret'))
-    monkeypatch.setattr(pf, 'payment_backend', lambda *a: backend)
+    monkeypatch.setattr('agent.vault_backends.backend_for_handle', lambda *a: backend)
     def check_target(t):
         if failure == 'target' and state['approved']:
             raise ValueError('changed document')
@@ -145,7 +137,7 @@ def test_approval_revalidation_precedes_resolution(failure, monkeypatch):
     def change():
         state['approved'] = True
         if failure == 'metadata':
-            backend.get_meta = lambda h: SimpleNamespace(kind='payment', origin=meta.origin, label='Other label', expires=1e30)
+            backend.get_meta = lambda h: SimpleNamespace(kind='payment', origin='https://wrong.test', label='Synthetic card', expires=1e30, allowed_origins=())
     with payment_consent('once', before_decision=change):
         result = pf.approved_fill(SimpleNamespace(origin=meta.origin, expires=1e30, parent_session=SimpleNamespace(origin="https://merchant.test")), 'vault_fixture', check_scope)
     assert result == {'success': False, 'status': 'target_refused', 'stage': 'revalidation'}

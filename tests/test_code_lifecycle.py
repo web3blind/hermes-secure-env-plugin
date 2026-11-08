@@ -348,8 +348,12 @@ def test_dispatcher_cancel_selected_worker_after_loop_closed(tmp_path, monkeypat
             assert ready.wait(5)
             pending = asyncio.all_tasks(loop)
             assert len(pending) == 2  # Outer handler AND inner to_thread choice.
-            for task in pending:
-                loop.call_soon_threadsafe(task.cancel)
+            # One loop callback: cancelling the outer handler can close its
+            # loop before the test thread schedules a second cancellation.
+            def cancel_pending():
+                for task in pending:
+                    task.cancel()
+            loop.call_soon_threadsafe(cancel_pending)
             assert loop_closed.wait(5)
             thread.join(5)
             assert loop.is_closed() and not failures

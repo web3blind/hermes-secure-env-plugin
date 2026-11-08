@@ -110,4 +110,3 @@ def test_read_settings_optional_only(tmp_path, monkeypatch):
         assert get_hermes_home() == tmp_path
     finally:
         manager.unload()
-

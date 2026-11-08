@@ -88,7 +88,7 @@ def test_registered_exact_https(nested, tmp_path, monkeypatch, caplog, pytestcon
                 from secure_env_ingress.nested_code import _invoke
                 retained = next(iter(runtimes[-1]._targets.values()))
                 _invoke(retained.supervisor, retained.leaf_sid, retained.leaf_guard,
-                    'function(){const e=this.document.querySelector("input");e.id="other";e.id="challenge"}')
+                    'function(){const e=this.document.querySelector("input");e.removeAttribute("data-hermes-vault-slot")}')
             if case == 'cancel':
                 await asyncio.to_thread(runtimes[-1].cancel, ('telegram', '7'))
                 from secure_env_ingress.server import HTTPError

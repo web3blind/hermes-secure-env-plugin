@@ -5,7 +5,6 @@ attachment and disposal responsibility after the caller's finite deadline.
 """
 from concurrent.futures import Future, TimeoutError as FutureTimeout
 from contextlib import contextmanager
-from copy import deepcopy
 from contextvars import ContextVar, copy_context
 import inspect
 import threading
@@ -90,7 +89,6 @@ class BoundCDP:
         self.cancelled = _cancelled.get()
         # Abandoned reads retain their slot until the original raw call drains.
         # No executor queue, replacement pool, or unbounded shutdown wait.
-        self._proof_slots = threading.BoundedSemaphore(4)
 
     def valid(self):
         try:
@@ -196,84 +194,6 @@ class BoundCDP:
         except Exception:
             pass  # Never cancel the exact original-handle cleanup.
 
-    def read_batch(self, requests):
-        """Only retained, value-free nested proof reads; replies stay ordered.
-
-        One finite barrier owns at most four daemon workers. Each raw call still
-        uses _request's original wire-time identity/cancellation/TTL fences.
-        Timed-out workers cannot dispatch more reads and retain their slots until
-        drain; cleanup remains on the independent original-handle path.
-        """
-        requests = deepcopy(list(requests))
-        # A guard verdict and its subsequent document census are dependent.
-        # Keep batches homogeneous so callers cannot reorder those phases.
-        if len({method for method, _, _ in requests}) > 1:
-            raise ValueError('mixed proof phases')
-        for method, params, sid in requests:
-            allowed = (
-                method == 'DOM.getFrameOwner' and set(params) == {'frameId'}
-                and isinstance(params['frameId'], str)
-                or method == 'DOM.describeNode' and set(params) == {'objectId', 'depth', 'pierce'}
-                and isinstance(params['objectId'], str) and params['depth'] == 128
-                and params['pierce'] is False
-                or method == 'Runtime.callFunctionOn'
-                and set(params) == {'objectId', 'functionDeclaration', 'arguments', 'returnByValue'}
-                and isinstance(params['objectId'], str)
-                and params['functionDeclaration'] == GUARD_VALIDATION
-                and params['returnByValue'] is True and isinstance(params['arguments'], list)
-                and all(isinstance(arg, dict) and set(arg) == {'objectId'}
-                        and isinstance(arg['objectId'], str) for arg in params['arguments']))
-            if not allowed or not isinstance(sid, str) or not sid:
-                raise ValueError('inadmissible proof read')
-        self.check()
-        if not requests:
-            return []
-        count = min(4, len(requests))
-        reserved = 0
-        for _ in range(count):
-            if not self._proof_slots.acquire(blocking=False):
-                for _ in range(reserved):
-                    self._proof_slots.release()
-                raise ValueError('proof reads still draining')
-            reserved += 1
-        stopped, lock = threading.Event(), threading.Lock()
-        deadline = time.monotonic() + CALL_TIMEOUT
-        replies, cursor = [None] * len(requests), iter(enumerate(requests))
-        def run():
-            try:
-                while True:
-                    with lock:
-                        if stopped.is_set():
-                            return
-                        item = next(cursor, None)
-                    if item is None:
-                        return
-                    index, (method, params, sid) = item
-                    replies[index] = self._request(method, params, sid,
-                        stopped=stopped, deadline=deadline)
-            except BaseException:
-                stopped.set()
-                raise
-            finally:
-                self._proof_slots.release()
-        futures = []
-        try:
-            for _ in range(count):
-                futures.append(self._worker(run))
-                reserved -= 1
-            for future in futures:
-                future.result(max(0, deadline - time.monotonic()))
-            self.check()
-            if any(reply is None for reply in replies):
-                raise ValueError('incomplete proof reads')
-            return replies
-        except FutureTimeout:
-            raise TimeoutError('parent command timeout') from None
-        finally:
-            stopped.set()
-            for _ in range(reserved):
-                self._proof_slots.release()
-
     def call(self, method, params=None, sid=None):
         acquisition = _Acquisition(self) if method == 'Target.attachToTarget' else None
         cleanup = method in ('Target.detachFromTarget', 'Runtime.releaseObject')
@@ -302,7 +222,6 @@ class BoundCDP:
             raise
 
 
-GUARD_VALIDATION = 'function(...others){return this.valid()&&others.every(g=>g.document===this.document&&g.valid())}'
 _fill_diagnostic = ContextVar('secure_env_fill_diagnostic', default=None)
 
 @contextmanager

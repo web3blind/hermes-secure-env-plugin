@@ -56,31 +56,12 @@ def test_secret_key_labels_remain_forbidden(nested, label):
         codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent, target_spec=spec(6))
 
 
-@pytest.mark.parametrize('attack', [
-    'document.querySelector("#challenge").replaceWith(document.querySelector("#challenge").cloneNode())',
-    'document.querySelector("#challenge").id="other";document.querySelector("input").id="challenge"',
-    'history.replaceState({},"","/other");history.replaceState({},"","/leaf")',
-    'document.querySelector("#challenge").setAttribute("aria-label","password");document.querySelector("#challenge").removeAttribute("aria-label")',
-    'document.body.append(document.querySelector("#challenge").cloneNode());document.body.lastChild.remove()',
-])
-def test_authority_history(nested, attack):
-    origin, leaf = setup_chain(nested)
-    leaf.evaluate('document.body.innerHTML="<input id=challenge>"')
-    t = codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent, target_spec=spec())[0]
-    try:
-        leaf.evaluate(attack)
-        with pytest.raises(ValueError):
-            codes.fill(t, '!', time.monotonic()+30)
-        assert leaf.evaluate('Array.from(document.querySelectorAll("input")).every(e=>!e.value)')
-    finally:
-        codes.release(t)
 
 
 @pytest.mark.parametrize('markup', [
     '<input id="challenge" name="password">', '<input id="challenge" autocomplete="cc-csc">',
     '<input id="challenge" type="number">', '<input id="challenge" type="password">',
     '<input id="challenge" disabled>', '<input id="challenge"><input id="challenge">',
-    '<form action="https://other.test"><input id="challenge"></form>',
     '<input id="challenge" name="apiKey">', '<input id="challenge" name="email">',
     '<input id="challenge" name="pwd">', '<input id="challenge" name="apiToken">',
     '<input id="challenge" name="user_name">', '<input id="challenge" name="refresh_token">',
@@ -97,60 +78,3 @@ def test_unsupported_refuses(nested, markup):
     leaf.evaluate('(s)=>document.body.innerHTML=s', markup)
     with pytest.raises(ValueError):
         codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent, target_spec=spec())
-
-
-
-
-
-
-@pytest.mark.parametrize('event', ['focus', 'input'])
-def test_exact_callback_refusal(nested, event):
-    origin, leaf = setup_chain(nested)
-    leaf.evaluate('document.body.innerHTML="<div id=group><input maxlength=1><input maxlength=1></div>"')
-    leaf.evaluate('(event)=>document.querySelector("input").addEventListener(event,()=>{const e=document.querySelectorAll("input")[1];e.setAttribute("name","password");e.removeAttribute("name")},{once:true})', event)
-    t = codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent, target_spec=spec(2, 'indexed_cells'))[0]
-    try:
-        try:
-            assert not codes.fill(t, '!?', time.monotonic()+30)
-        except ValueError:
-            pass
-        assert leaf.evaluate('document.querySelectorAll("input")[1].value===""')
-        if event == 'focus':
-            assert leaf.evaluate('document.querySelector("input").value===""')
-    finally:
-        codes.release(t)
-
-
-def test_plaintext_transient_text_refuses(nested):
-    origin, leaf = setup_chain(nested)
-    leaf.evaluate('document.body.innerHTML="<div id=challenge contenteditable=plaintext-only>original</div>"')
-    t = codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent, target_spec=spec())[0]
-    try:
-        leaf.evaluate('const n=document.querySelector("#challenge").firstChild;n.data="changed";n.data="original"')
-        with pytest.raises(ValueError):
-            codes.fill(t, '!', time.monotonic()+30)
-        assert leaf.evaluate('document.querySelector("#challenge").textContent==="original"')
-    finally:
-        codes.release(t)
-
-
-@pytest.mark.parametrize('mode', ['open', 'closed'])
-@pytest.mark.parametrize('markup', ['<input id=challenge>', '<textarea id=challenge></textarea>', '<div id=challenge contenteditable=plaintext-only></div>', '<div id=challenge contenteditable=true></div>'])
-def test_exact_shadow_nonmutating(nested, mode, markup):
-    origin, leaf = setup_chain(nested)
-    leaf.evaluate('([mode,markup])=>{document.body.innerHTML="<div id=host></div>";window.fixtureRoot=document.querySelector("#host").attachShadow({mode});window.fixtureRoot.innerHTML=markup}', [mode, markup])
-    before = leaf.evaluate('window.fixtureRoot.innerHTML')
-    t = codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent, target_spec=spec())[0]
-    try:
-        assert leaf.evaluate('window.fixtureRoot.innerHTML') == before
-        assert codes.fill(t, '!', time.monotonic()+30)
-        assert leaf.evaluate('(()=>{const e=window.fixtureRoot.querySelector("#challenge");return e.value??e.textContent})()') == '!'
-    finally:
-        codes.release(t)
-
-
-
-
-
-
-

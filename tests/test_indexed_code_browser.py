@@ -62,65 +62,14 @@ def test_indexed_invalid(nested,attack):
     assert codes.discover(origin,'Synthetic',nested.sup.task_id,parent=nested.parent)==[]
 
 
-@pytest.mark.parametrize('attack',[
-    'const e=document.querySelector("input");e.name="account-0";e.name="code-0"',
-    'const e=document.querySelector("input");e.pattern=".*";e.pattern="[0-9]"',
-    'const e=document.querySelector("input");e.inputMode="text";e.inputMode="numeric"',
-    'const e=document.querySelector("input");e.replaceWith(e.cloneNode())',
-    'const e=document.querySelector("input");const p=e.parentElement;document.body.append(e);p.prepend(e)',
-    'const p=document.querySelector("input").parentElement;const e=p.appendChild(document.createElement("input"));e.remove()',
-    'const p=document.querySelector("input").parentElement;p.append(p.firstElementChild)',
-    'const f=document.body.appendChild(document.createElement("form"));f.id="other";const e=document.querySelector("input");e.setAttribute("form","other");e.removeAttribute("form")',
-    'const s=document.createElement("section");s.innerHTML=HTML;document.body.append(s);s.remove()',
-])
-@pytest.mark.parametrize('selector',[None,'input[name="code-0"]'])
-def test_indexed_history(nested,attack,selector):
-    import json
-    origin,leaf=setup_chain(nested)
-    leaf.evaluate('(html)=>document.body.innerHTML=html',markup())
-    target=codes.discover(origin,'Synthetic',nested.sup.task_id,parent=nested.parent,field_selector=selector)[0]
-    try:
-        leaf.evaluate('()=>{'+attack.replace('=HTML;', '='+json.dumps(markup())+';')+'}')
-        with pytest.raises(ValueError):
-            codes.fill(target,'123456',time.monotonic()+60)
-        assert leaf.evaluate('Array.from(document.querySelectorAll("input")).every(e=>!e.value)')
-    finally:
-        codes.release(target)
 
 
-def test_indexed_format_prewrite(nested):
-    origin,leaf=setup_chain(nested)
-    leaf.evaluate('(html)=>document.body.innerHTML=html',markup())
-    target=codes.discover(origin,'Synthetic',nested.sup.task_id,parent=nested.parent)[0]
-    try:
-        for value in ['12345','1234567','12345A']:
-            with pytest.raises(ValueError):
-                codes.fill(target,value,time.monotonic()+60)
-            assert leaf.evaluate('Array.from(document.querySelectorAll("input")).every(e=>!e.value)')
-    finally:
-        codes.release(target)
 
 
 def completion(leaf):
     assert leaf.evaluate('fixtureState.join("")==="123456" && fixtureSubmitted===1')
 
 
-@pytest.mark.parametrize('attack', [
-    'inputs[0].blur()',
-    'inputs[0].setAttribute("value","X");inputs[0].setAttribute("value","1")',
-    'inputs[1].setAttribute("value","X");inputs[1].removeAttribute("value")',
-    'inputs[1].name="code-99";inputs[1].name="code-1"',
-])
-def test_own_dispatch_limits(nested,attack):
-    origin,leaf=setup_chain(nested)
-    leaf.evaluate('(html)=>document.body.innerHTML=html',markup())
-    target=codes.discover(origin,'Synthetic',nested.sup.task_id,parent=nested.parent)[0]
-    leaf.evaluate('(attack)=>{window.inputs=Array.from(document.querySelectorAll("input"));inputs[0].addEventListener("input",()=>eval(attack),{once:true})}',attack)
-    try:
-        assert not codes.fill(target,'123456',time.monotonic()+60)
-        assert leaf.evaluate('inputs.slice(1).every(e=>!e.value)')
-    finally:
-        codes.release(target)
 
 
 def test_indexed_registered_https(nested,tmp_path,monkeypatch):

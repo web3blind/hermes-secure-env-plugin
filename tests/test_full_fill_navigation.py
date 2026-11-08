@@ -3,7 +3,7 @@ from test_nested_code import nested as nested
 from test_nested_code import test_registered_nested_https as run_registered
 
 
-def test_six_acknowledged_setters_then_navigation_is_unknown_without_retry(nested, tmp_path, monkeypatch):
+def test_native_same_origin_spa_completion_is_filled_without_retry(nested, tmp_path, monkeypatch):
     from secure_env_ingress import vault_ingress
     from secure_env_ingress.bound_cdp import _fill_diagnostic
 
@@ -39,4 +39,4 @@ def test_six_acknowledged_setters_then_navigation_is_unknown_without_retry(neste
 
     run_registered(nested, ('parent.test', 'parent.test'), True, tmp_path, monkeypatch,
                    setup_hook=prepare, synthetic_code='123456',
-                   completion_check=check, expect_unknown=True)
+                   completion_check=check, expect_unknown=False)

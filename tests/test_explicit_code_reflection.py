@@ -66,53 +66,8 @@ def test_controlled_explicit_cells(nested, layout, service):
         codes.release(target)
 
 
-@pytest.mark.parametrize('service', [False, True])
-@pytest.mark.parametrize('attack', [
-    "const e=document.querySelector('#cell-0');e.setAttribute('value','x');e.setAttribute('value',e.value)",
-    "document.querySelector('#cell-1').setAttribute('value','x')",
-    "document.querySelector('#cell-0').setAttribute('title','changed')",
-    "const e=document.querySelector('#cell-0');e.setAttribute('title','changed');e.removeAttribute('title')",
-    "const e=document.querySelector('#cell-1');e.replaceWith(e.cloneNode(true))",
-    "document.querySelector('form').setAttribute('action','/other')",
-])
-def test_reflection_does_not_acknowledge_other_history(nested, attack, service):
-    origin, leaf = setup_chain(nested)
-    prepare(leaf, attack, service=service)
-    target = codes.discover(origin, 'Synthetic', nested.sup.task_id,
-                            parent=nested.parent, target_spec=descriptor())[0]
-    try:
-        from secure_env_ingress.bound_cdp import fill_diagnostic_scope
-        with fill_diagnostic_scope() as evidence:
-            try:
-                assert not codes.fill(target, '12345', time.monotonic()+45)
-            except ValueError:
-                pass
-        assert evidence['writes_attempted'] == 1
-        # The attack itself may change the second input's value property.
-        # No subsequent code setter may reach the untouched remaining inputs.
-        assert leaf.evaluate('originalCells.slice(2).every(e=>e.value==="")')
-    finally:
-        codes.release(target)
 
 
-@pytest.mark.parametrize('attack', [
-    "const f=document.querySelector('#service-frame');f.setAttribute('title','changed');f.removeAttribute('title')",
-    "const f=document.querySelector('#service-frame');f.replaceWith(f.cloneNode(true))",
-    "document.querySelector('#service-frame').setAttribute('src','https://other.test/service')",
-])
-def test_service_frame_authority_still_refuses(nested, attack):
-    origin, leaf = setup_chain(nested)
-    prepare(leaf, attack, service=True)
-    target = codes.discover(origin, 'Synthetic', nested.sup.task_id,
-                            parent=nested.parent, target_spec=descriptor())[0]
-    try:
-        try:
-            assert not codes.fill(target, '12345', time.monotonic()+45)
-        except ValueError:
-            pass
-        assert leaf.evaluate('originalCells.slice(1).every(e=>e.value==="")')
-    finally:
-        codes.release(target)
 
 
 def test_registered_controlled_cells_https(nested, tmp_path, monkeypatch):

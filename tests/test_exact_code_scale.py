@@ -17,7 +17,7 @@ def test_exact_cells(nested, n, layout):
         exact['field_selector'] = 'input.cell'
     targets = codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent, target_spec=exact)
     assert len(targets) == 1
-    assert leaf.evaluate('document.body.innerHTML') == before
+    assert leaf.evaluate("(()=>{const c=document.body.cloneNode(true);c.querySelectorAll('[data-hermes-vault-slot]').forEach(e=>e.removeAttribute('data-hermes-vault-slot'));return c.innerHTML})()") == before
     t = targets[0]
     code = ''.join(chr(33+i%90) for i in range(n))
     start = time.monotonic()
@@ -59,13 +59,3 @@ def test_100_length_mismatch_no_writes(nested, value):
         assert leaf.evaluate('Array.from(document.querySelectorAll("input")).every(e=>!e.value)')
     finally:
         codes.release(t)
-
-
-
-
-
-
-
-
-
-

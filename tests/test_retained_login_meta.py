@@ -8,7 +8,7 @@ from secure_env_ingress.login_fill import login_backend
 
 
 @pytest.mark.parametrize(
-    "case", ["wrong_origin", "locked", "unavailable", "wrong_kind", "wrong_handle"]
+    "case", ["wrong_origin", "locked", "unavailable", "wrong_kind"]
 )
 def test_metadata_refusal_never_resolves_or_unlocks(monkeypatch, case):
     from agent import vault_backends
@@ -72,3 +72,11 @@ def test_manager_allowed_origins_are_exact_not_parent_or_wildcard(monkeypatch):
     for origin in ("https://sub.b.test", "http://b.test", "https://b.test:444"):
         with pytest.raises(ValueError):
             login_backend("op:synthetic", origin)
+
+
+def test_backend_metadata_identity_is_not_an_extra_gate(monkeypatch):
+    from agent import vault_backends
+    meta=VaultItemMeta("backend-record", "login", "Synthetic", "https://a.test", "fixture")
+    backend=SimpleNamespace(needs_unlock=False,get_meta=lambda handle:meta)
+    monkeypatch.setattr(vault_backends,"backend_for_handle",lambda handle:backend)
+    assert login_backend("opaque-provider-handle","https://a.test")== (backend,meta)

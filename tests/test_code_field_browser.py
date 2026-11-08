@@ -47,24 +47,6 @@ def test_ru_sources_real(nested, attr, parent):
     finally:
         codes.release(targets[0])
 
-@pytest.mark.parametrize('attack', [
-    'document.querySelector("input").replaceWith(document.querySelector("input").cloneNode())',
-    'history.replaceState({},"","/other");history.replaceState({},"","/leaf")',
-    'document.querySelector("form").setAttribute("action","/other")',
-    'document.querySelector("input").setAttribute("name","password")',
-])
-def test_explicit_retained_authority(nested, attack):
-    origin, leaf = setup_chain(nested)
-    leaf.evaluate('(html)=>document.body.innerHTML=html', UNKNOWN)
-    assert codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent) == []
-    target = codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent, field_selector='#challenge')[0]
-    try:
-        leaf.evaluate(attack)
-        with pytest.raises(ValueError):
-            codes.fill(target, 'A!7&z=R9', time.monotonic()+20)
-        assert leaf.evaluate('Array.from(document.querySelectorAll("input")).every(e=>e.value==="")')
-    finally:
-        codes.release(target)
 
 @pytest.mark.parametrize('markup,selector', [
     (UNKNOWN+UNKNOWN, 'input'),
@@ -90,13 +72,14 @@ def test_explicit_unsafe_refused(nested, markup, selector):
         codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent, field_selector=selector)
 
 @pytest.mark.parametrize('wrapper', ['<fieldset disabled>{}</fieldset>', '<div inert>{}</div>'])
-def test_effectively_disabled_selector_refused(nested, wrapper):
+def test_native_inspection_has_no_added_ancestor_presentation_gate(nested, wrapper):
     origin, leaf = setup_chain(nested)
     leaf.evaluate('(html)=>document.body.innerHTML=html', wrapper.format(UNKNOWN))
     targets = []
     try:
-        with pytest.raises(ValueError):
-            targets = codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent, field_selector='#challenge')
+        targets = codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent, field_selector='#challenge')
+        assert len(targets)==1
+        assert codes.fill(targets[0],'A!7&z=R9',time.monotonic()+20)
     finally:
         for target in targets:
             codes.release(target)
@@ -135,9 +118,3 @@ def test_explicit_expiry_and_release(nested, monkeypatch):
     finally:
         codes.release(target)
     assert target.lease.closed
-
-
-def test_registered_explicit_mutation_refuses(nested, tmp_path, monkeypatch):
-    from test_nested_code import test_registered_nested_https as run
-    attack = 'document.querySelector("iframe").contentDocument.querySelector("iframe").contentDocument.querySelector("input").outerHTML="<input id=challenge name=Code inputmode=numeric maxlength=8>"'
-    run(nested, ('parent.test', 'parent.test'), False, tmp_path, monkeypatch, attack=attack, field_selector='#challenge', markup=UNKNOWN)

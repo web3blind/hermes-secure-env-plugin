@@ -41,17 +41,13 @@ def faulting_diagnostic_logger():
 @pytest.mark.parametrize('case,attempted,confirmed,stage,reason', [
     ('success', 6, 6, 'completion', 'filled'),
     ('fault_success', 6, 6, 'completion', 'filled'),
-    ('fault_false', 0, 0, 'focus', 'focus_refused'),
     ('fault_timeout', 1, 0, 'write', 'write_unconfirmed'),
     ('delayed', 6, 6, 'completion', 'filled'),
-    ('focus_zero', 0, 0, 'focus', 'focus_refused'),
-    ('focus_one', 1, 1, 'readback', 'document_focus_lost'),
-    ('focus_three', 3, 3, 'readback', 'document_focus_lost'),
     ('lost_receipt', 1, 0, 'write', 'write_unconfirmed'),
-    ('cancelled', 0, 0, 'revalidate', 'cancelled'),
+    ('cancelled', 0, 0, 'revalidate', 'guard_refused'),
     ('profile', 0, 0, 'acquire', 'profile_refused'),
     ('invalid_ui', 6, 6, 'completion', 'filled'),
-    ('navigation', 6, 6, 'readback', 'guard_refused'),
+    ('navigation', 6, 6, 'completion', 'filled'),
 ])
 def test_registered_diagnostic(nested, tmp_path, monkeypatch, caplog,
                                case, attempted, confirmed, stage, reason):
@@ -68,18 +64,13 @@ def test_registered_diagnostic(nested, tmp_path, monkeypatch, caplog,
     from tools.registry import registry
 
     fault = case.startswith('fault_')
-    case = {'fault_success': 'success', 'fault_false': 'focus_zero',
-            'fault_timeout': 'timeout'}.get(case, case)
+    case = {'fault_success': 'success', 'fault_timeout': 'timeout'}.get(case, case)
     origin, leaf = setup_chain(nested, split=True)
     prepare(leaf)
-    if case.startswith('focus_'):
-        nested.page.evaluate('document.body.insertAdjacentHTML("beforeend", "<button id=exit>Elsewhere</button>")')
-        index, event = {'focus_zero': (0, 'focus'), 'focus_one': (0, 'input'), 'focus_three': (2, 'input')}[case]
-        leaf.evaluate('([i,event])=>{for(const name of event==="input"?["input","change"]:[event])document.querySelectorAll("input")[i].addEventListener(name,e=>{e.stopImmediatePropagation();top.document.querySelector("#exit").focus()},{once:true})}', [index, event])
-    elif case == 'invalid_ui':
+    if case == 'invalid_ui':
         leaf.evaluate('document.querySelectorAll("input")[5].addEventListener("input",()=>{document.body.appendChild(document.createElement("p")).textContent="Invalid code"})')
     elif case == 'navigation':
-        # Synchronous post-input navigation invalidates the retained final proof.
+        # Same-origin completion is not a native destination change.
         leaf.evaluate('document.querySelectorAll("input")[5].addEventListener("input",()=>{history.replaceState({},"","/done")})')
     original_invoke = nested_code._invoke
     if case in ('lost_receipt', 'timeout'):
@@ -139,7 +130,7 @@ def test_registered_diagnostic(nested, tmp_path, monkeypatch, caplog,
     monkeypatch.setattr(factory, '_submit_code', checked_submit)
     pending = []
     sent = []
-    succeeds = case in ('success', 'delayed', 'invalid_ui')
+    succeeds = case in ('success', 'delayed', 'invalid_ui', 'navigation')
     class Adapter:
         async def send(self, chat_id, content, metadata=None):
             token = urlsplit(content.split('form: ',1)[1].split(' for ',1)[0]).fragment
@@ -186,7 +177,7 @@ def test_registered_diagnostic(nested, tmp_path, monkeypatch, caplog,
     if succeeds:
         complete(leaf)
     elif case != 'navigation':
-        expected={'focus_zero':0,'focus_one':1,'focus_three':3,'lost_receipt':1,'timeout':1,'cancelled':0,'profile':0}[case]
+        expected={'lost_receipt':1,'timeout':1,'cancelled':0,'profile':0}[case]
         assert leaf.evaluate('Array.from(document.querySelectorAll("input")).filter(e=>e.value!=="").length')==expected
 
 
@@ -238,7 +229,7 @@ def test_explicit_parent_cancellation_retains_diagnostic(nested, monkeypatch, tm
             # Cancellation refuses the retained explicit target before a setter.
             with pytest.raises(ValueError):
                 codes.fill(target, '123456', __import__('time').monotonic()+20)
-            assert state['reason'] == 'cancelled'
+            assert state['reason'] == 'guard_refused'
             assert state['writes_attempted'] == state['writes_confirmed'] == 0
         assert nested.page.evaluate('Array.from(document.querySelectorAll("input")).every(e=>e.value==="")')
     finally:

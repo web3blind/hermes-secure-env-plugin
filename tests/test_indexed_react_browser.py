@@ -13,7 +13,7 @@ def prepare(leaf):
         leaf.add_script_tag(content=(root/name).read_text())
     leaf.wait_for_selector('input[name=code-5]')
     leaf.evaluate('''()=>{window.fixtureFieldMetadata=Array.from(document.querySelectorAll("input"),e=>
-      Array.from(e.attributes,a=>[a.name,a.value]).filter(a=>a[0]!=="value"));}''')
+      Array.from(e.attributes,a=>[a.name,a.value]).filter(a=>!["value","data-hermes-vault-slot"].includes(a[0])));}''')
 
 
 def complete(leaf):
@@ -21,7 +21,7 @@ def complete(leaf):
     assert leaf.evaluate('Array.from(document.querySelectorAll("input")).every(e=>e.maxLength===-1)')
     assert leaf.evaluate('Array.from(document.querySelectorAll("input"),e=>e.value).join("")==="123456"')
     assert leaf.evaluate('''()=>JSON.stringify(Array.from(document.querySelectorAll("input"),e=>
-      Array.from(e.attributes,a=>[a.name,a.value]).filter(a=>a[0]!=="value")))===JSON.stringify(fixtureFieldMetadata)'''), leaf.evaluate('({before:fixtureFieldMetadata,after:Array.from(document.querySelectorAll("input"),e=>Array.from(e.attributes,a=>[a.name,a.value]))})')
+      Array.from(e.attributes,a=>[a.name,a.value]).filter(a=>!["value","data-hermes-vault-slot"].includes(a[0]))))===JSON.stringify(fixtureFieldMetadata)'''), leaf.evaluate('({before:fixtureFieldMetadata,after:Array.from(document.querySelectorAll("input"),e=>Array.from(e.attributes,a=>[a.name,a.value]))})')
 
 
 @pytest.mark.parametrize('selector',[None,'input[name="code-0"]'])

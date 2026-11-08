@@ -51,7 +51,6 @@ class ParentSession:
         # Resolve ONLY the caller-selected existing target, on the original wire.
         info = _call(self.transport, 'Target.getTargetInfo', {'targetId': parent})['result']['targetInfo']
         self.origin = _page_origin(info, parent)
-        self._url = info['url']
         self.sid = _call(self.transport, 'Target.attachToTarget',
                          {'targetId': parent, 'flatten': True})['result']['sessionId']
         try:
@@ -67,7 +66,7 @@ class ParentSession:
             raise ValueError('parent connection changed')
         self.transport.check()
         info = _call(self.transport, 'Target.getTargetInfo', {}, self.sid)['result']['targetInfo']
-        if _page_origin(info, self.parent) != self.origin or info['url'] != self._url:
+        if _page_origin(info, self.parent) != self.origin:
             raise ValueError('parent session changed')
         return self.sid
 
@@ -85,9 +84,3 @@ class ParentSession:
             self.closed = True
             if self.sid:
                 self.transport.dispose(self.sid, wait=True)
-
-
-class TopSession:
-    """No origin-based top-level fallback: require an explicit selected parent."""
-    def __init__(self, *_args, **_kwargs):
-        raise ValueError('explicit parent required')

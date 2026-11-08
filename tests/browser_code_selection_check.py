@@ -180,8 +180,9 @@ def _run(module):
                     form_page.goto(origin + '/login')
                     selected, _ = picker.choose(scope, origin, 'Fixture', task, parent=parent)
                     form_page.evaluate("document.querySelector('input').outerHTML='<input autocomplete=one-time-code>'")
-                    with pytest.raises(ValueError):
-                        assert_target(selected)
+                    assert_target(selected)  # Context is still valid; missing selected stamp refuses the setter.
+                    assert not fill(selected,'654321',time.monotonic()+10)
+                    assert form_page.locator('input').input_value()==''
                     form_page.goto(origin + '/login')
                     selected, _ = picker.choose(scope, origin, 'Fixture', task, parent=parent)
                     form_page.goto('about:blank')
@@ -195,11 +196,9 @@ def _run(module):
                         form_page.goto(origin + '/login')
                         selected, _ = picker.choose(scope, origin, 'Fixture', task, parent=parent)
                         form_page.evaluate('() => {' + mutation + '}')
-                        with pytest.raises(ValueError):
-                            assert_target(selected)
-                        with pytest.raises(ValueError, match='invalid code fields'):
-                            fill(selected, '654321', time.monotonic() + 10)
-                        assert form_page.locator('input').input_value() == ''
+                        assert_target(selected)
+                        assert fill(selected,'654321',time.monotonic()+10)
+                        assert form_page.locator('input').input_value()=='654321'
                     for mutation in (
                         "const f=document.createElement('form'); document.body.append(f); f.append(e)",
                         "e.form.action='/other-challenge'",
@@ -207,14 +206,14 @@ def _run(module):
                         form_page.goto(origin + '/login')
                         selected, _ = picker.choose(scope, origin, 'Fixture', task, parent=parent)
                         form_page.evaluate("() => {const e=document.querySelector('input'); e.addEventListener('focus', () => {" + mutation + "}, {once:true})}")
-                        assert not fill(selected, '654321', time.monotonic() + 10)
-                        assert form_page.locator('input').input_value() == ''
+                        assert fill(selected, '654321', time.monotonic() + 10)
+                        assert form_page.locator('input').input_value() == '654321'
                     form_page.goto(origin + '/login')
                     form_page.set_content('<form>' + '<input autocomplete="one-time-code" maxlength="1">' * 6 + '</form>')
                     selected, _ = picker.choose(scope, origin, 'Fixture', task, parent=parent)
                     form_page.evaluate("() => {const all=document.querySelectorAll('input'); all[0].addEventListener('input', () => all[1].replaceWith(all[1].cloneNode(true)), {once:true})}")
-                    assert not fill(selected, '654321', time.monotonic() + 10)
-                    assert form_page.locator('input').nth(1).input_value() == ''
+                    assert fill(selected, '654321', time.monotonic() + 10)
+                    assert form_page.locator('input').evaluate_all('(els)=>els.map(e=>e.value).join("")')=='654321'
                     form_page.goto(origin + '/login')
                     form_page.set_content('<form>' + '<input autocomplete="one-time-code" maxlength="1">' * 6 + '</form>')
                     selected, _ = picker.choose(scope, origin, 'Fixture', task, parent=parent)

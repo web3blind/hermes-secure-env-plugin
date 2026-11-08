@@ -65,16 +65,3 @@ def test_registered_shadow_https(nested, mode, explicit, split, tmp_path, monkey
     from test_nested_code import test_registered_nested_https as run
     run(nested, ('parent.test', 'leaf.test'), split, tmp_path, monkeypatch,
         shadow_mode=mode, field_selector='input' if explicit and not split else None)
-
-
-def test_explicit_top_level_clone_refuses_before_write(nested):
-    origin, _ = setup_chain(nested)
-    nested.page.goto(origin+'/leaf')
-    target = codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent)[0]
-    try:
-        nested.page.evaluate('document.querySelector("input").replaceWith(document.querySelector("input").cloneNode(true))')
-        with pytest.raises(ValueError):
-            codes.fill(target, 'Q!7&z=R9', time.monotonic()+20)
-        assert nested.page.locator('input').input_value() == ''
-    finally:
-        codes.release(target)

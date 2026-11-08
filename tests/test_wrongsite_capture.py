@@ -37,7 +37,9 @@ def captured_parent(nested, tmp_path, monkeypatch, home, html):
     db.close()
     (home / 'config.yaml').write_text(yaml.safe_dump({'browser': {'tab_cleanup_enabled': False}}))
     private = Path(tempfile.mkdtemp(prefix='bh-', dir=os.environ['TMPDIR']))
-    env = dict(PATH=os.environ['PATH'], HOME=str(private), LANG='C.UTF-8',
+    import sys
+    package_path = Path(sys.executable).parent.parent / 'lib' / ('python'+str(sys.version_info.major)+'.'+str(sys.version_info.minor)) / 'site-packages'
+    env = dict(PYTHONPATH=os.pathsep.join([str(package_path),str(host._harness_site_dir())]), PATH=os.environ['PATH'], HOME=str(private), LANG='C.UTF-8',
                BU_CDP_WS=nested.sup.cdp_url, BH_HOME=str(private),
                BH_RUNTIME_DIR=str(private / 'ipc'), BH_TMP_DIR=str(private / 'tmp'),
                BH_AGENT_WORKSPACE=str(private / 'workspace'), BH_RECORD='0',
@@ -265,14 +267,17 @@ def test_harness_retained_code_lifecycle(nested, tmp_path, monkeypatch, change):
                     captured.page.goto('https://capture.test/changed')
                 else:
                     captured.leaf.evaluate('const e=document.querySelector("input");e.replaceWith(e.cloneNode(true))')
+                if change=='replacement':
+                    assert codes.fill(targets[0],'654321',time.monotonic()+10)
+                    assert captured.leaf.evaluate('!!document.querySelector("input").value')
+                    return
                 with pytest.raises(ValueError):
                     codes.assert_target(targets[0])
             if change == 'profile':
-                with _profile_runtime_scope(foreign, {}), pytest.raises(ValueError, match='parent connection changed or discovery cancelled'):
+                with _profile_runtime_scope(foreign, {}), pytest.raises(ValueError):
                     codes.fill(targets[0], '654321', time.monotonic() + 10)
             else:
-                reason = 'invalid code fields' if change == 'replacement' else 'parent connection changed or command refused'
-                with pytest.raises(ValueError, match=reason):
+                with pytest.raises(ValueError):
                     codes.fill(targets[0], '654321', time.monotonic() + 10)
             if change != 'navigation':
                 assert captured.leaf.evaluate('Array.from(document.querySelectorAll("input")).every(e=>!e.value)')

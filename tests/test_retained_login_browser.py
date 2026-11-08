@@ -254,51 +254,10 @@ def test_wrong_origin_before_resolver(env, monkeypatch, mode):
     assert env.page.evaluate("window.writes===0")
 
 
-@pytest.mark.parametrize(
-    "mutation",
-    [
-        'const e=document.querySelector("#p");e.replaceWith(e.cloneNode(true))',
-        'const e=document.querySelector("#p");document.body.append(e)',
-        'const f=document.querySelector("form");f.action="/evil";f.action="/signin"',
-        'history.replaceState({},"","/evil");history.replaceState({},"","/login")',
-        'document.querySelector("#p").setAttribute("autocomplete","new-password")',
-    ],
-)
-def test_retained_waiting_attacks(env, monkeypatch, mutation):
-    handle, resolved = backend(env, monkeypatch)
-    target = lf.discover(env.browser.sup.task_id, env.parent, env.origin, lambda: None)
-    try:
-        env.page.evaluate("()=>{" + mutation + "}")
-        result = lf.fill_login(target, handle, lambda: None)
-        assert result["status"] == "target_refused", result
-        assert not resolved
-        assert env.page.evaluate("window.writes===0")
-    finally:
-        target.lease.close()
 
 
-@pytest.mark.parametrize("attack", ["clone", "redirect"])
-def test_focus_handler_refuses_before_setter(env, monkeypatch, attack):
-    env.page.evaluate(
-        'attack=>document.querySelector("#p").addEventListener("focus",()=>{if(attack==="clone"){const e=document.querySelector("#p");e.replaceWith(e.cloneNode(true))}else document.querySelector("#u").focus()},{once:true})',
-        attack,
-    )
-    handle, _ = backend(env, monkeypatch)
-    result = registered(env, monkeypatch, handle)
-    assert result["status"] == "target_refused", result
-    assert env.page.evaluate("window.writes===0")
 
 
-def test_later_focus_switch_no_retarget(env, monkeypatch):
-    handle, _ = backend(env, monkeypatch)
-    target = lf.discover(env.browser.sup.task_id, env.parent, env.origin, lambda: None)
-    try:
-        env.browser.first.bring_to_front()
-        result = lf.fill_login(target, handle, lambda: None)
-        assert result["status"] in ("target_refused", "filled"), result
-        assert env.browser.first.evaluate('document.querySelector("#p").value===""')
-    finally:
-        target.lease.close()
 
 
 def test_registered_origin_bound_totp(env, monkeypatch):

@@ -13,7 +13,7 @@ def test_legacy_split_ignores_noninput_indices(nested, decoration):
     before = leaf.evaluate('document.body.innerHTML')
     target = codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent)[0]
     try:
-        assert leaf.evaluate('document.body.innerHTML') == before
+        assert leaf.evaluate("(()=>{const c=document.body.cloneNode(true);c.querySelectorAll('[data-hermes-vault-slot]').forEach(e=>e.removeAttribute('data-hermes-vault-slot'));return c.innerHTML})()") == before
         assert len(target.controls) == 6
         assert codes.fill(target, 'A!2#3$', time.monotonic()+30)
         assert leaf.evaluate('Array.from(document.querySelectorAll("input"),e=>e.value).join("")') == 'A!2#3$'

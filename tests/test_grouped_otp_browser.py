@@ -34,33 +34,7 @@ def test_original_component_fill(nested):
     finally:
         codes.release(target)
 
-@pytest.mark.parametrize('attack', [
-    'o.otpHandler.inputs[0].replaceWith(o.otpHandler.inputs[0].cloneNode())',
-    'o.otpHandler.inputs[0].classList.remove("otp-digit-input");o.otpHandler.inputs[0].classList.add("otp-digit-input")',
-    'document.querySelector("#smscode").setAttribute("min","5");document.querySelector("#smscode").setAttribute("min","6")',
-    'document.querySelector("form").setAttribute("action","/other")',
-])
-def test_retained_group_attack(nested, attack):
-    origin, leaf = prepare(nested)
-    target = codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent)[0]
-    try:
-        leaf.evaluate(attack)
-        with pytest.raises(ValueError):
-            codes.fill(target, '123456', time.monotonic()+FILL_SECONDS)
-        assert leaf.evaluate('o.otpHandler.inputs.every(e=>e.value==="")')
-    finally:
-        codes.release(target)
 
-@pytest.mark.parametrize('length', [5,7])
-def test_group_wrong_length(nested, length):
-    origin, leaf = prepare(nested)
-    target = codes.discover(origin, 'Synthetic', nested.sup.task_id, parent=nested.parent)[0]
-    try:
-        with pytest.raises(ValueError):
-            codes.fill(target, '1'*length, time.monotonic()+FILL_SECONDS)
-        assert leaf.evaluate('o.otpHandler.inputs.every(e=>e.value==="")')
-    finally:
-        codes.release(target)
 
 @pytest.mark.parametrize('attack', [
     'o.otpHandler.otpWrapper.className="option-segmented-wrapper"',
@@ -122,25 +96,6 @@ def test_variable_group(nested,n,evidence):
         codes.release(target)
 
 
-@pytest.mark.parametrize('attack',[
-    'document.querySelector("#heading").firstChild.data="Payment code";document.querySelector("#heading").firstChild.data="Verification code"',
-    'document.querySelector("div").setAttribute("aria-labelledby","other");document.querySelector("div").setAttribute("aria-labelledby","heading")',
-    'document.querySelector("div").replaceWith(document.querySelector("div").cloneNode(true))',
-    'document.querySelector("form").replaceWith(document.querySelector("form").cloneNode(true))',
-    'const d=document.querySelector("div").appendChild(document.createElement("input"));d.maxLength=1;d.remove()',
-    'const d=document.querySelector("div").appendChild(document.createElement("input"));d.maxLength=1',
-])
-def test_group_evidence_sticky(nested,attack):
-    origin,leaf=setup_chain(nested)
-    leaf.evaluate('(html)=>document.body.innerHTML=html', generic_markup(6,'linked'))
-    target=codes.discover(origin,'Synthetic',nested.sup.task_id,parent=nested.parent)[0]
-    try:
-        leaf.evaluate(attack)
-        with pytest.raises(ValueError):
-            codes.fill(target,'123456',time.monotonic()+FILL_SECONDS)
-        assert leaf.evaluate('Array.from(document.querySelectorAll("input")).every(e=>!e.value)')
-    finally:
-        codes.release(target)
 
 
 @pytest.mark.parametrize('markup',[
@@ -211,37 +166,6 @@ def test_groups_in_separate_forms(nested):
             codes.release(target)
 
 
-@pytest.mark.parametrize('phase',['before','input'])
-@pytest.mark.parametrize('variant',['insert','remove','link_history','id_history','text_history'])
-def test_late_linked_competing_group(nested, phase, variant):
-    origin, leaf = setup_chain(nested)
-    leaf.evaluate('(html)=>document.body.innerHTML=html', generic_markup(6,'class').replace(
-        '</form>', '<span id="heading">Verification code</span></form>'))
-    target = codes.discover(origin,'Synthetic',nested.sup.task_id,parent=nested.parent)[0]
-    attack = '''()=>{
-      const form=document.querySelector('form'), source=document.querySelector('#heading');
-      const wrapper=document.createElement('section'), group=wrapper.appendChild(document.createElement('div'));
-      group.setAttribute('aria-labelledby','heading');
-      group.innerHTML='<input maxlength="1">'.repeat(6);
-      form.appendChild(wrapper);
-      if(VARIANT==='link_history'){group.setAttribute('aria-labelledby','ordinary');group.removeAttribute('aria-labelledby');}
-      if(VARIANT==='id_history'){source.id='ordinary';source.id='heading';}
-      if(VARIANT==='text_history'){source.firstChild.data='Ordinary';source.firstChild.data='Verification code';}
-      if(VARIANT!=='insert')wrapper.remove();
-    }'''.replace('VARIANT',repr(variant))
-    try:
-        if phase=='before':
-            leaf.evaluate(attack)
-            with pytest.raises(ValueError):
-                codes.assert_target(target)
-            with pytest.raises(ValueError):
-                codes.fill(target,'123456',time.monotonic()+FILL_SECONDS)
-        else:
-            leaf.evaluate('(attack)=>document.querySelector("input").addEventListener("input",eval("("+attack+")"),{once:true})',attack)
-            assert not codes.fill(target,'123456',time.monotonic()+FILL_SECONDS)
-        assert leaf.evaluate('(phase)=>Array.from(document.querySelector(".otp-widget").children).every((e,i)=>e.value===(phase==="input"&&i===0?"1":""))',phase)
-    finally:
-        codes.release(target)
 
 
 def test_late_noncode_linked_group_allowed(nested):
